@@ -47,23 +47,65 @@ final class MenuBarController {
 
         // System Spotlight Management submenu
         let spotlightMenu = NSMenu()
-        let isSystemSpotlightOn = SpotlightManager.isSystemSpotlightShortcutEnabled()
+        let isShortcutOn = SpotlightManager.isShortcutEnabled()
+        let isServiceDisabled = SpotlightManager.isServiceDisabled()
+        let isIndexingOn = SpotlightManager.isIndexingEnabled()
 
-        let toggleItem = NSMenuItem(
-            title: isSystemSpotlightOn ? "Disable System Spotlight Shortcut (⌘Space)" : "Enable System Spotlight Shortcut (⌘Space)",
-            action: #selector(toggleSystemSpotlightAction),
+        // 1. Shortcut toggle
+        let shortcutToggle = NSMenuItem(
+            title: isShortcutOn ? "Disable Spotlight Shortcut (⌘Space)" : "Enable Spotlight Shortcut (⌘Space)",
+            action: #selector(toggleShortcutAction),
             keyEquivalent: ""
         )
-        toggleItem.target = self
-        spotlightMenu.addItem(toggleItem)
+        shortcutToggle.target = self
+        spotlightMenu.addItem(shortcutToggle)
 
-        let statusItemDesc = NSMenuItem(
-            title: "Status: " + (isSystemSpotlightOn ? "Enabled" : "Disabled (Lightspot Ready)"),
-            action: nil,
+        // 2. Process / Service toggle
+        let serviceToggle = NSMenuItem(
+            title: isServiceDisabled ? "Enable Spotlight Process (launchctl)" : "Disable Spotlight Process (launchctl)",
+            action: #selector(toggleServiceAction),
             keyEquivalent: ""
         )
-        statusItemDesc.isEnabled = false
-        spotlightMenu.addItem(statusItemDesc)
+        serviceToggle.target = self
+        spotlightMenu.addItem(serviceToggle)
+
+        // 3. File Indexing toggle
+        let indexingToggle = NSMenuItem(
+            title: isIndexingOn ? "Disable File Indexing (mdutil)..." : "Enable File Indexing (mdutil)...",
+            action: #selector(toggleIndexingAction),
+            keyEquivalent: ""
+        )
+        indexingToggle.target = self
+        spotlightMenu.addItem(indexingToggle)
+
+        spotlightMenu.addItem(NSMenuItem.separator())
+
+        // Status Summary Item
+        let statusTitle = "Status: Shortcut " + (isShortcutOn ? "ON" : "OFF") +
+                          ", Process " + (isServiceDisabled ? "OFF" : "ON") +
+                          ", Indexing " + (isIndexingOn ? "ON" : "OFF")
+        let statusSummary = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
+        statusSummary.isEnabled = false
+        spotlightMenu.addItem(statusSummary)
+
+        spotlightMenu.addItem(NSMenuItem.separator())
+
+        // 4. Master actions
+        let disableAllItem = NSMenuItem(
+            title: "Disable Everything (Shortcut + Process + Indexing)...",
+            action: #selector(disableAllAction),
+            keyEquivalent: ""
+        )
+        disableAllItem.target = self
+        spotlightMenu.addItem(disableAllItem)
+
+        let enableAllItem = NSMenuItem(
+            title: "Restore Default Spotlight...",
+            action: #selector(enableAllAction),
+            keyEquivalent: ""
+        )
+        enableAllItem.target = self
+        spotlightMenu.addItem(enableAllItem)
 
         spotlightMenu.addItem(NSMenuItem.separator())
         let sysPrefItem = NSMenuItem(title: "Open Keyboard Shortcuts Settings...", action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
@@ -99,24 +141,77 @@ final class MenuBarController {
         hotkeyManager.currentOption = option
         rebuildMenu()
 
-        if option == .commandSpace && SpotlightManager.isSystemSpotlightShortcutEnabled() {
+        if option == .commandSpace && SpotlightManager.isShortcutEnabled() {
             promptSpotlightDisablingGuide()
         }
     }
 
-    @objc private func toggleSystemSpotlightAction() {
-        let currentlyEnabled = SpotlightManager.isSystemSpotlightShortcutEnabled()
-        SpotlightManager.setSystemSpotlightShortcut(enabled: !currentlyEnabled)
+    @objc private func toggleShortcutAction() {
+        let currentlyEnabled = SpotlightManager.isShortcutEnabled()
+        SpotlightManager.setShortcut(enabled: !currentlyEnabled)
         rebuildMenu()
 
-        let alert = NSAlert()
-        alert.messageText = !currentlyEnabled ? "System Spotlight Shortcut Enabled" : "System Spotlight Shortcut Disabled"
-        alert.informativeText = !currentlyEnabled
-            ? "The macOS built-in Spotlight shortcut (⌘Space) has been re-enabled."
-            : "The macOS built-in Spotlight shortcut (⌘Space) has been disabled. ⌘Space is now exclusively reserved for Lightspot!"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+        showAlert(
+            title: !currentlyEnabled ? "Spotlight Shortcut Enabled" : "Spotlight Shortcut Disabled",
+            message: !currentlyEnabled
+                ? "The macOS built-in Spotlight shortcut (⌘Space) has been re-enabled."
+                : "The macOS built-in Spotlight shortcut (⌘Space) has been disabled. ⌘Space is now reserved for Lightspot!"
+        )
+    }
+
+    @objc private func toggleServiceAction() {
+        let isCurrentlyDisabled = SpotlightManager.isServiceDisabled()
+        SpotlightManager.setService(enabled: isCurrentlyDisabled)
+        rebuildMenu()
+
+        showAlert(
+            title: isCurrentlyDisabled ? "Spotlight Process Enabled" : "Spotlight Process Disabled",
+            message: isCurrentlyDisabled
+                ? "The Spotlight launchd background process has been re-enabled."
+                : "The Spotlight launchd background process has been disabled and terminated."
+        )
+    }
+
+    @objc private func toggleIndexingAction() {
+        let isCurrentlyOn = SpotlightManager.isIndexingEnabled()
+        let targetState = !isCurrentlyOn
+
+        SpotlightManager.setIndexing(enabled: targetState) { [weak self] success in
+            self?.rebuildMenu()
+            if success {
+                self?.showAlert(
+                    title: targetState ? "Spotlight Indexing Enabled" : "Spotlight Indexing Disabled",
+                    message: targetState
+                        ? "Spotlight filesystem indexing has been turned back on."
+                        : "Spotlight filesystem indexing (mdutil) has been turned off across all volumes, freeing background CPU and disk resources."
+                )
+            } else {
+                self?.showAlert(
+                    title: "Authentication Required",
+                    message: "Changing Spotlight indexing requires administrator privileges."
+                )
+            }
+        }
+    }
+
+    @objc private func disableAllAction() {
+        SpotlightManager.disableAll(includeIndexing: true) { [weak self] success in
+            self?.rebuildMenu()
+            self?.showAlert(
+                title: "Spotlight Fully Disabled",
+                message: "1. ⌘Space Shortcut: Disabled\n2. Background Process: Terminated & Disabled\n3. File Indexing: " + (success ? "Disabled" : "Unchanged (Admin canceled)") + "\n\nLightspot is now your primary launcher!"
+            )
+        }
+    }
+
+    @objc private func enableAllAction() {
+        SpotlightManager.enableAll(includeIndexing: true) { [weak self] _ in
+            self?.rebuildMenu()
+            self?.showAlert(
+                title: "Spotlight Restored",
+                message: "Default macOS Spotlight shortcut, background service, and file indexing have been re-enabled."
+            )
+        }
     }
 
     @objc private func openKeyboardSettingsAction() {
@@ -134,21 +229,41 @@ final class MenuBarController {
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            SpotlightManager.setSystemSpotlightShortcut(enabled: false)
+            SpotlightManager.setShortcut(enabled: false)
             rebuildMenu()
         } else if response == .alertSecondButtonReturn {
             openKeyboardSettingsAction()
         }
     }
 
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     @objc private func aboutAction() {
         let currentOption = hotkeyManager?.currentOption.shortLabel ?? "⌘Space"
-        let isSystemSpotlightOn = SpotlightManager.isSystemSpotlightShortcutEnabled()
-        let spotlightStatus = isSystemSpotlightOn ? "Enabled" : "Disabled"
+        let shortcutStatus = SpotlightManager.isShortcutEnabled() ? "Active" : "Disabled"
+        let indexingStatus = SpotlightManager.isIndexingEnabled() ? "Active" : "Disabled"
+        let processStatus = SpotlightManager.isServiceDisabled() ? "Disabled" : "Active"
 
         let alert = NSAlert()
         alert.messageText = "Lightspot"
-        alert.informativeText = "A lightweight Spotlight replacement for macOS.\n\nVersion 1.0.0\n\nCurrent Hotkey: \(currentOption)\nSystem Spotlight: \(spotlightStatus)"
+        alert.informativeText = """
+        A lightweight Spotlight replacement for macOS.
+
+        Version: 1.0.0
+        Hotkey: \(currentOption)
+
+        macOS Spotlight Status:
+        • Shortcut (⌘Space): \(shortcutStatus)
+        • Background Process: \(processStatus)
+        • File Indexing: \(indexingStatus)
+        """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()

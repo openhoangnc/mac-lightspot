@@ -22,22 +22,18 @@ Lightspot brings the modern floating pill design and translucent glass aesthetic
 
 ---
 
-## ⌨️ Using `⌘Space` as Spotlight Replacement
+## 🛠️ Complete macOS Spotlight Management
 
-To have Lightspot replace macOS Spotlight on **`⌘Space`**:
+Lightspot provides granular and 1-click controls directly from the menu bar to disable or re-enable all parts of macOS Spotlight:
 
-### Method 1: 1-Click from Lightspot Menu Bar (Recommended)
-1. Click the magnifying glass icon in your macOS menu bar.
-2. Under **System Spotlight**, click **`Disable System Spotlight Shortcut (⌘Space)`**.
-3. Under **Shortcut**, select **`⌘Space (Command + Space)`**.
+1. **Spotlight Shortcut (`⌘Space`)**: Disables/enables the built-in `⌘Space` shortcut in macOS symbolic hotkeys without needing root.
+2. **Background Process (`com.apple.Spotlight`)**: Disables/enables the Spotlight GUI background agent via `launchctl` and terminates running instances.
+3. **File Indexing (`mdutil`)**: Disables/enables filesystem metadata indexing (`mds` / `mds_stores`) across all mounted volumes to eliminate background CPU and disk usage (prompts macOS Touch ID / admin password).
+4. **1-Click Master Actions**:
+   - **`Disable Everything (Shortcut + Process + Indexing)...`**: Completely shuts down all Spotlight components.
+   - **`Restore Default Spotlight...`**: Re-enables all components back to macOS factory defaults.
 
-### Method 2: Manual System Settings
-1. Open **System Settings** → **Keyboard** → **Keyboard Shortcuts...**
-2. Click **Spotlight** in the left sidebar.
-3. Uncheck **"Show Spotlight search"** (or change its shortcut).
-4. In Lightspot's menu bar icon → **Shortcut** → select **`⌘Space (Command + Space)`**.
-
-Now pressing **`⌘Space`** opens Lightspot instantly!
+To access these, click the **Lightspot magnifying glass icon** in your menu bar → **System Spotlight**.
 
 ---
 
