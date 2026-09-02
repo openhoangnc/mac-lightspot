@@ -24,8 +24,14 @@ Lightspot brings the modern floating pill design and translucent glass aesthetic
 
 ## ⌨️ Using `⌘Space` as Spotlight Replacement
 
-To have Lightspot fully replace macOS Spotlight on **`⌘Space`**:
+To have Lightspot replace macOS Spotlight on **`⌘Space`**:
 
+### Method 1: 1-Click from Lightspot Menu Bar (Recommended)
+1. Click the magnifying glass icon in your macOS menu bar.
+2. Under **System Spotlight**, click **`Disable System Spotlight Shortcut (⌘Space)`**.
+3. Under **Shortcut**, select **`⌘Space (Command + Space)`**.
+
+### Method 2: Manual System Settings
 1. Open **System Settings** → **Keyboard** → **Keyboard Shortcuts...**
 2. Click **Spotlight** in the left sidebar.
 3. Uncheck **"Show Spotlight search"** (or change its shortcut).

@@ -41,14 +41,38 @@ final class MenuBarController {
             shortcutMenu.addItem(item)
         }
 
-        shortcutMenu.addItem(NSMenuItem.separator())
-        let sysPrefItem = NSMenuItem(title: "Disable macOS Spotlight Shortcut...", action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
-        sysPrefItem.target = self
-        shortcutMenu.addItem(sysPrefItem)
-
         let shortcutParentItem = NSMenuItem(title: "Shortcut", action: nil, keyEquivalent: "")
         shortcutParentItem.submenu = shortcutMenu
         menu.addItem(shortcutParentItem)
+
+        // System Spotlight Management submenu
+        let spotlightMenu = NSMenu()
+        let isSystemSpotlightOn = SpotlightManager.isSystemSpotlightShortcutEnabled()
+
+        let toggleItem = NSMenuItem(
+            title: isSystemSpotlightOn ? "Disable System Spotlight Shortcut (⌘Space)" : "Enable System Spotlight Shortcut (⌘Space)",
+            action: #selector(toggleSystemSpotlightAction),
+            keyEquivalent: ""
+        )
+        toggleItem.target = self
+        spotlightMenu.addItem(toggleItem)
+
+        let statusItemDesc = NSMenuItem(
+            title: "Status: " + (isSystemSpotlightOn ? "Enabled" : "Disabled (Lightspot Ready)"),
+            action: nil,
+            keyEquivalent: ""
+        )
+        statusItemDesc.isEnabled = false
+        spotlightMenu.addItem(statusItemDesc)
+
+        spotlightMenu.addItem(NSMenuItem.separator())
+        let sysPrefItem = NSMenuItem(title: "Open Keyboard Shortcuts Settings...", action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
+        sysPrefItem.target = self
+        spotlightMenu.addItem(sysPrefItem)
+
+        let spotlightParentItem = NSMenuItem(title: "System Spotlight", action: nil, keyEquivalent: "")
+        spotlightParentItem.submenu = spotlightMenu
+        menu.addItem(spotlightParentItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -75,36 +99,56 @@ final class MenuBarController {
         hotkeyManager.currentOption = option
         rebuildMenu()
 
-        if option == .commandSpace {
+        if option == .commandSpace && SpotlightManager.isSystemSpotlightShortcutEnabled() {
             promptSpotlightDisablingGuide()
         }
     }
 
+    @objc private func toggleSystemSpotlightAction() {
+        let currentlyEnabled = SpotlightManager.isSystemSpotlightShortcutEnabled()
+        SpotlightManager.setSystemSpotlightShortcut(enabled: !currentlyEnabled)
+        rebuildMenu()
+
+        let alert = NSAlert()
+        alert.messageText = !currentlyEnabled ? "System Spotlight Shortcut Enabled" : "System Spotlight Shortcut Disabled"
+        alert.informativeText = !currentlyEnabled
+            ? "The macOS built-in Spotlight shortcut (⌘Space) has been re-enabled."
+            : "The macOS built-in Spotlight shortcut (⌘Space) has been disabled. ⌘Space is now exclusively reserved for Lightspot!"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     @objc private func openKeyboardSettingsAction() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
-            NSWorkspace.shared.open(url)
-        }
+        SpotlightManager.openKeyboardSettings()
     }
 
     private func promptSpotlightDisablingGuide() {
         let alert = NSAlert()
         alert.messageText = "Using ⌘Space as Lightspot Shortcut"
-        alert.informativeText = "To use Command+Space for Lightspot, make sure to disable or rebind the default macOS Spotlight shortcut in:\n\nSystem Settings → Keyboard → Keyboard Shortcuts → Spotlight → Uncheck 'Show Spotlight search'."
+        alert.informativeText = "System Spotlight is currently enabled. Would you like Lightspot to disable the system Spotlight shortcut for you?"
         alert.alertStyle = .informational
+        alert.addButton(withTitle: "Disable System Spotlight")
         alert.addButton(withTitle: "Open Keyboard Settings")
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
+            SpotlightManager.setSystemSpotlightShortcut(enabled: false)
+            rebuildMenu()
+        } else if response == .alertSecondButtonReturn {
             openKeyboardSettingsAction()
         }
     }
 
     @objc private func aboutAction() {
         let currentOption = hotkeyManager?.currentOption.shortLabel ?? "⌘Space"
+        let isSystemSpotlightOn = SpotlightManager.isSystemSpotlightShortcutEnabled()
+        let spotlightStatus = isSystemSpotlightOn ? "Enabled" : "Disabled"
+
         let alert = NSAlert()
         alert.messageText = "Lightspot"
-        alert.informativeText = "A lightweight Spotlight replacement for macOS.\n\nVersion 1.0.0\n\nCurrent Hotkey: \(currentOption)"
+        alert.informativeText = "A lightweight Spotlight replacement for macOS.\n\nVersion 1.0.0\n\nCurrent Hotkey: \(currentOption)\nSystem Spotlight: \(spotlightStatus)"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
