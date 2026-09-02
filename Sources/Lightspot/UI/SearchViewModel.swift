@@ -31,20 +31,25 @@ final class SearchViewModel: ObservableObject {
     static let compactHeight: CGFloat = 68
     static let expandedHeight: CGFloat = 530
 
+    // MARK: - Cached State
+    private var _cachedRecentApps: [AppInfo] = []
+    private var _cachedCategorySections: [(category: AppCategory, apps: [AppInfo])] = []
+    private var _cachedAllApps: [AppInfo] = []
+
     // MARK: - Computed Properties
 
     var recentApps: [AppInfo] {
-        RecentAppsManager.shared.getRecentApps(limit: 7)
+        if _cachedRecentApps.isEmpty {
+            _cachedRecentApps = RecentAppsManager.shared.getRecentApps(limit: 7)
+        }
+        return _cachedRecentApps
     }
 
     var categorySections: [(category: AppCategory, apps: [AppInfo])] {
-        let allCategories: [AppCategory] = [
-            .productivity, .utilities, .entertainment, .social, .creativity, .developerTools, .infoReading, .other
-        ]
-        return allCategories.compactMap { cat in
-            let catApps = AppScanner.shared.apps(for: cat)
-            return catApps.isEmpty ? nil : (category: cat, apps: catApps)
+        if _cachedCategorySections.isEmpty {
+            refreshSectionsCache()
         }
+        return _cachedCategorySections
     }
 
     var viewMode: SpotlightViewMode {
@@ -54,13 +59,10 @@ final class SearchViewModel: ObservableObject {
     var displayedApps: [AppInfo] {
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if selectedCategory == .all {
-                var list = recentApps
-                for section in categorySections {
-                    for app in section.apps {
-                        list.append(app)
-                    }
+                if _cachedAllApps.isEmpty {
+                    refreshSectionsCache()
                 }
-                return list
+                return _cachedAllApps
             } else {
                 return AppScanner.shared.apps(for: selectedCategory)
             }
@@ -89,10 +91,49 @@ final class SearchViewModel: ObservableObject {
         return apps[gridSelectedIndex]
     }
 
+    /// Top hit app path (O(1), zero redundant search execution)
+    var topHitAppPath: String? {
+        if let sel = selectedSearchResult {
+            if case .launchApp(let path) = sel.action {
+                return path
+            }
+        }
+        if let top = groupedResults[.topHit]?.first, case .launchApp(let path) = top.action {
+            return path
+        }
+        if let firstApp = groupedResults[.applications]?.first, case .launchApp(let path) = firstApp.action {
+            return path
+        }
+        return nil
+    }
+
+    var hasTopHitOrApp: Bool {
+        topHitAppPath != nil
+    }
+
     // MARK: - Initialization
 
     init() {
+        refreshSectionsCache()
         updateHeight()
+    }
+
+    func refreshSectionsCache() {
+        _cachedRecentApps = RecentAppsManager.shared.getRecentApps(limit: 7)
+        let allCategories: [AppCategory] = [
+            .productivity, .utilities, .entertainment, .social, .creativity, .developerTools, .infoReading, .other
+        ]
+        let sections: [(category: AppCategory, apps: [AppInfo])] = allCategories.compactMap { cat in
+            let catApps = AppScanner.shared.apps(for: cat)
+            return catApps.isEmpty ? nil : (category: cat, apps: catApps)
+        }
+        _cachedCategorySections = sections
+
+        var all: [AppInfo] = _cachedRecentApps
+        for section in sections {
+            all.append(contentsOf: section.apps)
+        }
+        _cachedAllApps = all
     }
 
     // MARK: - Actions
@@ -115,10 +156,12 @@ final class SearchViewModel: ObservableObject {
         }
 
         // Check for instant calculator result
-        self.calculatorResult = CalculatorEngine.evaluate(q.trimmed)
+        let calc = CalculatorEngine.evaluate(q.trimmed)
 
         // Perform search across all providers
         let results = SearchEngine.shared.searchImmediate(q)
+
+        self.calculatorResult = calc
         self.groupedResults = results
         self.searchSelectedIndex = 0
         self.gridSelectedIndex = 0

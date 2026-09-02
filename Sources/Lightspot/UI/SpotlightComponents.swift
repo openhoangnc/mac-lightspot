@@ -253,6 +253,9 @@ struct SearchResultsView: View {
     }
 
     var body: some View {
+        let flat = flatResults
+        let selectedID = (selectedIndex >= 0 && selectedIndex < flat.count) ? flat[selectedIndex].id : nil
+
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -267,7 +270,7 @@ struct SearchResultsView: View {
                                     .padding(.top, 4)
 
                                 ForEach(items, id: \.id) { item in
-                                    let isSelected = flatResults.firstIndex(where: { $0.id == item.id }) == selectedIndex
+                                    let isSelected = item.id == selectedID
                                     SearchResultRow(
                                         result: item,
                                         isSelected: isSelected,
@@ -283,19 +286,9 @@ struct SearchResultsView: View {
                 .padding(.horizontal, 12)
             }
             .onChange(of: selectedIndex) { newIndex in
-                let flat = flatResults
-                if newIndex >= 0 && newIndex < flat.count {
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                        proxy.scrollTo(flat[newIndex].id, anchor: nil)
-                    }
-                }
-            }
-            .onChange(of: groupedResults) { _ in
-                let flat = flatResults
-                if selectedIndex >= 0 && selectedIndex < flat.count {
-                    withAnimation(.easeInOut(duration: 0.12)) {
-                        proxy.scrollTo(flat[selectedIndex].id, anchor: nil)
-                    }
+                let currentFlat = flatResults
+                if newIndex >= 0 && newIndex < currentFlat.count {
+                    proxy.scrollTo(currentFlat[newIndex].id, anchor: nil)
                 }
             }
         }

@@ -43,11 +43,10 @@ final class AppScanner: @unchecked Sendable {
         }
     }
 
-    /// Free memory explicitly under pressure or when hidden
+    /// Free memory explicitly under pressure
     func reclaimMemory() {
-        // We do not drop the cachedApps here because they are tiny and needed for instant pop-up.
-        // We only tell the IconCache to flush large bitmaps.
-        AppIconCache.shared.clear()
+        // App metadata is kept in memory for zero-latency launch.
+        // Icon cache is managed by NSCache with bounded countLimit.
     }
 
     /// Search cached apps with fuzzy matching
@@ -186,6 +185,11 @@ final class AppScanner: @unchecked Sendable {
         cachedAppsByCategory = appsByCategory
         lastScanTime = Date()
         lock.unlock()
+
+        // Prewarm icons for the most common applications in the background
+        let topPaths = Array(apps.prefix(40).map { $0.path })
+        AppIconCache.shared.prewarmIcons(for: topPaths, size: 52)
+        AppIconCache.shared.prewarmIcons(for: topPaths, size: 32)
     }
 
     private func categorize(name: String, bundleID: String, lsCategory: String?) -> AppCategory {

@@ -284,7 +284,7 @@ final class SettingsProvider: Sendable {
             guard let score = highestScore else { continue }
 
             let result = SearchResult(
-                id: "settings-\(item.lowercaseName.replacingOccurrences(of: " ", with: "-"))",
+                id: item.id,
                 title: item.name,
                 subtitle: item.subtitle,
                 iconType: .systemSymbol(name: item.sfSymbol),

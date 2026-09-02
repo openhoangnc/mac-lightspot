@@ -133,6 +133,7 @@ struct AppInfo: Sendable, Identifiable, Hashable {
 // MARK: - Settings Item
 
 struct SettingsItem: Sendable {
+    let id: String
     let name: String
     let lowercaseName: String
     let lowercaseKeywords: [String]
@@ -141,8 +142,10 @@ struct SettingsItem: Sendable {
     let subtitle: String
     
     init(name: String, keywords: [String], sfSymbol: String, deepLink: String, subtitle: String) {
+        let lower = name.lowercased()
+        self.id = "settings-\(lower.replacingOccurrences(of: " ", with: "-"))"
         self.name = name
-        self.lowercaseName = name.lowercased()
+        self.lowercaseName = lower
         self.lowercaseKeywords = keywords.map { $0.lowercased() }
         self.sfSymbol = sfSymbol
         self.deepLink = deepLink
@@ -153,6 +156,7 @@ struct SettingsItem: Sendable {
 // MARK: - Quick Action
 
 struct QuickAction: Sendable {
+    let id: String
     let name: String
     let lowercaseName: String
     let lowercaseKeywords: [String]
@@ -162,8 +166,10 @@ struct QuickAction: Sendable {
     let usesOsascript: Bool
     
     init(name: String, keywords: [String], sfSymbol: String, subtitle: String, script: String, usesOsascript: Bool) {
+        let lower = name.lowercased()
+        self.id = "action-\(lower.replacingOccurrences(of: " ", with: "-"))"
         self.name = name
-        self.lowercaseName = name.lowercased()
+        self.lowercaseName = lower
         self.lowercaseKeywords = keywords.map { $0.lowercased() }
         self.sfSymbol = sfSymbol
         self.subtitle = subtitle
@@ -214,8 +220,8 @@ enum FuzzyMatcher {
             return 80
         }
         
-        // Contains match
-        if targetLower.localizedStandardContains(q) {
+        // Fast direct substring contains match (avoids expensive locale collation)
+        if targetLower.contains(q) {
             return 65
         }
         

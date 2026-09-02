@@ -51,7 +51,7 @@ struct SpotlightView: View {
                 .frame(height: 32)
 
                 // Inline "― Open" badge when searching and top hit exists
-                if viewModel.viewMode == .searchResults, (viewModel.selectedApp ?? viewModel.displayedApps.first) != nil {
+                if viewModel.viewMode == .searchResults, viewModel.hasTopHitOrApp {
                     HStack(spacing: 3) {
                         Text("―")
                             .font(.system(size: 12))
@@ -74,8 +74,8 @@ struct SpotlightView: View {
             // Trailing Controls
             HStack(spacing: 8) {
                 // Top Hit App Icon preview
-                if viewModel.viewMode == .searchResults, let topApp = viewModel.selectedApp ?? viewModel.displayedApps.first {
-                    LazyAppIconView(path: topApp.path, size: 24)
+                if viewModel.viewMode == .searchResults, let topAppPath = viewModel.topHitAppPath {
+                    LazyAppIconView(path: topAppPath, size: 24)
                         .clipShape(RoundedRectangle(cornerRadius: 5.5, style: .continuous))
                         .shadow(color: .black.opacity(0.35), radius: 3, x: 0, y: 1)
                 }

@@ -7,6 +7,17 @@ struct LazyAppIconView: View {
 
     @State private var icon: NSImage?
 
+    init(path: String, size: CGFloat) {
+        self.path = path
+        self.size = size
+        // Instant synchronous fast path if already present in memory cache
+        if let cached = AppIconCache.shared.cachedIcon(forPath: path, size: Int(size)) {
+            _icon = State(initialValue: cached)
+        } else {
+            _icon = State(initialValue: nil)
+        }
+    }
+
     var body: some View {
         Group {
             if let icon = icon {
@@ -14,7 +25,8 @@ struct LazyAppIconView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
             } else {
-                Color.clear
+                RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
             }
         }
         .frame(width: size, height: size)
@@ -27,8 +39,13 @@ struct LazyAppIconView: View {
     }
 
     private func loadIcon() {
-        // Run on main thread, since NSCache is fast and NSWorkspace caching is also fast
-        let img = AppIconCache.shared.icon(forPath: path, size: Int(size))
-        self.icon = img
+        if let cached = AppIconCache.shared.cachedIcon(forPath: path, size: Int(size)) {
+            self.icon = cached
+            return
+        }
+
+        AppIconCache.shared.loadIconAsync(forPath: path, size: Int(size)) { loaded in
+            self.icon = loaded
+        }
     }
 }

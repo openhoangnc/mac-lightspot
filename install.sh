@@ -33,10 +33,24 @@ if [ ! -d "$BUILD_APP" ]; then
     exit 1
 fi
 
-# 2. Stop running instance
+# 2. Stop running instance robustly before copying
 echo "🛑 Stopping existing Lightspot process..."
-killall Lightspot 2>/dev/null || true
-sleep 0.5
+if pgrep -x Lightspot >/dev/null 2>&1; then
+    killall Lightspot 2>/dev/null || pkill -x Lightspot 2>/dev/null || true
+    # Wait up to 3 seconds for graceful shutdown
+    for _ in {1..30}; do
+        if ! pgrep -x Lightspot >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.1
+    done
+    # Force kill if still lingering
+    if pgrep -x Lightspot >/dev/null 2>&1; then
+        echo "⚠️ Forcing termination of lingering Lightspot process..."
+        killall -9 Lightspot 2>/dev/null || pkill -9 -x Lightspot 2>/dev/null || true
+        sleep 0.2
+    fi
+fi
 
 # 3. Create destination directory
 mkdir -p "$TARGET_DIR"

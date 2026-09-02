@@ -127,7 +127,7 @@ final class QuickActionsProvider: Sendable {
 
             if let score = highestScore {
                 let result = SearchResult(
-                    id: "action-\(action.lowercaseName.replacingOccurrences(of: " ", with: "-"))",
+                    id: action.id,
                     title: action.name,
                     subtitle: action.subtitle,
                     iconType: .systemSymbol(name: action.sfSymbol),

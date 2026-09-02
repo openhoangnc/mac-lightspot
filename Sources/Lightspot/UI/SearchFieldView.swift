@@ -39,14 +39,17 @@ struct SearchFieldView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSTextField, context: Context) {
-        let placeholderAttr = NSAttributedString(
-            string: placeholder,
-            attributes: [
-                .foregroundColor: NSColor.white.withAlphaComponent(0.45),
-                .font: NSFont.systemFont(ofSize: 19, weight: .regular)
-            ]
-        )
-        nsView.placeholderAttributedString = placeholderAttr
+        if context.coordinator.lastPlaceholder != placeholder {
+            context.coordinator.lastPlaceholder = placeholder
+            let placeholderAttr = NSAttributedString(
+                string: placeholder,
+                attributes: [
+                    .foregroundColor: NSColor.white.withAlphaComponent(0.45),
+                    .font: NSFont.systemFont(ofSize: 19, weight: .regular)
+                ]
+            )
+            nsView.placeholderAttributedString = placeholderAttr
+        }
 
         if let editor = nsView.currentEditor() {
             if text.isEmpty && !editor.string.isEmpty {
@@ -67,6 +70,7 @@ struct SearchFieldView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         @Binding var text: String
         var onTextChange: (String) -> Void
+        var lastPlaceholder: String?
 
         init(text: Binding<String>, onTextChange: @escaping (String) -> Void) {
             _text = text
