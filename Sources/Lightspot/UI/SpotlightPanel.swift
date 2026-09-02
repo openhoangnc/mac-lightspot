@@ -155,8 +155,10 @@ final class SpotlightPanel: NSPanel {
         setFrameOrigin(NSPoint(x: x, y: y))
     }
 
-    /// Update panel height with animation
+    /// Update panel height with animation only when height actually changes
     func updateHeight(_ newHeight: CGFloat) {
+        guard abs(frame.height - newHeight) >= 1 else { return }
+
         let currentFrame = frame
         let newFrame = NSRect(
             x: currentFrame.origin.x,
@@ -166,8 +168,8 @@ final class SpotlightPanel: NSPanel {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.timingFunction = CAMediaTimingFunction(name: .default)
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(newFrame, display: true)
         }
     }

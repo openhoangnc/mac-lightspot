@@ -26,22 +26,20 @@ final class SearchViewModel: ObservableObject {
     }
 
     func performSearch(_ text: String) {
-        if text.isEmpty {
+        self.query = text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
             groupedResults = [:]
             selectedIndex = 0
             onHeightChange?(60)
             return
         }
 
-        SearchEngine.shared.search(text) { [weak self] results in
-            MainActor.assumeIsolated {
-                guard let self = self else { return }
-                self.groupedResults = results
-                self.selectedIndex = 0
-                let targetHeight: CGFloat = self.hasResults ? 460 : 60
-                self.onHeightChange?(targetHeight)
-            }
-        }
+        let results = SearchEngine.shared.searchImmediate(text)
+        self.groupedResults = results
+        self.selectedIndex = 0
+        let targetHeight: CGFloat = !results.isEmpty ? 460 : 60
+        self.onHeightChange?(targetHeight)
     }
 
     func moveSelectionUp() {

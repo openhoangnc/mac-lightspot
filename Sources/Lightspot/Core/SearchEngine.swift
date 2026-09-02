@@ -10,20 +10,10 @@ final class SearchEngine: @unchecked Sendable {
 
     private init() {}
 
-    /// Debounced search: calls completion on main thread with grouped results
+    /// Fast in-memory search: executes immediately on caller thread
     func search(_ query: String, completion: @escaping @Sendable ([ResultCategory: [SearchResult]]) -> Void) {
-        currentWorkItem?.cancel()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            let results = self.performSearch(query)
-            DispatchQueue.main.async {
-                completion(results)
-            }
-        }
-
-        currentWorkItem = workItem
-        searchQueue.asyncAfter(deadline: .now() + debounceInterval, execute: workItem)
+        let results = self.performSearch(query)
+        completion(results)
     }
 
     /// Immediate search (no debounce)

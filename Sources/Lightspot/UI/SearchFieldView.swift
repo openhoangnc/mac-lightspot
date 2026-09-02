@@ -9,7 +9,7 @@ struct SearchFieldView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
-        field.placeholderString = "Lightspot Search"
+        field.placeholderString = "Spotlight Search"
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
