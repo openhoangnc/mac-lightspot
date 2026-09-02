@@ -31,14 +31,14 @@ final class SearchViewModel: ObservableObject {
         if trimmed.isEmpty {
             groupedResults = [:]
             selectedIndex = 0
-            onHeightChange?(60)
+            onHeightChange?(56)
             return
         }
 
         let results = SearchEngine.shared.searchImmediate(text)
         self.groupedResults = results
         self.selectedIndex = 0
-        let targetHeight: CGFloat = !results.isEmpty ? 460 : 60
+        let targetHeight: CGFloat = !results.isEmpty ? 437 : 56
         self.onHeightChange?(targetHeight)
     }
 
@@ -82,7 +82,7 @@ final class SearchViewModel: ObservableObject {
         query = ""
         groupedResults = [:]
         selectedIndex = 0
-        onHeightChange?(60)
+        onHeightChange?(56)
     }
 
     func reset() {

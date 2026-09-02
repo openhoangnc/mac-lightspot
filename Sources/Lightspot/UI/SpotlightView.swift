@@ -6,7 +6,7 @@ struct SpotlightView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Search bar
+            // Search bar - fixed height and pinned to top
             searchBar
 
             // Results + Preview (only when there are results)
@@ -35,8 +35,10 @@ struct SpotlightView: View {
                 }
                 .frame(height: 380)
             }
+
+            Spacer(minLength: 0)
         }
-        .frame(width: 680)
+        .frame(width: 680, alignment: .top)
     }
 
     private var searchBar: some View {
@@ -44,11 +46,12 @@ struct SpotlightView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 20, weight: .light))
                 .foregroundColor(.secondary)
+                .frame(width: 24, height: 24)
 
             SearchFieldView(text: $viewModel.query) { newText in
                 viewModel.performSearch(newText)
             }
-            .frame(height: 30)
+            .frame(height: 32)
 
             if !viewModel.query.isEmpty {
                 Button(action: { viewModel.clearSearch() }) {
@@ -60,6 +63,6 @@ struct SpotlightView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .frame(height: 56)
     }
 }

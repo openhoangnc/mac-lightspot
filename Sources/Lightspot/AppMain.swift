@@ -106,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             x: panel.frame.origin.x,
             y: panel.frame.origin.y,
             width: 680,
-            height: 60
+            height: 56
         ), display: false)
 
         panel.showPanel()

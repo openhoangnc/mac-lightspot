@@ -44,7 +44,7 @@ final class SpotlightPanel: NSPanel {
 
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 60),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 56),
             styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -79,6 +79,9 @@ final class SpotlightPanel: NSPanel {
         if fieldEditor == nil && createFlag {
             fieldEditor = SpotlightFieldEditor()
             fieldEditor?.isFieldEditor = true
+            fieldEditor?.drawsBackground = false
+            fieldEditor?.font = .systemFont(ofSize: 24, weight: .light)
+            fieldEditor?.textColor = .labelColor
             fieldEditor?.onMoveUp = { [weak self] in self?.onMoveUp?() }
             fieldEditor?.onMoveDown = { [weak self] in self?.onMoveDown?() }
             fieldEditor?.onSubmit = { [weak self] in self?.onSubmit?() }
