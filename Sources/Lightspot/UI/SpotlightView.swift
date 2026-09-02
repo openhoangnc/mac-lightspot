@@ -199,8 +199,16 @@ struct SpotlightView: View {
         .frame(height: 54)
         .background(
             ZStack {
-                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                Capsule()
+                    .fill(Color.black.opacity(0.65))
+                    .shadow(color: .black.opacity(0.50), radius: 24, x: 0, y: 12)
+
+                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, cornerRadius: 27)
+                    .clipShape(Capsule())
+
                 Color.black.opacity(0.65)
+                    .clipShape(Capsule())
+
                 LinearGradient(
                     colors: [
                         Color.white.opacity(0.08),
@@ -210,8 +218,8 @@ struct SpotlightView: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
+                .clipShape(Capsule())
             }
-            .clipShape(Capsule())
             .overlay(
                 Capsule()
                     .strokeBorder(
@@ -227,7 +235,6 @@ struct SpotlightView: View {
                         lineWidth: 0.85
                     )
             )
-            .shadow(color: .black.opacity(0.50), radius: 24, x: 0, y: 12)
         )
     }
 
@@ -311,8 +318,16 @@ struct SpotlightView: View {
         .frame(height: 450)
         .background(
             ZStack {
-                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(Color.black.opacity(0.62))
+                    .shadow(color: .black.opacity(0.50), radius: 32, x: 0, y: 16)
+
+                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow, cornerRadius: 26)
+                    .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+
                 Color.black.opacity(0.62)
+                    .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+
                 LinearGradient(
                     colors: [
                         Color.white.opacity(0.06),
@@ -322,8 +337,8 @@ struct SpotlightView: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
+                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
             }
-            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .strokeBorder(
@@ -339,7 +354,6 @@ struct SpotlightView: View {
                         lineWidth: 0.85
                     )
             )
-            .shadow(color: .black.opacity(0.50), radius: 32, x: 0, y: 16)
         )
     }
 }
