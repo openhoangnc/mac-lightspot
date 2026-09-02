@@ -69,7 +69,9 @@ final class SearchEngine: @unchecked Sendable {
         let topHitCandidates = allResults.filter {
             $0.category != .webSearch && $0.category != .calculator
         }
+        var topHitOriginalID: String? = nil
         if let topHit = topHitCandidates.max(by: { $0.score < $1.score }), topHit.score >= 60 {
+            topHitOriginalID = topHit.id
             let promoted = SearchResult(
                 id: "top-\(topHit.id)",
                 title: topHit.title,
@@ -82,10 +84,10 @@ final class SearchEngine: @unchecked Sendable {
             grouped[.topHit] = [promoted]
         }
 
-        // Group remaining by their original category
+        // Group remaining by their original category (excluding the item already promoted to Top Hit)
         for category in ResultCategory.allCases where category != .topHit {
             let categoryResults = allResults
-                .filter { $0.category == category }
+                .filter { $0.category == category && $0.id != topHitOriginalID }
                 .sorted { $0.score > $1.score }
                 .prefix(maxResultsPerCategory)
 

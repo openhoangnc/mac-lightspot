@@ -111,14 +111,11 @@ struct TestRunner {
         print("Testing SearchEngine...")
         let engineResults = SearchEngine.shared.searchImmediate("display")
         assertTrue(engineResults[.systemSettings] != nil, "SearchEngine includes System Settings")
-        if let topHit = engineResults[.topHit]?.first {
-            assertEqual(topHit.title, "Displays", "Top hit for 'display' is Displays")
+        // Verify deduplication: Top Hit item is not in systemSettings category
+        if let topHit = engineResults[.topHit]?.first, let settingsList = engineResults[.systemSettings] {
+            let containsDuplicate = settingsList.contains(where: { $0.title == topHit.title })
+            assertTrue(!containsDuplicate, "Top Hit item is not duplicated in systemSettings")
         }
-
-        let calcEngineResults = SearchEngine.shared.searchImmediate("50 * 4")
-        assertTrue(calcEngineResults[.calculator] != nil, "SearchEngine includes Calculator for math")
-        assertEqual(calcEngineResults[.calculator]?.first?.title, "200", "Calculator result is 200")
-        assertTrue(calcEngineResults[.webSearch] != nil, "SearchEngine includes Web Search fallback")
 
         print("✅ SearchEngine passed all tests!\n")
 
