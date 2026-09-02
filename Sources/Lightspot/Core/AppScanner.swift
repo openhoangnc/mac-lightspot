@@ -5,6 +5,7 @@ final class AppScanner: @unchecked Sendable {
 
     private let lock = NSLock()
     private var cachedApps: [AppInfo] = []
+    private var cachedAppsByCategory: [AppCategory: [AppInfo]] = [:]
     private var lastScanTime: Date = .distantPast
     private let staleDuration: TimeInterval = 60
 
@@ -42,10 +43,16 @@ final class AppScanner: @unchecked Sendable {
         }
     }
 
+    /// Free memory explicitly under pressure or when hidden
+    func reclaimMemory() {
+        // We do not drop the cachedApps here because they are tiny and needed for instant pop-up.
+        // We only tell the IconCache to flush large bitmaps.
+        AppIconCache.shared.clear()
+    }
+
     /// Search cached apps with fuzzy matching
-    func search(_ query: String) -> [SearchResult] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
+    func search(_ query: SearchQuery) -> [SearchResult] {
+        if query.isEmpty { return [] }
 
         lock.lock()
         let apps = cachedApps
@@ -54,17 +61,15 @@ final class AppScanner: @unchecked Sendable {
         var results: [SearchResult] = []
 
         for app in apps {
-            if let score = FuzzyMatcher.score(query: trimmed, target: app.name) {
+            if let score = FuzzyMatcher.score(query: query, targetLower: app.lowercaseName, targetTokens: app.searchTokens, targetInitials: app.initials) {
                 let result = SearchResult(
                     id: "app-\(app.bundleIdentifier)",
                     title: app.name,
                     subtitle: "Application",
-                    icon: app.icon32,
+                    iconType: .app(path: app.path),
                     category: .applications,
                     score: score,
-                    action: { [path = app.path] in
-                        AppScanner.launchApp(at: path)
-                    }
+                    action: .launchApp(path: app.path)
                 )
                 results.append(result)
             }
@@ -74,17 +79,16 @@ final class AppScanner: @unchecked Sendable {
     }
 
     /// Search cached apps returning AppInfo items
-    func searchApps(_ query: String) -> [AppInfo] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    func searchApps(_ query: SearchQuery) -> [AppInfo] {
         lock.lock()
         let apps = cachedApps
         lock.unlock()
 
-        guard !trimmed.isEmpty else { return apps }
+        if query.isEmpty { return apps }
 
         var scored: [(app: AppInfo, score: Double)] = []
         for app in apps {
-            if let score = FuzzyMatcher.score(query: trimmed, target: app.name) {
+            if let score = FuzzyMatcher.score(query: query, targetLower: app.lowercaseName, targetTokens: app.searchTokens, targetInitials: app.initials) {
                 scored.append((app, score))
             }
         }
@@ -98,21 +102,14 @@ final class AppScanner: @unchecked Sendable {
         return cachedApps
     }
 
-    /// Get apps for a specific category
+    /// Get apps for a specific category (pre-indexed, instant O(1) return)
     func apps(for category: AppCategory) -> [AppInfo] {
         lock.lock()
         defer { lock.unlock() }
         if category == .all {
             return cachedApps
         }
-        return cachedApps.filter { $0.category == category }
-    }
-
-    /// Get the large icon for an app by its bundle identifier
-    func largeIcon(for bundleID: String) -> NSImage? {
-        lock.lock()
-        defer { lock.unlock() }
-        return cachedApps.first(where: { $0.bundleIdentifier == bundleID })?.icon128
+        return cachedAppsByCategory[category] ?? []
     }
 
     // MARK: - Private
@@ -168,25 +165,25 @@ final class AppScanner: @unchecked Sendable {
                 let lsCategory = bundle?.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String
                 let category = categorize(name: name, bundleID: bundleID, lsCategory: lsCategory)
 
-                let icon = NSWorkspace.shared.icon(forFile: fullPath)
-                let icon32 = resizedIcon(icon, to: 32)
-                let icon128 = resizedIcon(icon, to: 128)
-
                 apps.append(AppInfo(
                     name: name,
                     bundleIdentifier: bundleID,
                     path: fullPath,
-                    icon32: icon32,
-                    icon128: icon128,
                     category: category
                 ))
             }
         }
 
         apps.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        
+        var appsByCategory: [AppCategory: [AppInfo]] = [:]
+        for app in apps {
+            appsByCategory[app.category, default: []].append(app)
+        }
 
         lock.lock()
         cachedApps = apps
+        cachedAppsByCategory = appsByCategory
         lastScanTime = Date()
         lock.unlock()
     }
@@ -252,17 +249,6 @@ final class AppScanner: @unchecked Sendable {
         }
 
         return .other
-    }
-
-    private func resizedIcon(_ image: NSImage, to size: CGFloat) -> NSImage {
-        let newImage = NSImage(size: NSSize(width: size, height: size))
-        newImage.lockFocus()
-        image.draw(in: NSRect(x: 0, y: 0, width: size, height: size),
-                   from: NSRect(origin: .zero, size: image.size),
-                   operation: .sourceOver,
-                   fraction: 1.0)
-        newImage.unlockFocus()
-        return newImage
     }
 
     static func launchApp(at path: String) {

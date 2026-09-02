@@ -7,7 +7,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Lightspot",
-            path: "Sources/Lightspot"
+            path: "Sources/Lightspot",
+            swiftSettings: [
+                .unsafeFlags(["-Osize", "-wmo"], .when(configuration: .release))
+            ]
         )
     ]
 )

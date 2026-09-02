@@ -21,14 +21,13 @@ struct PreviewPaneView: View {
             Spacer()
 
             // Large icon
-            if let icon = previewIcon(for: result) {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 96, height: 96)
+            switch result.iconType {
+            case .app(let path):
+                LazyAppIconView(path: path, size: 96)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
-            } else {
-                Image(systemName: previewSystemIcon(for: result))
+            case .systemSymbol(let name):
+                Image(systemName: name)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 64, height: 64)
@@ -80,31 +79,6 @@ struct PreviewPaneView: View {
                 .font(.system(size: 13))
                 .foregroundColor(.secondary.opacity(0.5))
             Spacer()
-        }
-    }
-
-    private func previewIcon(for result: SearchResult) -> NSImage? {
-        switch result.category {
-        case .topHit, .applications:
-            // Try to get the large icon
-            let bundleID = result.id.replacingOccurrences(of: "app-", with: "")
-                                    .replacingOccurrences(of: "top-app-", with: "")
-            if let largeIcon = AppScanner.shared.largeIcon(for: bundleID) {
-                return largeIcon
-            }
-            return result.icon
-        default:
-            return nil
-        }
-    }
-
-    private func previewSystemIcon(for result: SearchResult) -> String {
-        switch result.category {
-        case .systemSettings: return "gear"
-        case .quickActions: return "bolt.circle.fill"
-        case .calculator: return "equal.circle.fill"
-        case .webSearch: return "globe"
-        default: return "magnifyingglass"
         }
     }
 

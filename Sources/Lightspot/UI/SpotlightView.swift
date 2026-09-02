@@ -75,10 +75,7 @@ struct SpotlightView: View {
             HStack(spacing: 8) {
                 // Top Hit App Icon preview
                 if viewModel.viewMode == .searchResults, let topApp = viewModel.selectedApp ?? viewModel.displayedApps.first {
-                    Image(nsImage: topApp.icon128)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 24, height: 24)
+                    LazyAppIconView(path: topApp.path, size: 24)
                         .clipShape(RoundedRectangle(cornerRadius: 5.5, style: .continuous))
                         .shadow(color: .black.opacity(0.35), radius: 3, x: 0, y: 1)
                 }
@@ -230,9 +227,7 @@ struct SpotlightView: View {
                         lineWidth: 0.85
                     )
             )
-            .shadow(color: .black.opacity(0.40), radius: 8, x: 0, y: 4)
-            .shadow(color: .black.opacity(0.65), radius: 24, x: 0, y: 12)
-            .shadow(color: .black.opacity(0.50), radius: 48, x: 0, y: 24)
+            .shadow(color: .black.opacity(0.50), radius: 24, x: 0, y: 12)
         )
     }
 
@@ -283,9 +278,9 @@ struct SpotlightView: View {
                             groupedResults: viewModel.groupedResults,
                             selectedIndex: viewModel.searchSelectedIndex,
                             onSelect: { result in
-                                viewModel.onHide?()
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                    result.action()
+                                if let idx = viewModel.flatSearchResults.firstIndex(of: result) {
+                                    viewModel.searchSelectedIndex = idx
+                                    viewModel.activateSelected()
                                 }
                             }
                         )
@@ -344,9 +339,7 @@ struct SpotlightView: View {
                         lineWidth: 0.85
                     )
             )
-            .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 5)
-            .shadow(color: .black.opacity(0.60), radius: 28, x: 0, y: 14)
-            .shadow(color: .black.opacity(0.50), radius: 56, x: 0, y: 28)
+            .shadow(color: .black.opacity(0.50), radius: 32, x: 0, y: 16)
         )
     }
 }

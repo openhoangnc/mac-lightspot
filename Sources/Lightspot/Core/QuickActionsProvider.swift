@@ -106,17 +106,16 @@ final class QuickActionsProvider: Sendable {
 
     // MARK: - Search
 
-    func search(_ query: String) -> [SearchResult] {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else { return [] }
+    func search(_ query: SearchQuery) -> [SearchResult] {
+        if query.isEmpty { return [] }
 
         var results: [SearchResult] = []
 
         for action in actions {
-            var highestScore: Double? = FuzzyMatcher.score(query: trimmedQuery, target: action.name)
+            var highestScore: Double? = FuzzyMatcher.score(query: query, targetLower: action.lowercaseName, targetTokens: [], targetInitials: nil)
 
-            for keyword in action.keywords {
-                if let kwScore = FuzzyMatcher.score(query: trimmedQuery, target: keyword) {
+            for keyword in action.lowercaseKeywords {
+                if let kwScore = FuzzyMatcher.score(query: query, targetLower: keyword, targetTokens: [], targetInitials: nil) {
                     let weightedScore = kwScore * 0.95
                     if let current = highestScore {
                         highestScore = max(current, weightedScore)
@@ -127,19 +126,14 @@ final class QuickActionsProvider: Sendable {
             }
 
             if let score = highestScore {
-                let script = action.script
-                let usesOsascript = action.usesOsascript
-                let icon = NSImage(systemSymbolName: action.sfSymbol, accessibilityDescription: action.name)
-
                 let result = SearchResult(
+                    id: "action-\(action.lowercaseName.replacingOccurrences(of: " ", with: "-"))",
                     title: action.name,
                     subtitle: action.subtitle,
-                    icon: icon,
+                    iconType: .systemSymbol(name: action.sfSymbol),
                     category: .quickActions,
                     score: score,
-                    action: { @Sendable in
-                        QuickActionsProvider.execute(script: script, usesOsascript: usesOsascript)
-                    }
+                    action: .runQuickAction(script: action.script, usesOsascript: action.usesOsascript)
                 )
                 results.append(result)
             }

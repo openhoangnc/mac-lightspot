@@ -256,23 +256,22 @@ final class SettingsProvider: Sendable {
     }
 
     /// Search settings items with fuzzy matching against name and keywords
-    func search(_ query: String) -> [SearchResult] {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return [] }
+    func search(_ query: SearchQuery) -> [SearchResult] {
+        if query.isEmpty { return [] }
 
         var results: [SearchResult] = []
 
         for item in items {
             var highestScore: Double?
 
-            // Match against item name
-            if let nameScore = FuzzyMatcher.score(query: trimmed, target: item.name) {
+            // Match against item name (zero allocation using SearchQuery)
+            if let nameScore = FuzzyMatcher.score(query: query, targetLower: item.lowercaseName, targetTokens: [], targetInitials: nil) {
                 highestScore = nameScore
             }
 
             // Match against keywords
-            for keyword in item.keywords {
-                if let kwScore = FuzzyMatcher.score(query: trimmed, target: keyword) {
+            for keyword in item.lowercaseKeywords {
+                if let kwScore = FuzzyMatcher.score(query: query, targetLower: keyword, targetTokens: [], targetInitials: nil) {
                     let adjustedScore = kwScore * 0.95
                     if let current = highestScore {
                         highestScore = max(current, adjustedScore)
@@ -284,20 +283,14 @@ final class SettingsProvider: Sendable {
 
             guard let score = highestScore else { continue }
 
-            let icon = NSImage(systemSymbolName: item.sfSymbol, accessibilityDescription: item.name)
-            let deepLink = item.deepLink
-
             let result = SearchResult(
-                id: "settings-\(item.name.lowercased().replacingOccurrences(of: " ", with: "-"))",
+                id: "settings-\(item.lowercaseName.replacingOccurrences(of: " ", with: "-"))",
                 title: item.name,
                 subtitle: item.subtitle,
-                icon: icon,
+                iconType: .systemSymbol(name: item.sfSymbol),
                 category: .systemSettings,
                 score: score,
-                action: { [deepLink] in
-                    guard let url = URL(string: deepLink) else { return }
-                    NSWorkspace.shared.open(url)
-                }
+                action: .openSettings(deepLink: item.deepLink)
             )
             results.append(result)
         }

@@ -22,44 +22,38 @@ enum ResultCategory: Int, CaseIterable, Sendable {
     }
 }
 
+// MARK: - Search Enums
+
+enum ResultIconType: Sendable, Hashable {
+    case app(path: String)
+    case systemSymbol(name: String)
+}
+
+enum SearchAction: Sendable {
+    case launchApp(path: String)
+    case openSettings(deepLink: String)
+    case runQuickAction(script: String, usesOsascript: Bool)
+    case copyToClipboard(String)
+    case openWebSearch(url: URL)
+}
+
 // MARK: - Search Result
 
-final class SearchResult: Identifiable, @unchecked Sendable {
+struct SearchResult: Identifiable, Sendable, Hashable {
     let id: String
     let title: String
     let subtitle: String
-    let icon: NSImage?
+    let iconType: ResultIconType
     let category: ResultCategory
     let score: Double
-    let action: @Sendable () -> Void
+    let action: SearchAction
 
-    init(
-        id: String = UUID().uuidString,
-        title: String,
-        subtitle: String = "",
-        icon: NSImage? = nil,
-        category: ResultCategory,
-        score: Double = 0,
-        action: @escaping @Sendable () -> Void
-    ) {
-        self.id = id
-        self.title = title
-        self.subtitle = subtitle
-        self.icon = icon
-        self.category = category
-        self.score = score
-        self.action = action
-    }
-}
-
-extension SearchResult: Hashable {
-    static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
-        lhs.id == rhs.id && lhs.title == rhs.title && lhs.subtitle == rhs.subtitle && lhs.score == rhs.score
-    }
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
-        hasher.combine(title)
-        hasher.combine(subtitle)
+    }
+
+    static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
+        lhs.id == rhs.id
     }
 }
 
@@ -109,77 +103,125 @@ enum AppCategory: String, CaseIterable, Identifiable, Sendable {
 
 // MARK: - App Info (cached application data)
 
-struct AppInfo: Sendable, Identifiable {
+struct AppInfo: Sendable, Identifiable, Hashable {
     var id: String { bundleIdentifier }
     let name: String
+    let lowercaseName: String
+    let searchTokens: [String]
+    let initials: String
     let bundleIdentifier: String
     let path: String
-    let icon32: NSImage
-    let icon128: NSImage
     let category: AppCategory
+    
+    init(name: String, bundleIdentifier: String, path: String, category: AppCategory) {
+        self.name = name
+        self.bundleIdentifier = bundleIdentifier
+        self.path = path
+        self.category = category
+        
+        let lower = name.lowercased()
+        self.lowercaseName = lower
+        self.searchTokens = lower.split(separator: " ").map(String.init)
+        self.initials = String(self.searchTokens.compactMap { $0.first })
+    }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(bundleIdentifier)
+    }
 }
 
 // MARK: - Settings Item
 
 struct SettingsItem: Sendable {
     let name: String
-    let keywords: [String]
+    let lowercaseName: String
+    let lowercaseKeywords: [String]
     let sfSymbol: String
     let deepLink: String
     let subtitle: String
+    
+    init(name: String, keywords: [String], sfSymbol: String, deepLink: String, subtitle: String) {
+        self.name = name
+        self.lowercaseName = name.lowercased()
+        self.lowercaseKeywords = keywords.map { $0.lowercased() }
+        self.sfSymbol = sfSymbol
+        self.deepLink = deepLink
+        self.subtitle = subtitle
+    }
 }
 
 // MARK: - Quick Action
 
 struct QuickAction: Sendable {
     let name: String
-    let keywords: [String]
+    let lowercaseName: String
+    let lowercaseKeywords: [String]
     let sfSymbol: String
     let subtitle: String
     let script: String
-    let usesOsascript: Bool // true = osascript, false = direct command
+    let usesOsascript: Bool
+    
+    init(name: String, keywords: [String], sfSymbol: String, subtitle: String, script: String, usesOsascript: Bool) {
+        self.name = name
+        self.lowercaseName = name.lowercased()
+        self.lowercaseKeywords = keywords.map { $0.lowercased() }
+        self.sfSymbol = sfSymbol
+        self.subtitle = subtitle
+        self.script = script
+        self.usesOsascript = usesOsascript
+    }
+}
+
+// MARK: - Search Query State
+
+struct SearchQuery: Sendable {
+    let raw: String
+    let trimmed: String
+    let lowercased: String
+    
+    init(_ query: String) {
+        self.raw = query
+        self.trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.lowercased = self.trimmed.lowercased()
+    }
+    
+    var isEmpty: Bool { trimmed.isEmpty }
 }
 
 // MARK: - Fuzzy Match Scoring
 
 enum FuzzyMatcher {
-    /// Returns a score 0-100, or nil if no match at all
-    static func score(query: String, target: String) -> Double? {
-        let q = query.lowercased()
-        let t = target.lowercased()
-
+    /// Zero-allocation scoring against pre-computed target tokens
+    static func score(query: SearchQuery, targetLower: String, targetTokens: [String], targetInitials: String? = nil) -> Double? {
+        let q = query.lowercased
         if q.isEmpty { return nil }
-
+        
         // Exact match
-        if t == q { return 100 }
-
+        if targetLower == q { return 100 }
+        
         // Prefix match
-        if t.hasPrefix(q) { return 95 }
-
+        if targetLower.hasPrefix(q) { return 95 }
+        
         // Word-boundary prefix match (e.g. "act" matches "Activity Monitor")
-        let words = t.split(separator: " ").map(String.init)
-        for word in words {
-            if word.lowercased().hasPrefix(q) {
+        for word in targetTokens {
+            if word.hasPrefix(q) {
                 return 85
             }
         }
-
-        // Initials match (e.g. "am" matches "Activity Monitor")
-        if words.count >= 2 {
-            let initials = String(words.compactMap { $0.first }).lowercased()
-            if initials.hasPrefix(q) {
-                return 80
-            }
+        
+        // Initials match
+        if let initials = targetInitials, initials.hasPrefix(q) {
+            return 80
         }
-
+        
         // Contains match
-        if t.localizedStandardContains(q) {
+        if targetLower.localizedStandardContains(q) {
             return 65
         }
-
+        
         // Fuzzy subsequence match
         var qIdx = q.startIndex
-        for char in t {
+        for char in targetLower {
             if qIdx < q.endIndex && char == q[qIdx] {
                 qIdx = q.index(after: qIdx)
             }
@@ -187,7 +229,7 @@ enum FuzzyMatcher {
         if qIdx == q.endIndex {
             return 40
         }
-
+        
         return nil
     }
 }

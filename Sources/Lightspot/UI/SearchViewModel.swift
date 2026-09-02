@@ -34,7 +34,7 @@ final class SearchViewModel: ObservableObject {
     // MARK: - Computed Properties
 
     var recentApps: [AppInfo] {
-        RecentAppsManager.shared.getRecentApps(from: AppScanner.shared.allApps(), limit: 7)
+        RecentAppsManager.shared.getRecentApps(limit: 7)
     }
 
     var categorySections: [(category: AppCategory, apps: [AppInfo])] {
@@ -65,7 +65,7 @@ final class SearchViewModel: ObservableObject {
                 return AppScanner.shared.apps(for: selectedCategory)
             }
         } else {
-            return AppScanner.shared.searchApps(query)
+            return AppScanner.shared.searchApps(SearchQuery(query))
         }
     }
 
@@ -104,9 +104,9 @@ final class SearchViewModel: ObservableObject {
 
     func performSearch(_ text: String) {
         self.query = text
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = SearchQuery(text)
 
-        if trimmed.isEmpty {
+        if q.isEmpty {
             self.groupedResults = [:]
             self.calculatorResult = nil
             self.gridSelectedIndex = 0
@@ -115,10 +115,10 @@ final class SearchViewModel: ObservableObject {
         }
 
         // Check for instant calculator result
-        self.calculatorResult = CalculatorEngine.evaluate(trimmed)
+        self.calculatorResult = CalculatorEngine.evaluate(q.trimmed)
 
         // Perform search across all providers
-        let results = SearchEngine.shared.searchImmediate(text)
+        let results = SearchEngine.shared.searchImmediate(q)
         self.groupedResults = results
         self.searchSelectedIndex = 0
         self.gridSelectedIndex = 0
@@ -142,7 +142,6 @@ final class SearchViewModel: ObservableObject {
                 gridSelectedIndex -= 1
             }
         } else {
-            // In search mode, move category or up in list
             moveUp()
         }
     }
@@ -154,7 +153,6 @@ final class SearchViewModel: ObservableObject {
                 gridSelectedIndex += 1
             }
         } else {
-            // In search mode, move down in list
             moveDown()
         }
     }
@@ -215,14 +213,10 @@ final class SearchViewModel: ObservableObject {
     func activateSelected() {
         if viewMode == .applications {
             guard let app = selectedApp else { return }
-            onHide?()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                AppScanner.launchApp(at: app.path)
-            }
+            launchApp(app)
         } else {
             // Search result mode
             if let calc = calculatorResult, searchSelectedIndex == 0 && (selectedSearchResult?.category == .calculator || flatSearchResults.isEmpty) {
-                // Copy calculator result
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(calc, forType: .string)
                 onHide?()
@@ -230,18 +224,29 @@ final class SearchViewModel: ObservableObject {
             }
 
             guard let result = selectedSearchResult else {
-                // If there's a matching app in displayedApps, launch first
                 if let firstApp = displayedApps.first {
-                    onHide?()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        AppScanner.launchApp(at: firstApp.path)
-                    }
+                    launchApp(firstApp)
                 }
                 return
             }
+            
             onHide?()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                result.action()
+                switch result.action {
+                case .launchApp(let path):
+                    AppScanner.launchApp(at: path)
+                case .openSettings(let deepLink):
+                    if let url = URL(string: deepLink) {
+                        NSWorkspace.shared.open(url)
+                    }
+                case .runQuickAction(let script, let usesOsascript):
+                    QuickActionsProvider.execute(script: script, usesOsascript: usesOsascript)
+                case .copyToClipboard(let text):
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                case .openWebSearch(let url):
+                    NSWorkspace.shared.open(url)
+                }
             }
         }
     }
@@ -271,49 +276,40 @@ final class SearchViewModel: ObservableObject {
     }
 
     func reset() {
-        query = ""
-        groupedResults = [:]
-        calculatorResult = nil
-        gridSelectedIndex = 0
-        searchSelectedIndex = 0
+        clearSearch()
         isPanelExpanded = true
+    }
+
+    /// Clear all transient arrays to free memory when hidden
+    func reclaimMemory() {
+        groupedResults.removeAll(keepingCapacity: false)
+        query = ""
+        calculatorResult = nil
     }
 
     // MARK: - Menu Actions
 
-    var currentHotkeyOption: HotkeyOption {
-        hotkeyManager?.currentOption ?? .commandSpace
-    }
-
+    var currentHotkeyOption: HotkeyOption { hotkeyManager?.currentOption ?? .commandSpace }
     func setHotkeyOption(_ option: HotkeyOption) {
         hotkeyManager?.currentOption = option
         menuBarController?.rebuildMenu()
         objectWillChange.send()
     }
-
-    var isMenuBarIconHidden: Bool {
-        menuBarController?.isMenuBarIconHidden ?? false
-    }
-
+    
+    var isMenuBarIconHidden: Bool { menuBarController?.isMenuBarIconHidden ?? false }
     func toggleMenuBarIcon() {
         menuBarController?.toggleHideMenuBarIconAction()
         objectWillChange.send()
     }
-
-    var isAutoStartEnabled: Bool {
-        AutoStartManager.isEnabled
-    }
-
+    
+    var isAutoStartEnabled: Bool { AutoStartManager.isEnabled }
     func toggleAutoStart() {
         _ = AutoStartManager.toggle()
         menuBarController?.rebuildMenu()
         objectWillChange.send()
     }
 
-    var isSpotlightShortcutEnabled: Bool {
-        SpotlightManager.isShortcutEnabled()
-    }
-
+    var isSpotlightShortcutEnabled: Bool { SpotlightManager.isShortcutEnabled() }
     func toggleSpotlightShortcut() {
         let current = SpotlightManager.isShortcutEnabled()
         SpotlightManager.setShortcut(enabled: !current)
@@ -321,10 +317,7 @@ final class SearchViewModel: ObservableObject {
         objectWillChange.send()
     }
 
-    var isSpotlightServiceDisabled: Bool {
-        SpotlightManager.isServiceDisabled()
-    }
-
+    var isSpotlightServiceDisabled: Bool { SpotlightManager.isServiceDisabled() }
     func toggleSpotlightService() {
         let current = SpotlightManager.isServiceDisabled()
         SpotlightManager.setService(enabled: current)
@@ -332,10 +325,7 @@ final class SearchViewModel: ObservableObject {
         objectWillChange.send()
     }
 
-    var isSpotlightIndexingEnabled: Bool {
-        SpotlightManager.isIndexingEnabled()
-    }
-
+    var isSpotlightIndexingEnabled: Bool { SpotlightManager.isIndexingEnabled() }
     func toggleSpotlightIndexing() {
         let current = SpotlightManager.isIndexingEnabled()
         SpotlightManager.setIndexing(enabled: !current) { [weak self] _ in

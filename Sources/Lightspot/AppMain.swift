@@ -145,6 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func hidePanel() {
         panel.hidePanel()
+        
+        // Reclaim memory actively when hiding
+        viewModel.reclaimMemory()
+        AppScanner.shared.reclaimMemory()
+        RecentAppsManager.shared.reclaimMemory()
+        malloc_zone_pressure_relief(nil, 0)
     }
 
     private func findTextField(in view: NSView?) -> NSTextField? {

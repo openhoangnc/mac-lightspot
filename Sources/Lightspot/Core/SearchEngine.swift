@@ -11,59 +11,51 @@ final class SearchEngine: @unchecked Sendable {
     private init() {}
 
     /// Fast in-memory search: executes immediately on caller thread
-    func search(_ query: String, completion: @escaping @Sendable ([ResultCategory: [SearchResult]]) -> Void) {
+    func search(_ query: SearchQuery, completion: @escaping @Sendable ([ResultCategory: [SearchResult]]) -> Void) {
         let results = self.performSearch(query)
         completion(results)
     }
 
     /// Immediate search (no debounce)
-    func searchImmediate(_ query: String) -> [ResultCategory: [SearchResult]] {
+    func searchImmediate(_ query: SearchQuery) -> [ResultCategory: [SearchResult]] {
         performSearch(query)
     }
 
-    private func performSearch(_ query: String) -> [ResultCategory: [SearchResult]] {
-        let trimmed = query.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return [:] }
+    private func performSearch(_ query: SearchQuery) -> [ResultCategory: [SearchResult]] {
+        if query.isEmpty { return [:] }
 
         // Collect results from all providers
         var allResults: [SearchResult] = []
+        allResults.reserveCapacity(32) // Prevent reallocation
 
         // Applications
-        let apps = AppScanner.shared.search(trimmed)
-        allResults.append(contentsOf: apps)
+        allResults.append(contentsOf: AppScanner.shared.search(query))
 
         // System Settings
-        let settings = SettingsProvider.shared.search(trimmed)
-        allResults.append(contentsOf: settings)
+        allResults.append(contentsOf: SettingsProvider.shared.search(query))
 
         // Quick Actions
-        let actions = QuickActionsProvider.shared.search(trimmed)
-        allResults.append(contentsOf: actions)
+        allResults.append(contentsOf: QuickActionsProvider.shared.search(query))
 
         // Calculator
-        if let calcResult = CalculatorEngine.evaluate(trimmed) {
-            let icon = NSImage(systemSymbolName: "equal.circle.fill", accessibilityDescription: "Calculator")
+        if let calcResult = CalculatorEngine.evaluate(query.trimmed) {
             allResults.append(SearchResult(
-                id: "calc-\(trimmed)",
+                id: "calc-\(query.trimmed)",
                 title: calcResult,
-                subtitle: trimmed,
-                icon: icon,
+                subtitle: query.trimmed,
+                iconType: .systemSymbol(name: "equal.circle.fill"),
                 category: .calculator,
                 score: 90,
-                action: { [calcResult] in
-                    // Copy result to clipboard
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(calcResult, forType: .string)
-                }
+                action: .copyToClipboard(calcResult)
             ))
         }
 
         // Web Search (always last)
-        let webResults = WebSearchProvider.shared.search(trimmed)
-        allResults.append(contentsOf: webResults)
+        allResults.append(contentsOf: WebSearchProvider.shared.search(query))
 
         // Group by category, limit per category
         var grouped: [ResultCategory: [SearchResult]] = [:]
+        grouped.reserveCapacity(ResultCategory.allCases.count)
 
         // Find the top hit (highest score across all non-web/non-calc categories)
         let topHitCandidates = allResults.filter {
@@ -76,7 +68,7 @@ final class SearchEngine: @unchecked Sendable {
                 id: "top-\(topHit.id)",
                 title: topHit.title,
                 subtitle: topHit.subtitle,
-                icon: topHit.icon,
+                iconType: topHit.iconType,
                 category: .topHit,
                 score: topHit.score,
                 action: topHit.action

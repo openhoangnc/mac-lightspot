@@ -117,10 +117,7 @@ struct AppGridItemView: View {
             VStack(spacing: 8) {
                 // Squircle App Icon
                 ZStack {
-                    Image(nsImage: app.icon128)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 52, height: 52)
+                    LazyAppIconView(path: app.path, size: 52)
                         .clipShape(RoundedRectangle(cornerRadius: 11.5, style: .continuous))
                         .shadow(color: .black.opacity(0.35), radius: 5, x: 0, y: 3)
                         .scaleEffect(isHovered || isSelected ? 1.06 : 1.0)

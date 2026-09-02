@@ -8,16 +8,18 @@ struct ResultRowView: View {
     var body: some View {
         HStack(spacing: 10) {
             // Icon
-            if let icon = result.icon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 28, height: 28)
-            } else {
-                Image(systemName: "questionmark.circle")
-                    .resizable()
-                    .frame(width: 28, height: 28)
-                    .foregroundColor(.secondary)
+            Group {
+                switch result.iconType {
+                case .app(let path):
+                    LazyAppIconView(path: path, size: 28)
+                case .systemSymbol(let name):
+                    Image(systemName: name)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 22, height: 22)
+                        .foregroundColor(isSelected ? .white : .primary)
+                        .frame(width: 28, height: 28) // Fixed container size
+                }
             }
 
             // Title + Subtitle

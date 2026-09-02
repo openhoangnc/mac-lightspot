@@ -8,8 +8,14 @@ CONTENTS="$APP_BUNDLE/Contents"
 
 echo "🔨 Building Lightspot..."
 
-# Build with SPM
-swift build -c release --package-path "$SCRIPT_DIR" 2>&1
+# Build with SPM (Maximum Optimization)
+echo "🚀 Compiling with maximum optimizations..."
+swift build -c release \
+    -Xswiftc -Osize \
+    -Xswiftc -whole-module-optimization \
+    -Xswiftc -cross-module-optimization \
+    -Xswiftc -enforce-exclusivity=unchecked \
+    --package-path "$SCRIPT_DIR" 2>&1
 
 # Find the built binary
 BINARY=$(swift build -c release --package-path "$SCRIPT_DIR" --show-bin-path)/Lightspot
@@ -28,6 +34,10 @@ mkdir -p "$CONTENTS/Resources"
 
 # Copy binary
 cp "$BINARY" "$CONTENTS/MacOS/Lightspot"
+
+# Strip binary to minimize size
+echo "🔪 Stripping debug symbols..."
+strip -S "$CONTENTS/MacOS/Lightspot"
 
 # Copy Info.plist
 cp "$SCRIPT_DIR/Resources/Info.plist" "$CONTENTS/Info.plist"

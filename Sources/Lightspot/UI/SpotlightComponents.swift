@@ -294,14 +294,12 @@ struct SearchResultRow: View {
         Button(action: onTap) {
             HStack(spacing: 12) {
                 // Result Icon
-                if let icon = result.icon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 32, height: 32)
+                switch result.iconType {
+                case .app(let path):
+                    LazyAppIconView(path: path, size: 32)
                         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                } else {
-                    Image(systemName: "magnifyingglass")
+                case .systemSymbol(let name):
+                    Image(systemName: name)
                         .font(.system(size: 16))
                         .foregroundColor(.white.opacity(0.8))
                         .frame(width: 32, height: 32)

@@ -10,6 +10,8 @@ final class RecentAppsManager {
 
     private init() {}
 
+    private var cachedRecentApps: [AppInfo]?
+
     /// Record an app launch to recent history
     func recordLaunch(bundleIdentifier: String) {
         guard !bundleIdentifier.isEmpty else { return }
@@ -20,53 +22,58 @@ final class RecentAppsManager {
             recents = Array(recents.prefix(maxStoredCount))
         }
         UserDefaults.standard.set(recents, forKey: defaultsKey)
+        cachedRecentApps = nil // invalidate cache
     }
 
     /// Retrieve the top N recent apps, filling from running applications if needed
-    func getRecentApps(from allApps: [AppInfo], limit: Int = 7) -> [AppInfo] {
-        let appMap = Dictionary(uniqueKeysWithValues: allApps.map { ($0.bundleIdentifier, $0) })
+    func getRecentApps(limit: Int = 7) -> [AppInfo] {
+        if let cached = cachedRecentApps, cached.count == limit {
+            return cached
+        }
+
+        let allApps = AppScanner.shared.allApps()
         var results: [AppInfo] = []
         var seenIDs = Set<String>()
 
+        // Helper
+        func addApp(id: String) {
+            guard !seenIDs.contains(id), let app = allApps.first(where: { $0.bundleIdentifier == id }) else { return }
+            results.append(app)
+            seenIDs.insert(id)
+        }
+
         // 1. First add explicitly launched recent apps
-        let savedIDs = storedBundleIDs()
-        for bundleID in savedIDs {
-            if let app = appMap[bundleID], !seenIDs.contains(bundleID) {
-                results.append(app)
-                seenIDs.insert(bundleID)
-                if results.count >= limit {
-                    return results
-                }
-            }
+        for bundleID in storedBundleIDs() {
+            addApp(id: bundleID)
+            if results.count >= limit { break }
         }
 
         // 2. Next fill with currently running regular GUI applications
-        let runningIDs = NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
-            .compactMap { $0.bundleIdentifier }
-
-        for bundleID in runningIDs {
-            if let app = appMap[bundleID], !seenIDs.contains(bundleID) {
-                results.append(app)
-                seenIDs.insert(bundleID)
-                if results.count >= limit {
-                    return results
-                }
+        if results.count < limit {
+            let runningIDs = NSWorkspace.shared.runningApplications
+                .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
+                .compactMap { $0.bundleIdentifier }
+            for bundleID in runningIDs {
+                addApp(id: bundleID)
+                if results.count >= limit { break }
             }
         }
 
         // 3. Fallback: fill from allApps
-        for app in allApps {
-            if !seenIDs.contains(app.bundleIdentifier) {
-                results.append(app)
-                seenIDs.insert(app.bundleIdentifier)
-                if results.count >= limit {
-                    return results
-                }
+        if results.count < limit {
+            for app in allApps {
+                addApp(id: app.bundleIdentifier)
+                if results.count >= limit { break }
             }
         }
 
+        cachedRecentApps = results
         return results
+    }
+
+    /// Clear cache on hide
+    func reclaimMemory() {
+        cachedRecentApps = nil
     }
 
     private func storedBundleIDs() -> [String] {
