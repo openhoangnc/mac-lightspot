@@ -3,12 +3,81 @@ import Foundation
 
 @MainActor
 enum SpotlightManager {
-    private static let plistPath = ("~/Library/Preferences/com.apple.symbolichotkeys.plist" as NSString).expandingTildeInPath
+    private nonisolated static let plistPath = ("~/Library/Preferences/com.apple.symbolichotkeys.plist" as NSString).expandingTildeInPath
+
+    // MARK: - Cached State
+    //
+    // Probing the real state costs ~66 ms per call: `launchctl print-disabled` and
+    // `mdutil -s /` are spawned as subprocesses and waited on. SwiftUI re-evaluates
+    // `Menu` content on every body pass, so reading them live blocked the main thread
+    // on every keystroke. The menus read this snapshot instead; it is only ever
+    // refreshed off the main thread.
+
+    struct State: Equatable, Sendable {
+        var shortcutEnabled: Bool = true
+        var serviceDisabled: Bool = false
+        var indexingEnabled: Bool = true
+    }
+
+    // The first refresh takes ~200 ms to land, during which the menus would otherwise
+    // show hardcoded defaults that may contradict reality. Persist the last known
+    // snapshot so a relaunch paints the correct labels immediately.
+    private nonisolated static let stateDefaultsKey = "lightspot_spotlight_state"
+
+    private static var cachedState = loadPersistedState()
+    private static var isRefreshing = false
+
+    private nonisolated static func loadPersistedState() -> State {
+        guard let raw = UserDefaults.standard.dictionary(forKey: stateDefaultsKey) else { return State() }
+        var state = State()
+        if let v = raw["shortcutEnabled"] as? Bool { state.shortcutEnabled = v }
+        if let v = raw["serviceDisabled"] as? Bool { state.serviceDisabled = v }
+        if let v = raw["indexingEnabled"] as? Bool { state.indexingEnabled = v }
+        return state
+    }
+
+    private static func persist(_ state: State) {
+        UserDefaults.standard.set([
+            "shortcutEnabled": state.shortcutEnabled,
+            "serviceDisabled": state.serviceDisabled,
+            "indexingEnabled": state.indexingEnabled,
+        ], forKey: stateDefaultsKey)
+    }
+
+    /// Instant, non-blocking reads of the last known state.
+    static func isShortcutEnabled() -> Bool { cachedState.shortcutEnabled }
+    static func isServiceDisabled() -> Bool { cachedState.serviceDisabled }
+    static func isIndexingEnabled() -> Bool { cachedState.indexingEnabled }
+
+    /// Re-probes the real system state on a background queue.
+    /// `onChange` runs on the main actor only when the snapshot actually changed,
+    /// so callers can rebuild menus without redrawing on every refresh.
+    static func refreshState(onChange: (@Sendable @MainActor () -> Void)? = nil) {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+
+        DispatchQueue.global(qos: .utility).async {
+            let probed = State(
+                shortcutEnabled: probeShortcutEnabled(),
+                serviceDisabled: probeServiceDisabled(),
+                indexingEnabled: probeIndexingEnabled()
+            )
+            Task { @MainActor in
+                let changed = probed != cachedState
+                cachedState = probed
+                isRefreshing = false
+                if changed {
+                    persist(probed)
+                    onChange?()
+                }
+            }
+        }
+    }
 
     // MARK: - 1. Spotlight Shortcut (⌘Space)
 
-    /// Checks if the default macOS Spotlight shortcut (hotkey ID 64) is enabled
-    static func isShortcutEnabled() -> Bool {
+    /// Reads whether the default macOS Spotlight shortcut (hotkey ID 64) is enabled. Blocking.
+    private nonisolated static func probeShortcutEnabled() -> Bool {
         guard let dict = NSDictionary(contentsOfFile: plistPath) as? [String: Any],
               let hotkeys = dict["AppleSymbolicHotKeys"] as? [String: Any],
               let entry64 = hotkeys["64"] as? [String: Any],
@@ -20,24 +89,28 @@ enum SpotlightManager {
 
     /// Toggles the default macOS Spotlight shortcut (hotkey ID 64)
     static func setShortcut(enabled: Bool) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/libexec/PlistBuddy")
-        process.arguments = ["-c", "Set :AppleSymbolicHotKeys:64:enabled \(enabled)", plistPath]
-        try? process.run()
-        process.waitUntilExit()
+        cachedState.shortcutEnabled = enabled // optimistic; refreshState() reconciles
 
-        // Sync defaults so macOS picks up preference changes
-        let syncProcess = Process()
-        syncProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        syncProcess.arguments = ["read", "com.apple.symbolichotkeys"]
-        try? syncProcess.run()
-        syncProcess.waitUntilExit()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/libexec/PlistBuddy")
+            process.arguments = ["-c", "Set :AppleSymbolicHotKeys:64:enabled \(enabled)", plistPath]
+            try? process.run()
+            process.waitUntilExit()
+
+            // Sync defaults so macOS picks up preference changes
+            let syncProcess = Process()
+            syncProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+            syncProcess.arguments = ["read", "com.apple.symbolichotkeys"]
+            try? syncProcess.run()
+            syncProcess.waitUntilExit()
+        }
     }
 
     // MARK: - 2. Spotlight Background Service / Process (launchctl)
 
-    /// Checks if the Spotlight launchd service is disabled for current user
-    static func isServiceDisabled() -> Bool {
+    /// Reads whether the Spotlight launchd service is disabled for the current user. Blocking (~66 ms).
+    private nonisolated static func probeServiceDisabled() -> Bool {
         let uid = getuid()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -46,40 +119,52 @@ enum SpotlightManager {
         process.standardOutput = pipe
         process.standardError = pipe
         try? process.run()
+
+        // Drain before waiting: `print-disabled` output can exceed the pipe buffer
+        // and would otherwise deadlock against waitUntilExit().
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
         return output.contains("\"com.apple.Spotlight\" => disabled")
     }
 
     /// Enables or disables the Spotlight launchd background process
     static func setService(enabled: Bool) {
-        let uid = getuid()
-        let action = enabled ? "enable" : "disable"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = [action, "gui/\(uid)/com.apple.Spotlight"]
-        try? process.run()
-        process.waitUntilExit()
+        cachedState.serviceDisabled = !enabled // optimistic; refreshState() reconciles
 
-        if !enabled {
-            killSpotlightProcess()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let uid = getuid()
+            let action = enabled ? "enable" : "disable"
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = [action, "gui/\(uid)/com.apple.Spotlight"]
+            try? process.run()
+            process.waitUntilExit()
+
+            if !enabled {
+                let kill = Process()
+                kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+                kill.arguments = ["Spotlight"]
+                try? kill.run()
+            }
         }
     }
 
     /// Kills any active Spotlight GUI process
     static func killSpotlightProcess() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        process.arguments = ["Spotlight"]
-        try? process.run()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            process.arguments = ["Spotlight"]
+            try? process.run()
+        }
     }
 
     // MARK: - 3. Spotlight File Indexing (mdutil)
 
-    /// Checks if filesystem indexing is enabled on the main volume
-    static func isIndexingEnabled() -> Bool {
+    /// Reads whether filesystem indexing is enabled on the main volume. Blocking (~66 ms).
+    private nonisolated static func probeIndexingEnabled() -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdutil")
         process.arguments = ["-s", "/"]
@@ -87,9 +172,10 @@ enum SpotlightManager {
         process.standardOutput = pipe
         process.standardError = pipe
         try? process.run()
-        process.waitUntilExit()
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
         let output = String(data: data, encoding: .utf8) ?? ""
         return output.localizedCaseInsensitiveContains("Indexing enabled")
     }
@@ -109,7 +195,9 @@ enum SpotlightManager {
                 success = false
             }
             Task { @MainActor in
+                if success { cachedState.indexingEnabled = enabled }
                 completion(success)
+                refreshState()
             }
         }
     }

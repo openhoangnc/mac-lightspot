@@ -106,6 +106,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Inject dependencies into view model
         viewModel.hotkeyManager = hotkeyManager
         viewModel.menuBarController = menuBarController
+
+        // Prime the cached system-state snapshots off the main thread. Menus read
+        // the cache; probing live would block the UI (see SpotlightManager).
+        refreshSystemState()
+    }
+
+    /// Re-probes macOS Spotlight / login-item state in the background and rebuilds
+    /// the menus only if something actually changed.
+    private func refreshSystemState() {
+        SpotlightManager.refreshState { [weak self] in
+            MainActor.assumeIsolated {
+                self?.menuBarController?.rebuildMenu()
+                self?.viewModel?.objectWillChange.send()
+            }
+        }
+        AutoStartManager.refreshState { [weak self] in
+            MainActor.assumeIsolated {
+                self?.menuBarController?.rebuildMenu()
+                self?.viewModel?.objectWillChange.send()
+            }
+        }
     }
 
     private func togglePanel() {
@@ -118,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPanel() {
         AppScanner.shared.refreshIfNeeded()
+        refreshSystemState()
         viewModel.reset()
 
         // Set frame size to default expanded launcher size

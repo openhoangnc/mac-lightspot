@@ -1,10 +1,24 @@
 import AppKit
 
 @MainActor
-final class MenuBarController {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private weak var hotkeyManager: HotkeyManager?
     var onShowToggle: (() -> Void)?
+
+    /// The status menu reads SpotlightManager's cached snapshot, which is refreshed
+    /// off the main thread. Kick a refresh as the menu opens so it self-corrects if
+    /// the user changed Spotlight elsewhere; the rebuild lands a moment later.
+    nonisolated func menuWillOpen(_ menu: NSMenu) {
+        MainActor.assumeIsolated {
+            SpotlightManager.refreshState { [weak self] in
+                MainActor.assumeIsolated { self?.rebuildMenu() }
+            }
+            AutoStartManager.refreshState { [weak self] in
+                MainActor.assumeIsolated { self?.rebuildMenu() }
+            }
+        }
+    }
 
     func setup(hotkeyManager: HotkeyManager) {
         self.hotkeyManager = hotkeyManager
@@ -149,6 +163,7 @@ final class MenuBarController {
         quitItem.target = self
         menu.addItem(quitItem)
 
+        menu.delegate = self
         statusItem?.menu = menu
     }
 

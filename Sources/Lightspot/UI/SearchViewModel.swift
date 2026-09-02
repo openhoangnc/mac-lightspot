@@ -144,14 +144,17 @@ final class SearchViewModel: ObservableObject {
     }
 
     func performSearch(_ text: String) {
-        self.query = text
+        // Every assignment to an @Published property sends objectWillChange, and each
+        // send costs a SwiftUI body pass. The text field's binding has usually already
+        // written `query`, so assign only what actually changed.
+        if self.query != text { self.query = text }
         let q = SearchQuery(text)
 
         if q.isEmpty {
-            self.groupedResults = [:]
-            self.calculatorResult = nil
-            self.gridSelectedIndex = 0
-            self.searchSelectedIndex = 0
+            if !self.groupedResults.isEmpty { self.groupedResults = [:] }
+            if self.calculatorResult != nil { self.calculatorResult = nil }
+            if self.gridSelectedIndex != 0 { self.gridSelectedIndex = 0 }
+            if self.searchSelectedIndex != 0 { self.searchSelectedIndex = 0 }
             return
         }
 
@@ -161,10 +164,10 @@ final class SearchViewModel: ObservableObject {
         // Perform search across all providers
         let results = SearchEngine.shared.searchImmediate(q)
 
-        self.calculatorResult = calc
-        self.groupedResults = results
-        self.searchSelectedIndex = 0
-        self.gridSelectedIndex = 0
+        if self.calculatorResult != calc { self.calculatorResult = calc }
+        if self.groupedResults != results { self.groupedResults = results }
+        if self.searchSelectedIndex != 0 { self.searchSelectedIndex = 0 }
+        if self.gridSelectedIndex != 0 { self.gridSelectedIndex = 0 }
     }
 
     func updateHeight() {

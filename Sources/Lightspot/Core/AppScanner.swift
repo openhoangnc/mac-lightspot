@@ -188,8 +188,11 @@ final class AppScanner: @unchecked Sendable {
 
         // Prewarm icons for the most common applications in the background
         let topPaths = Array(apps.prefix(40).map { $0.path })
+        // Sizes must match the ones the views actually request, or every first paint
+        // is a cache miss: 52 = AppGridView, 32 = SearchResultRow, 24 = top-hit badge.
         AppIconCache.shared.prewarmIcons(for: topPaths, size: 52)
         AppIconCache.shared.prewarmIcons(for: topPaths, size: 32)
+        AppIconCache.shared.prewarmIcons(for: topPaths, size: 24)
     }
 
     private func categorize(name: String, bundleID: String, lsCategory: String?) -> AppCategory {
