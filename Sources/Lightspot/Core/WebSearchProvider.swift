@@ -12,7 +12,7 @@ final class WebSearchProvider: Sendable {
             ?? NSImage(named: NSImage.networkName)!
 
         return [SearchResult(
-            id: "web-google",
+            id: "web-\(trimmed)",
             title: "Search Google for '\(trimmed)'",
             subtitle: "www.google.com",
             icon: icon,

@@ -55,7 +55,7 @@ final class SpotlightPanel: NSPanel {
         hasShadow = true
         level = .floating
         isMovableByWindowBackground = true
-        animationBehavior = .utilityWindow
+        animationBehavior = .none
 
         // Visual effect background
         let visualEffect = NSVisualEffectView()

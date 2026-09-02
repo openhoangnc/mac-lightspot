@@ -9,7 +9,7 @@ struct SearchFieldView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
-        field.placeholderString = "Spotlight Search"
+        field.placeholderString = "Lightspot Search"
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -21,7 +21,6 @@ struct SearchFieldView: NSViewRepresentable {
         field.target = context.coordinator
         field.action = #selector(Coordinator.onAction(_:))
 
-        // Make it first responder after a short delay
         DispatchQueue.main.async {
             field.window?.makeFirstResponder(field)
         }
@@ -30,8 +29,16 @@ struct SearchFieldView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
+        // Do not overwrite stringValue while user is actively typing in the field editor
+        if let editor = nsView.currentEditor() {
+            if text.isEmpty && !editor.string.isEmpty {
+                editor.string = ""
+                nsView.stringValue = ""
+            }
+        } else {
+            if nsView.stringValue != text {
+                nsView.stringValue = text
+            }
         }
     }
 
@@ -50,8 +57,9 @@ struct SearchFieldView: NSViewRepresentable {
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
-            text = field.stringValue
-            onTextChange(field.stringValue)
+            let currentText = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+            text = currentText
+            onTextChange(currentText)
         }
 
         @objc func onAction(_ sender: NSTextField) {

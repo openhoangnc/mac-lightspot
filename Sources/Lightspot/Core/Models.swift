@@ -54,10 +54,12 @@ final class SearchResult: Identifiable, @unchecked Sendable {
 
 extension SearchResult: Hashable {
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
-        lhs.id == rhs.id
+        lhs.id == rhs.id && lhs.title == rhs.title && lhs.subtitle == rhs.subtitle && lhs.score == rhs.score
     }
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+        hasher.combine(title)
+        hasher.combine(subtitle)
     }
 }
 

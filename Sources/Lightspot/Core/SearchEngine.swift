@@ -44,7 +44,7 @@ final class SearchEngine: @unchecked Sendable {
         if let calcResult = CalculatorEngine.evaluate(trimmed) {
             let icon = NSImage(systemSymbolName: "equal.circle.fill", accessibilityDescription: "Calculator")
             allResults.append(SearchResult(
-                id: "calc-result",
+                id: "calc-\(trimmed)",
                 title: calcResult,
                 subtitle: trimmed,
                 icon: icon,
