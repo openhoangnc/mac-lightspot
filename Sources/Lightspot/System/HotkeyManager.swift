@@ -1,10 +1,12 @@
 import Carbon
 import AppKit
 
-enum HotkeyOption: String, CaseIterable, Sendable {
+enum HotkeyOption: String, CaseIterable, Identifiable, Sendable {
     case commandSpace = "cmd_space"
     case commandShiftSpace = "cmd_shift_space"
     case optionSpace = "option_space"
+
+    var id: String { rawValue }
 
     var displayName: String {
         switch self {

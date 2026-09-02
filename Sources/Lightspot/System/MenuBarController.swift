@@ -16,6 +16,7 @@ final class MenuBarController {
             button.image?.size = NSSize(width: 16, height: 16)
         }
 
+        updateStatusItemVisibility()
         rebuildMenu()
     }
 
@@ -116,6 +117,26 @@ final class MenuBarController {
         spotlightParentItem.submenu = spotlightMenu
         menu.addItem(spotlightParentItem)
 
+        // Auto-start / Launch at Login toggle
+        let isAutoStartOn = AutoStartManager.isEnabled
+        let autoStartItem = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleAutoStartAction),
+            keyEquivalent: ""
+        )
+        autoStartItem.target = self
+        autoStartItem.state = isAutoStartOn ? .on : .off
+        menu.addItem(autoStartItem)
+
+        // Hide Menu Bar Icon toggle
+        let hideIconItem = NSMenuItem(
+            title: isMenuBarIconHidden ? "Show Menu Bar Icon" : "Hide Menu Bar Icon",
+            action: #selector(toggleHideMenuBarIconAction),
+            keyEquivalent: ""
+        )
+        hideIconItem.target = self
+        menu.addItem(hideIconItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let aboutItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
@@ -129,6 +150,30 @@ final class MenuBarController {
         menu.addItem(quitItem)
 
         statusItem?.menu = menu
+    }
+
+    private let hideIconDefaultsKey = "lightspot_hide_menubar_icon"
+
+    var isMenuBarIconHidden: Bool {
+        get { UserDefaults.standard.bool(forKey: hideIconDefaultsKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: hideIconDefaultsKey)
+            updateStatusItemVisibility()
+        }
+    }
+
+    func updateStatusItemVisibility() {
+        statusItem?.isVisible = !isMenuBarIconHidden
+    }
+
+    @objc func toggleHideMenuBarIconAction() {
+        isMenuBarIconHidden.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func toggleAutoStartAction() {
+        _ = AutoStartManager.toggle()
+        rebuildMenu()
     }
 
     @objc private func showAction() {

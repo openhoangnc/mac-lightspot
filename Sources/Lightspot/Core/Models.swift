@@ -63,14 +63,60 @@ extension SearchResult: Hashable {
     }
 }
 
+// MARK: - App Category (macOS 27 Categories)
+
+enum AppCategory: String, CaseIterable, Identifiable, Sendable {
+    case all = "All"
+    case productivity = "Productivity & Finance"
+    case utilities = "Utilities"
+    case entertainment = "Entertainment"
+    case social = "Social"
+    case creativity = "Creativity"
+    case developerTools = "Developer Tools"
+    case infoReading = "Information & Reading"
+    case other = "Other"
+
+    var id: String { rawValue }
+
+    var shortName: String {
+        switch self {
+        case .all: return "All"
+        case .productivity: return "Productivity & Finance"
+        case .utilities: return "Utilities"
+        case .entertainment: return "Entertainment"
+        case .social: return "Social"
+        case .creativity: return "Creativity"
+        case .developerTools: return "Developer Tools"
+        case .infoReading: return "Information & Reading"
+        case .other: return "Other"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .all: return "square.grid.2x2.fill"
+        case .productivity: return "briefcase.fill"
+        case .utilities: return "wrench.and.screwdriver.fill"
+        case .entertainment: return "play.tv.fill"
+        case .social: return "message.fill"
+        case .creativity: return "paintpalette.fill"
+        case .developerTools: return "hammer.fill"
+        case .infoReading: return "book.fill"
+        case .other: return "folder.fill"
+        }
+    }
+}
+
 // MARK: - App Info (cached application data)
 
-struct AppInfo: Sendable {
+struct AppInfo: Sendable, Identifiable {
+    var id: String { bundleIdentifier }
     let name: String
     let bundleIdentifier: String
     let path: String
     let icon32: NSImage
     let icon128: NSImage
+    let category: AppCategory
 }
 
 // MARK: - Settings Item

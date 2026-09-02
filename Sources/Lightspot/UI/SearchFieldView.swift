@@ -5,16 +5,26 @@ import SwiftUI
 
 struct SearchFieldView: NSViewRepresentable {
     @Binding var text: String
+    var placeholder: String = "Search"
     var onTextChange: (String) -> Void
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
-        field.placeholderString = "Lightspot Search"
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 24, weight: .light)
-        field.textColor = .labelColor
+        field.font = .systemFont(ofSize: 19, weight: .regular)
+        field.textColor = .white
+
+        let placeholderAttr = NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.45),
+                .font: NSFont.systemFont(ofSize: 19, weight: .regular)
+            ]
+        )
+        field.placeholderAttributedString = placeholderAttr
+
         field.cell?.wraps = false
         field.cell?.isScrollable = true
         field.delegate = context.coordinator
@@ -29,7 +39,15 @@ struct SearchFieldView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSTextField, context: Context) {
-        // Do not overwrite stringValue while user is actively typing in the field editor
+        let placeholderAttr = NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.45),
+                .font: NSFont.systemFont(ofSize: 19, weight: .regular)
+            ]
+        )
+        nsView.placeholderAttributedString = placeholderAttr
+
         if let editor = nsView.currentEditor() {
             if text.isEmpty && !editor.string.isEmpty {
                 editor.string = ""

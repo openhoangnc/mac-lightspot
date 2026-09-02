@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setup() {
+        // Setup standard main menu for text editing shortcuts (Cmd+A, Cmd+C, Cmd+V, Cmd+X, Cmd+Z)
+        setupMainMenu()
+
         // Start background app scan
         AppScanner.shared.startScanning()
 
@@ -60,10 +63,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Wire up panel keyboard callbacks directly to the reactive view model
         panel.onMoveUp = { [weak self] in
-            self?.viewModel.moveSelectionUp()
+            self?.viewModel.moveUp()
         }
         panel.onMoveDown = { [weak self] in
-            self?.viewModel.moveSelectionDown()
+            self?.viewModel.moveDown()
+        }
+        panel.onMoveLeft = { [weak self] in
+            self?.viewModel.moveLeft()
+        }
+        panel.onMoveRight = { [weak self] in
+            self?.viewModel.moveRight()
+        }
+        panel.onNextTab = { [weak self] in
+            self?.viewModel.nextCategory()
+        }
+        panel.onPrevTab = { [weak self] in
+            self?.viewModel.previousCategory()
         }
         panel.onSubmit = { [weak self] in
             self?.viewModel.activateSelected()
@@ -87,6 +102,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.togglePanel()
         }
         menuBarController.setup(hotkeyManager: hotkeyManager)
+
+        // Inject dependencies into view model
+        viewModel.hotkeyManager = hotkeyManager
+        viewModel.menuBarController = menuBarController
     }
 
     private func togglePanel() {
@@ -101,12 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppScanner.shared.refreshIfNeeded()
         viewModel.reset()
 
-        // Reset to compact height
+        // Set frame size to default expanded launcher size
         panel.setFrame(NSRect(
             x: panel.frame.origin.x,
             y: panel.frame.origin.y,
-            width: 680,
-            height: 56
+            width: SpotlightPanel.panelWidth,
+            height: SpotlightPanel.defaultHeight
         ), display: false)
 
         panel.showPanel()
@@ -139,5 +158,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return nil
+    }
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // App Menu
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About Lightspot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Quit Lightspot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // Edit Menu (crucial for standard text field shortcuts: Cmd+A, Cmd+C, Cmd+V, Cmd+X, Cmd+Z)
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        NSApp.mainMenu = mainMenu
     }
 }

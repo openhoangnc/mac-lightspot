@@ -1,12 +1,16 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Custom Field Editor (intercepts arrow keys for result navigation)
+// MARK: - Custom Field Editor (intercepts arrow & tab keys for grid and result navigation)
 
 @MainActor
 final class SpotlightFieldEditor: NSTextView {
     var onMoveUp: (@MainActor () -> Void)?
     var onMoveDown: (@MainActor () -> Void)?
+    var onMoveLeft: (@MainActor () -> Void)?
+    var onMoveRight: (@MainActor () -> Void)?
+    var onNextTab: (@MainActor () -> Void)?
+    var onPrevTab: (@MainActor () -> Void)?
     var onSubmit: (@MainActor () -> Void)?
     var onCancel: (@MainActor () -> Void)?
 
@@ -15,6 +19,14 @@ final class SpotlightFieldEditor: NSTextView {
             onMoveUp?()
         } else if selector == #selector(NSResponder.moveDown(_:)) {
             onMoveDown?()
+        } else if selector == #selector(NSResponder.moveLeft(_:)) && selectedRange().location == 0 {
+            onMoveLeft?()
+        } else if selector == #selector(NSResponder.moveRight(_:)) && selectedRange().location == string.count {
+            onMoveRight?()
+        } else if selector == #selector(NSResponder.insertTab(_:)) {
+            onNextTab?()
+        } else if selector == #selector(NSResponder.insertBacktab(_:)) {
+            onPrevTab?()
         } else if selector == #selector(NSResponder.insertNewline(_:)) {
             onSubmit?()
         } else if selector == #selector(NSResponder.cancelOperation(_:)) {
@@ -22,6 +34,77 @@ final class SpotlightFieldEditor: NSTextView {
         } else {
             super.doCommand(by: selector)
         }
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command {
+            guard let chars = event.charactersIgnoringModifiers?.lowercased() else {
+                return super.performKeyEquivalent(with: event)
+            }
+            switch chars {
+            case "a":
+                selectAll(nil)
+                return true
+            case "c":
+                copy(nil)
+                return true
+            case "v":
+                paste(nil)
+                return true
+            case "x":
+                cut(nil)
+                return true
+            case "z":
+                undoManager?.undo()
+                return true
+            default:
+                break
+            }
+        } else if flags == [.command, .shift] {
+            guard let chars = event.charactersIgnoringModifiers?.lowercased() else {
+                return super.performKeyEquivalent(with: event)
+            }
+            if chars == "z" {
+                undoManager?.redo()
+                return true
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn: Bool) {
+        guard turnedOn else { return }
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
+        let cursorWidth: CGFloat = 2.5
+        let cursorRect = NSRect(
+            x: rect.origin.x,
+            y: rect.origin.y + 1,
+            width: cursorWidth,
+            height: max(rect.height - 2, 20)
+        )
+
+        // Outer Siri / Apple Intelligence cyan glow shadow
+        let glow = NSShadow()
+        glow.shadowColor = NSColor(red: 0.25, green: 0.8, blue: 1.0, alpha: 0.9)
+        glow.shadowBlurRadius = 7.0
+        glow.shadowOffset = .zero
+        glow.set()
+
+        // Glowing rounded cursor
+        let path = NSBezierPath(roundedRect: cursorRect, xRadius: 1.25, yRadius: 1.25)
+        let coreColor = NSColor(red: 0.92, green: 0.97, blue: 1.0, alpha: 1.0)
+        coreColor.setFill()
+        path.fill()
+
+        // Inner bright white highlight
+        let innerRect = cursorRect.insetBy(dx: 0.3, dy: 0.3)
+        let innerPath = NSBezierPath(roundedRect: innerRect, xRadius: 0.8, yRadius: 0.8)
+        NSColor.white.setFill()
+        innerPath.fill()
     }
 }
 
@@ -36,15 +119,29 @@ final class SpotlightPanel: NSPanel {
     // Callbacks
     var onMoveUp: (() -> Void)?
     var onMoveDown: (() -> Void)?
+    var onMoveLeft: (() -> Void)?
+    var onMoveRight: (() -> Void)?
+    var onNextTab: (() -> Void)?
+    var onPrevTab: (() -> Void)?
     var onSubmit: (() -> Void)?
     var onCancel: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let firstResp = firstResponder, firstResp.performKeyEquivalent(with: event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    static let panelWidth: CGFloat = 740
+    static let defaultHeight: CGFloat = 560
+
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.defaultHeight),
             styleMask: [.borderless, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -52,40 +149,35 @@ final class SpotlightPanel: NSPanel {
 
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false
         level = .floating
         isMovableByWindowBackground = true
         animationBehavior = .none
 
-        // Visual effect background
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .popover
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 20
-        visualEffect.layer?.cornerCurve = .continuous
-        visualEffect.layer?.masksToBounds = true
-
-        // Subtle border
-        visualEffect.layer?.borderWidth = 0.5
-        visualEffect.layer?.borderColor = NSColor.white.withAlphaComponent(0.15).cgColor
-
-        contentView = visualEffect
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+        contentView = container
     }
 
     // Provide custom field editor for arrow-key interception
     override func fieldEditor(_ createFlag: Bool, for object: Any?) -> NSText? {
         if fieldEditor == nil && createFlag {
-            fieldEditor = SpotlightFieldEditor()
-            fieldEditor?.isFieldEditor = true
-            fieldEditor?.drawsBackground = false
-            fieldEditor?.font = .systemFont(ofSize: 24, weight: .light)
-            fieldEditor?.textColor = .labelColor
-            fieldEditor?.onMoveUp = { [weak self] in self?.onMoveUp?() }
-            fieldEditor?.onMoveDown = { [weak self] in self?.onMoveDown?() }
-            fieldEditor?.onSubmit = { [weak self] in self?.onSubmit?() }
-            fieldEditor?.onCancel = { [weak self] in self?.onCancel?() }
+            let editor = SpotlightFieldEditor()
+            editor.isFieldEditor = true
+            editor.drawsBackground = false
+            editor.font = .systemFont(ofSize: 19, weight: .regular)
+            editor.textColor = .white
+            editor.insertionPointColor = .white
+            editor.onMoveUp = { [weak self] in self?.onMoveUp?() }
+            editor.onMoveDown = { [weak self] in self?.onMoveDown?() }
+            editor.onMoveLeft = { [weak self] in self?.onMoveLeft?() }
+            editor.onMoveRight = { [weak self] in self?.onMoveRight?() }
+            editor.onNextTab = { [weak self] in self?.onNextTab?() }
+            editor.onPrevTab = { [weak self] in self?.onPrevTab?() }
+            editor.onSubmit = { [weak self] in self?.onSubmit?() }
+            editor.onCancel = { [weak self] in self?.onCancel?() }
+            fieldEditor = editor
         }
         return fieldEditor
     }
@@ -95,22 +187,20 @@ final class SpotlightPanel: NSPanel {
     func showPanel() {
         positionOnActiveScreen()
 
-        // Show with animation
         alphaValue = 0
         makeKeyAndOrderFront(nil)
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
+            context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().alphaValue = 1
         }
 
-        // Content view scale animation
         if let contentView = contentView {
             contentView.wantsLayer = true
             contentView.layer?.transform = CATransform3DMakeScale(0.97, 0.97, 1)
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
+                context.duration = 0.18
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 contentView.layer?.transform = CATransform3DIdentity
             }
@@ -123,7 +213,7 @@ final class SpotlightPanel: NSPanel {
         removeMonitors()
 
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.1
+            context.duration = 0.12
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             self.animator().alphaValue = 0
         }, completionHandler: {
@@ -149,11 +239,11 @@ final class SpotlightPanel: NSPanel {
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens.first!
 
         let screenFrame = screen.visibleFrame
-        let panelWidth: CGFloat = 680
+        let width = Self.panelWidth
         let currentHeight = frame.height
 
-        let x = screenFrame.midX - panelWidth / 2
-        let y = screenFrame.maxY - (screenFrame.height * 0.20) - currentHeight
+        let x = screenFrame.midX - width / 2
+        let y = screenFrame.maxY - (screenFrame.height * 0.16) - currentHeight
 
         setFrameOrigin(NSPoint(x: x, y: y))
     }
@@ -171,7 +261,7 @@ final class SpotlightPanel: NSPanel {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
+            context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             self.animator().setFrame(newFrame, display: true)
         }
