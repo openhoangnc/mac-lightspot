@@ -7,6 +7,9 @@ final class SearchEngine: @unchecked Sendable {
     private let searchQueue = DispatchQueue(label: "com.lightspot.search", qos: .userInteractive)
     private let debounceInterval: TimeInterval = 0.15
     private let maxResultsPerCategory = 4
+    /// The history is the one open-ended category, so it gets a taller cap than the
+    /// curated ones — four rows is not enough to find a command among near-misses.
+    private let maxShellHistoryResults = 6
 
     private init() {}
 
@@ -37,6 +40,9 @@ final class SearchEngine: @unchecked Sendable {
         // Quick Actions
         allResults.append(contentsOf: QuickActionsProvider.shared.search(query))
 
+        // Shell (zsh) history
+        allResults.append(contentsOf: ShellHistoryProvider.shared.search(query))
+
         // Calculator
         if let calcResult = CalculatorEngine.evaluate(query.trimmed) {
             allResults.append(SearchResult(
@@ -57,9 +63,12 @@ final class SearchEngine: @unchecked Sendable {
         var grouped: [ResultCategory: [SearchResult]] = [:]
         grouped.reserveCapacity(ResultCategory.allCases.count)
 
-        // Find the top hit (highest score across all non-web/non-calc categories)
+        // Find the top hit (highest score across all non-web/non-calc categories).
+        // Shell history is excluded on purpose: Return on the Top Hit is meant to be
+        // a safe, predictable "open the obvious thing", and silently promoting a
+        // fuzzy history match would make it run a shell command instead.
         let topHitCandidates = allResults.filter {
-            $0.category != .webSearch && $0.category != .calculator
+            $0.category != .webSearch && $0.category != .calculator && $0.category != .shellHistory
         }
         var topHitOriginalID: String? = nil
         if let topHit = topHitCandidates.max(by: { $0.score < $1.score }), topHit.score >= 60 {
@@ -78,10 +87,11 @@ final class SearchEngine: @unchecked Sendable {
 
         // Group remaining by their original category (excluding the item already promoted to Top Hit)
         for category in ResultCategory.allCases where category != .topHit {
+            let cap = category == .shellHistory ? maxShellHistoryResults : maxResultsPerCategory
             let categoryResults = allResults
                 .filter { $0.category == category && $0.id != topHitOriginalID }
                 .sorted { $0.score > $1.score }
-                .prefix(maxResultsPerCategory)
+                .prefix(cap)
 
             if !categoryResults.isEmpty {
                 grouped[category] = Array(categoryResults)

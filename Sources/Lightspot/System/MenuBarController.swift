@@ -5,6 +5,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private weak var hotkeyManager: HotkeyManager?
     var onShowToggle: (() -> Void)?
+    var onManagePins: (() -> Void)?
 
     /// The status menu reads SpotlightManager's cached snapshot, which is refreshed
     /// off the main thread. Kick a refresh as the menu opens so it self-corrects if
@@ -43,6 +44,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let showItem = NSMenuItem(title: "Show Lightspot (\(currentOption.shortLabel))", action: #selector(showAction), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
+
+        let pinnedItem = NSMenuItem(title: "Pinned Commands...", action: #selector(managePinsAction), keyEquivalent: "")
+        pinnedItem.target = self
+        menu.addItem(pinnedItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -193,6 +198,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func showAction() {
         onShowToggle?()
+    }
+
+    @objc private func managePinsAction() {
+        onManagePins?()
     }
 
     @objc private func selectHotkeyAction(_ sender: NSMenuItem) {

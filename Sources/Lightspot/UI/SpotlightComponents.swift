@@ -247,6 +247,7 @@ struct SearchResultsView: View {
     let groupedResults: [ResultCategory: [SearchResult]]
     let selectedIndex: Int
     let onSelect: (SearchResult) -> Void
+    let onTogglePin: (SearchResult) -> Void
 
     private var flatResults: [SearchResult] {
         SearchEngine.flatResults(from: groupedResults)
@@ -274,7 +275,8 @@ struct SearchResultsView: View {
                                     SearchResultRow(
                                         result: item,
                                         isSelected: isSelected,
-                                        onTap: { onSelect(item) }
+                                        onTap: { onSelect(item) },
+                                        onTogglePin: { onTogglePin(item) }
                                     )
                                     .id(item.id)
                                 }
@@ -299,8 +301,13 @@ struct SearchResultRow: View {
     let result: SearchResult
     let isSelected: Bool
     let onTap: () -> Void
+    var onTogglePin: (() -> Void)? = nil
 
     @State private var isHovered: Bool = false
+
+    private var isPinnable: Bool {
+        result.category == .shellHistory && onTogglePin != nil
+    }
 
     var body: some View {
         Button(action: onTap) {
@@ -336,6 +343,23 @@ struct SearchResultRow: View {
                 }
 
                 Spacer()
+
+                // Pin toggle (Terminal History only)
+                if isPinnable {
+                    Button(action: { onTogglePin?() }) {
+                        Image(systemName: result.isPinned ? "pin.slash.fill" : "pin.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(result.isPinned ? 0.9 : 0.65))
+                            .frame(width: 26, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.white.opacity(result.isPinned ? 0.18 : 0.10))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(result.isPinned ? "Unpin (⌘P)" : "Pin (⌘P)")
+                    .opacity(result.isPinned || isHovered || isSelected ? 1 : 0)
+                }
 
                 // Selection hint
                 if isSelected {

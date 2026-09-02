@@ -32,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start background app scan
         AppScanner.shared.startScanning()
 
+        // Parse the zsh history file off the main thread
+        ShellHistoryProvider.shared.startLoading()
+
         // Create the view model
         viewModel = SearchViewModel()
         viewModel.onHide = { [weak self] in
@@ -86,6 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onCancel = { [weak self] in
             self?.viewModel.handleCancel()
         }
+        panel.onTogglePin = { [weak self] in
+            self?.viewModel.togglePinForSelection()
+        }
+        panel.onManagePins = { [weak self] in
+            self?.viewModel.togglePinManager()
+        }
 
         // Set up hotkey
         hotkeyManager = HotkeyManager()
@@ -100,6 +109,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController()
         menuBarController.onShowToggle = { [weak self] in
             self?.togglePanel()
+        }
+        menuBarController.onManagePins = { [weak self] in
+            guard let self = self else { return }
+            if !self.panel.isVisible {
+                // showPanel() resets the view model, so open the manager afterwards.
+                self.showPanel()
+            }
+            self.viewModel.showPinManager()
         }
         menuBarController.setup(hotkeyManager: hotkeyManager)
 
@@ -139,6 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPanel() {
         AppScanner.shared.refreshIfNeeded()
+        ShellHistoryProvider.shared.refreshIfNeeded()
         refreshSystemState()
         viewModel.reset()
 
@@ -171,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reclaim memory actively when hiding
         viewModel.reclaimMemory()
         AppScanner.shared.reclaimMemory()
+        ShellHistoryProvider.shared.reclaimMemory()
         RecentAppsManager.shared.reclaimMemory()
         malloc_zone_pressure_relief(nil, 0)
     }

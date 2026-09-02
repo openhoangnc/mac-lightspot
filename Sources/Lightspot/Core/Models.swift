@@ -7,6 +7,7 @@ enum ResultCategory: Int, CaseIterable, Sendable {
     case applications
     case systemSettings
     case quickActions
+    case shellHistory
     case calculator
     case webSearch
 
@@ -16,6 +17,7 @@ enum ResultCategory: Int, CaseIterable, Sendable {
         case .applications: return "Applications"
         case .systemSettings: return "System Settings"
         case .quickActions: return "Quick Actions"
+        case .shellHistory: return "Terminal History"
         case .calculator: return "Calculator"
         case .webSearch: return "Web Search"
         }
@@ -35,6 +37,7 @@ enum SearchAction: Sendable {
     case runQuickAction(script: String, usesOsascript: Bool)
     case copyToClipboard(String)
     case openWebSearch(url: URL)
+    case runInTerminal(command: String)
 }
 
 // MARK: - Search Result
@@ -47,13 +50,21 @@ struct SearchResult: Identifiable, Sendable, Hashable {
     let category: ResultCategory
     let score: Double
     let action: SearchAction
+    /// Only ever true for `.shellHistory` results the user has pinned. Declared
+    /// `var` with a default so the memberwise initializer stays source-compatible
+    /// with the providers that do not care about pinning.
+    var isPinned: Bool = false
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
 
+    // Identity is the id, plus the one field that can change under a stable id:
+    // pinning a Terminal History result rewrites `isPinned` while the row keeps its
+    // id. Without it here, SwiftUI's diffing (and `performSearch`'s change check)
+    // would consider the toggled row unchanged and skip the redraw.
     static func == (lhs: SearchResult, rhs: SearchResult) -> Bool {
-        lhs.id == rhs.id
+        lhs.id == rhs.id && lhs.isPinned == rhs.isPinned
     }
 }
 

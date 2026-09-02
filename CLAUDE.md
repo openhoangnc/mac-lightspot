@@ -27,13 +27,15 @@ The app is a singleton by hotkey registration: a second instance fails to grab t
 There is no test target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` sources:
 
 ```bash
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift && /tmp/test_engine
-swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift && /tmp/deep_verify
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-`test_engine.swift` is pure logic (calculator, fuzzy matcher, providers). `deep_verify.swift` hits the live system: it resolves every settings deep link through `NSWorkspace`, compiles every quick-action AppleScript, scans real `/Applications`, and asserts that no file paths ever leak into results.
+`TerminalLauncher.swift` is the one `System/` file on the line: it has no dependencies beyond Foundation/AppKit, and its AppleScript escaping is the highest-risk pure function in the app.
 
-**Both scripts are currently stale and do not compile.** They call `FuzzyMatcher.score(query:target:)` and pass `String` to `search`/`searchImmediate`, but those APIs now take a `SearchQuery` and `FuzzyMatcher.score` takes pre-tokenized `targetLower:targetTokens:targetInitials:`. Fix the call sites when you touch the engines rather than deleting the coverage.
+`test_engine.swift` is pure logic (calculator, fuzzy matcher, providers, zsh history parsing and ranking, AppleScript escaping, the pinned-command store). `deep_verify.swift` hits the live system: it resolves every settings deep link through `NSWorkspace`, compiles every quick-action AppleScript *and* every Terminal command Lightspot can emit, scans real `/Applications`, parses the real `~/.zsh_history`, and asserts that no file paths ever leak into results.
+
+These scripts are the only test coverage there is — when you change an engine, fix their call sites rather than deleting the coverage.
 
 ## Architecture
 
@@ -50,9 +52,11 @@ Three source layers under `Sources/Lightspot/`:
 `SearchViewModel.performSearch` → `SearchEngine.searchImmediate(SearchQuery)` → fan-out to every provider → merge.
 
 `SearchEngine` is **fully synchronous and in-memory** (`searchQueue`, `debounceInterval`, `currentWorkItem`, and the completion-based `search(_:completion:)` are all dead code). This is deliberate: a full search across every provider measures ~0.5 ms, so debouncing would only delay results without reducing input latency. Providers must stay allocation-light and fast enough to run on every keystroke on the main thread. It then:
-1. Picks the single highest-scoring non-calculator/non-web result as `.topHit` and re-issues it with id `top-<originalID>`.
+1. Picks the single highest-scoring non-calculator/non-web/non-history result as `.topHit` and re-issues it with id `top-<originalID>`.
 2. Groups the rest by category, excluding the promoted original so it is not shown twice.
-3. Caps each category at `maxResultsPerCategory` (4).
+3. Caps each category at `maxResultsPerCategory` (4) — except `.shellHistory`, which gets 6.
+
+`.shellHistory` is excluded from Top Hit promotion deliberately: Return on the Top Hit means "open the obvious thing", and a fuzzy history match silently promoted there would run a shell command instead.
 
 `SearchQuery` pre-computes `trimmed`/`lowercased` once. `AppInfo`/`SettingsItem`/`QuickAction` pre-compute their lowercased names, tokens, and initials at init. `FuzzyMatcher.score` consumes only these pre-computed forms so scoring allocates nothing — **do not add a `String`-taking convenience overload**; it would reintroduce per-keystroke lowercasing.
 
@@ -66,6 +70,19 @@ Scoring tiers are fixed and load-bearing (tests and the Top Hit `>= 60` threshol
 4. Call it from `SearchEngine.performSearch`.
 5. Handle the new `SearchAction` case in `SearchViewModel.activateSelected` (the `switch` is exhaustive).
 
+### Shell history & pinned commands
+
+`ShellHistoryProvider` is the only provider that reads a user file, and it reads exactly one: `$HISTFILE`, `$ZDOTDIR/.zsh_history`, `~/.zsh_history` or `~/.zhistory`, first one that exists. No directory is walked.
+
+- Loading is always off the main thread (`startLoading()` at launch, `refreshIfNeeded()` on every panel show, which re-parses only when the file's size/mtime changed). Only the **last 2 MB** are read; the newest 1200 unique commands are kept, de-duplicated newest-first, and stay resident like app metadata so the first keystroke after a show needs no I/O.
+- Parsing handles plain lines, the `EXTENDED_HISTORY` form (`: <started>:<elapsed>;<cmd>`), `\`-continued multi-line entries, and zsh's *metafication* (`0x83` followed by `byte ^ 32`). Skipping the unmetafy step mangles every non-ASCII command.
+- Ranking folds recency and pinning into the score, because `SearchEngine` sorts each category by score alone: recency adds `< 5` so it can only reorder within a `FuzzyMatcher` tier, and pins add a flat `+200`. History results also require **score >= 65** (substring or better) — subsequence hits would make a two-letter query match most of the file.
+- `ShellHistoryProvider.search(_:pinned:history:)` is a static, state-free ranking core; the instance method just supplies the two arrays. Keep it that way, it is what makes the ranking testable without a history file.
+- `PinnedCommandsStore` is the source of truth for pins (`lightspot_pinned_commands`, max 50, user-ordered). Pins are searched independently of the history file, so a pinned command survives history rotation, and a pinned command is never listed twice.
+- Activation goes through `TerminalLauncher`, which is the **one place in the app that interpolates user input into a script**. The command is escaped for an AppleScript string literal (`escapeForAppleScriptLiteral`) and the finished script is passed to `/usr/bin/osascript` as a single argument, so neither AppleScript nor a shell can be broken out of. Do not add a code path that builds this script any other way.
+
+The manager sheet (`PinnedCommandsView`) is drawn as an overlay inside the panel, not as an AppKit `.sheet`: a `.nonactivatingPanel` never becomes main, and the search field must keep first responder because it owns all keyboard routing. Its geometry (76pt down, 450pt tall) is hardcoded to sit exactly over `bottomContentPanel` — change one and change the other.
+
 ### Two view modes
 
 `SearchViewModel.viewMode` is derived purely from whether the query is blank:
@@ -78,7 +95,9 @@ Two separate selection indices exist so switching modes does not scramble the ot
 
 The search field keeps focus at all times; navigation keys are intercepted before the text view sees them. `SpotlightPanel` overrides `fieldEditor(_:for:)` to return a custom `SpotlightFieldEditor` (`NSTextView`) whose `doCommand(by:)` traps arrows, Tab/⇧Tab, Return, and Escape and forwards them as closures: field editor → panel closures → `AppDelegate` → view model. This is why the user can keep typing while arrowing through results.
 
-`SpotlightFieldEditor` also re-implements ⌘A/C/V/X/Z itself in `performKeyEquivalent`, and `AppMain.setupMainMenu()` installs an Edit menu — both are needed because a `.nonactivatingPanel` never becomes the main window, so the responder chain does not deliver these normally.
+`SpotlightFieldEditor` also re-implements ⌘A/C/V/X/Z itself in `performKeyEquivalent`, and `AppMain.setupMainMenu()` installs an Edit menu — both are needed because a `.nonactivatingPanel` never becomes the main window, so the responder chain does not deliver these normally. ⌘P (pin/unpin the selected Terminal History result) and ⌘⇧P (open the pinned-commands manager) are caught in the same place, for the same reason.
+
+While the pin manager is open it takes over navigation: `moveUp`/`moveDown`/`activateSelected`/`handleCancel` branch on `isPinManagerPresented` before anything else, and Tab/⇧Tab are inert.
 
 ### Never block the main thread from a view body
 
@@ -116,11 +135,12 @@ Hiding the panel actively releases memory (`AppDelegate.hidePanel`): view model 
 
 ## Invariants
 
-- **Never index user files.** The search scope is exactly: installed apps, the hardcoded System Settings list, quick actions, the calculator, and a Google fallback. `deep_verify.swift` asserts this. Do not add a filesystem or `NSMetadataQuery` provider.
+- **Never index user files.** The search scope is exactly: installed apps, the hardcoded System Settings list, quick actions, the calculator, a Google fallback, and the user's own zsh history file. `deep_verify.swift` asserts this. Do not add a filesystem or `NSMetadataQuery` provider — the history provider reads one known file and walks no directory, which is the only exception and must stay the only one.
 - **No new dependencies and no Xcode project.** `Package.swift` uses `.unsafeFlags` for `-Osize -wmo`, which permanently blocks this package from being consumed as a dependency — that is intentional for an app target.
 - Swift 6 language mode, macOS 13+ deployment target.
 - `CalculatorEngine.evaluate` returns `nil` for anything that is not an evaluable expression — including a bare number and a bare word — so that typing an app name never produces a calculator card. Preserve this when extending the parser.
 - Quick actions execute via `/usr/bin/osascript -e` or `/bin/sh -c` on a background queue, or `open:<path>`. Scripts are literals in `QuickActionsProvider.defaultActions` and never interpolate user input.
 - `SpotlightManager` shells out to `PlistBuddy`, `launchctl`, `mdutil`, and `killall` to disable Apple's Spotlight. `setIndexing` prompts for admin via AppleScript. These mutate the user's system state — treat changes here as destructive and verify manually.
-- Persisted state lives in `UserDefaults` under the `lightspot_` prefix (`lightspot_hotkey_option`, `lightspot_recent_app_bundle_ids`, `lightspot_auto_start_enabled`).
+- Quick actions and `TerminalLauncher` are the only things that execute anything. Quick-action scripts never interpolate input; `TerminalLauncher` must interpolate (that is the feature) and therefore escapes first — see **Shell history & pinned commands**.
+- Persisted state lives in `UserDefaults` under the `lightspot_` prefix (`lightspot_hotkey_option`, `lightspot_recent_app_bundle_ids`, `lightspot_auto_start_enabled`, `lightspot_pinned_commands`).
 - Default hotkey is ⌘Space, which collides with system Spotlight unless the user disables it from the menu bar. `HotkeyManager.registerCurrentKey` only logs on failure — a silently non-responding hotkey usually means the collision, not a code bug.

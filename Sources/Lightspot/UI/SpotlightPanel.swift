@@ -13,6 +13,8 @@ final class SpotlightFieldEditor: NSTextView {
     var onPrevTab: (@MainActor () -> Void)?
     var onSubmit: (@MainActor () -> Void)?
     var onCancel: (@MainActor () -> Void)?
+    var onTogglePin: (@MainActor () -> Void)?
+    var onManagePins: (@MainActor () -> Void)?
 
     override func doCommand(by selector: Selector) {
         if selector == #selector(NSResponder.moveUp(_:)) {
@@ -58,6 +60,12 @@ final class SpotlightFieldEditor: NSTextView {
             case "z":
                 undoManager?.undo()
                 return true
+            case "p":
+                // ⌘P pins / unpins the selected Terminal History result. A
+                // .nonactivatingPanel never becomes main, so this is the only place
+                // the key can be caught.
+                onTogglePin?()
+                return true
             default:
                 break
             }
@@ -65,9 +73,15 @@ final class SpotlightFieldEditor: NSTextView {
             guard let chars = event.charactersIgnoringModifiers?.lowercased() else {
                 return super.performKeyEquivalent(with: event)
             }
-            if chars == "z" {
+            switch chars {
+            case "z":
                 undoManager?.redo()
                 return true
+            case "p":
+                onManagePins?()
+                return true
+            default:
+                break
             }
         }
         return super.performKeyEquivalent(with: event)
@@ -125,6 +139,8 @@ final class SpotlightPanel: NSPanel {
     var onPrevTab: (() -> Void)?
     var onSubmit: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onTogglePin: (() -> Void)?
+    var onManagePins: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -177,6 +193,8 @@ final class SpotlightPanel: NSPanel {
             editor.onPrevTab = { [weak self] in self?.onPrevTab?() }
             editor.onSubmit = { [weak self] in self?.onSubmit?() }
             editor.onCancel = { [weak self] in self?.onCancel?() }
+            editor.onTogglePin = { [weak self] in self?.onTogglePin?() }
+            editor.onManagePins = { [weak self] in self?.onManagePins?() }
             fieldEditor = editor
         }
         return fieldEditor

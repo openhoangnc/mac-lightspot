@@ -18,6 +18,12 @@ final class SearchViewModel: ObservableObject {
     @Published var calculatorResult: String? = nil
     @Published var isPanelExpanded: Bool = true
 
+    // Pinned command state. `pinnedCommands` mirrors PinnedCommandsStore so the
+    // manager sheet can render without touching the lock on every body pass.
+    @Published var isPinManagerPresented: Bool = false
+    @Published var pinnedCommands: [String] = []
+    @Published var pinSelectedIndex: Int = 0
+
     // MARK: - Dependencies
     weak var hotkeyManager: HotkeyManager?
     weak var menuBarController: MenuBarController?
@@ -83,6 +89,13 @@ final class SearchViewModel: ObservableObject {
         let flat = flatSearchResults
         guard searchSelectedIndex >= 0 && searchSelectedIndex < flat.count else { return nil }
         return flat[searchSelectedIndex]
+    }
+
+    /// The shell command behind the current selection, when it is a history result.
+    var selectedCommand: String? {
+        guard let result = selectedSearchResult,
+              case .runInTerminal(let command) = result.action else { return nil }
+        return command
     }
 
     var selectedApp: AppInfo? {
@@ -183,7 +196,9 @@ final class SearchViewModel: ObservableObject {
     // MARK: - 2D Keyboard Navigation
 
     func moveLeft() {
-        if viewMode == .applications {
+        if isPinManagerPresented {
+            moveUp()
+        } else if viewMode == .applications {
             if gridSelectedIndex > 0 {
                 gridSelectedIndex -= 1
             }
@@ -193,7 +208,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveRight() {
-        if viewMode == .applications {
+        if isPinManagerPresented {
+            moveDown()
+        } else if viewMode == .applications {
             let apps = displayedApps
             if gridSelectedIndex < apps.count - 1 {
                 gridSelectedIndex += 1
@@ -204,7 +221,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveUp() {
-        if viewMode == .applications {
+        if isPinManagerPresented {
+            guard !pinnedCommands.isEmpty else { return }
+            pinSelectedIndex = pinSelectedIndex > 0 ? pinSelectedIndex - 1 : pinnedCommands.count - 1
+        } else if viewMode == .applications {
             let nextIndex = gridSelectedIndex - Self.gridColumns
             if nextIndex >= 0 {
                 gridSelectedIndex = nextIndex
@@ -221,7 +241,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveDown() {
-        if viewMode == .applications {
+        if isPinManagerPresented {
+            guard !pinnedCommands.isEmpty else { return }
+            pinSelectedIndex = pinSelectedIndex < pinnedCommands.count - 1 ? pinSelectedIndex + 1 : 0
+        } else if viewMode == .applications {
             let apps = displayedApps
             let nextIndex = gridSelectedIndex + Self.gridColumns
             if nextIndex < apps.count {
@@ -241,6 +264,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func nextCategory() {
+        if isPinManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let nextIdx = (idx + 1) % all.count
@@ -249,6 +273,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func previousCategory() {
+        if isPinManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let prevIdx = (idx - 1 + all.count) % all.count
@@ -257,6 +282,11 @@ final class SearchViewModel: ObservableObject {
     }
 
     func activateSelected() {
+        if isPinManagerPresented {
+            runPinnedCommand(at: pinSelectedIndex)
+            return
+        }
+
         if viewMode == .applications {
             guard let app = selectedApp else { return }
             launchApp(app)
@@ -292,6 +322,8 @@ final class SearchViewModel: ObservableObject {
                     NSPasteboard.general.setString(text, forType: .string)
                 case .openWebSearch(let url):
                     NSWorkspace.shared.open(url)
+                case .runInTerminal(let command):
+                    TerminalLauncher.run(command)
                 }
             }
         }
@@ -306,7 +338,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func handleCancel() {
-        if !query.isEmpty {
+        if isPinManagerPresented {
+            hidePinManager()
+        } else if !query.isEmpty {
             clearSearch()
         } else {
             onHide?()
@@ -324,6 +358,9 @@ final class SearchViewModel: ObservableObject {
     func reset() {
         clearSearch()
         isPanelExpanded = true
+        isPinManagerPresented = false
+        pinnedCommands = PinnedCommandsStore.shared.commands()
+        pinSelectedIndex = 0
     }
 
     /// Clear all transient arrays to free memory when hidden
@@ -331,6 +368,109 @@ final class SearchViewModel: ObservableObject {
         groupedResults.removeAll(keepingCapacity: false)
         query = ""
         calculatorResult = nil
+        isPinManagerPresented = false
+        pinnedCommands.removeAll(keepingCapacity: false)
+        pinSelectedIndex = 0
+    }
+
+    // MARK: - Pinned Commands
+
+    func showPinManager() {
+        pinnedCommands = PinnedCommandsStore.shared.commands()
+        pinSelectedIndex = 0
+        if !isPanelExpanded {
+            isPanelExpanded = true
+            updateHeight()
+        }
+        isPinManagerPresented = true
+    }
+
+    func hidePinManager() {
+        isPinManagerPresented = false
+    }
+
+    func togglePinManager() {
+        if isPinManagerPresented {
+            hidePinManager()
+        } else {
+            showPinManager()
+        }
+    }
+
+    /// ⌘P: pins or unpins the selected history result, or unpins the selected row
+    /// while the manager is open.
+    func togglePinForSelection() {
+        if isPinManagerPresented {
+            unpinCommand(at: pinSelectedIndex)
+            return
+        }
+        guard let command = selectedCommand else { return }
+        PinnedCommandsStore.shared.toggle(command)
+        reloadResultsKeepingSelection()
+    }
+
+    func togglePin(for command: String) {
+        PinnedCommandsStore.shared.toggle(command)
+        reloadResultsKeepingSelection()
+    }
+
+    func unpinCommand(at index: Int) {
+        guard index >= 0, index < pinnedCommands.count else { return }
+        PinnedCommandsStore.shared.unpin(pinnedCommands[index])
+        pinnedCommands = PinnedCommandsStore.shared.commands()
+        pinSelectedIndex = min(index, max(pinnedCommands.count - 1, 0))
+        reloadResultsKeepingSelection()
+    }
+
+    func movePinnedCommand(at index: Int, offset: Int) {
+        guard index >= 0, index < pinnedCommands.count else { return }
+        PinnedCommandsStore.shared.move(from: index, offset: offset)
+        pinnedCommands = PinnedCommandsStore.shared.commands()
+        pinSelectedIndex = min(max(index + offset, 0), max(pinnedCommands.count - 1, 0))
+        reloadResultsKeepingSelection()
+    }
+
+    func runPinnedCommand(at index: Int) {
+        guard index >= 0, index < pinnedCommands.count else { return }
+        runCommandInTerminal(pinnedCommands[index])
+    }
+
+    /// Opens Terminal and runs the command, dismissing the panel first so the new
+    /// Terminal window is not covered by it.
+    func runCommandInTerminal(_ command: String) {
+        isPinManagerPresented = false
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            TerminalLauncher.run(command)
+        }
+    }
+
+    /// Pinning changes a result's score, so the row moves. Re-run the search and
+    /// follow the command that was selected rather than the index it used to sit at.
+    private func reloadResultsKeepingSelection() {
+        pinnedCommands = PinnedCommandsStore.shared.commands()
+
+        let q = SearchQuery(query)
+        guard !q.isEmpty else { return }
+
+        let previousCommand = selectedCommand
+        let results = SearchEngine.shared.searchImmediate(q)
+        groupedResults = results
+
+        let flat = SearchEngine.flatResults(from: results)
+        if flat.isEmpty {
+            searchSelectedIndex = 0
+            return
+        }
+        if let command = previousCommand,
+           let index = flat.firstIndex(where: {
+               if case .runInTerminal(let candidate) = $0.action { return candidate == command }
+               return false
+           }) {
+            searchSelectedIndex = index
+        } else {
+            searchSelectedIndex = min(searchSelectedIndex, flat.count - 1)
+        }
     }
 
     // MARK: - Menu Actions

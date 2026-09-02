@@ -6,6 +6,15 @@ struct SpotlightView: View {
     @State private var showSettingsMenu: Bool = false
 
     var body: some View {
+        mainContent
+            .overlay {
+                if viewModel.isPinManagerPresented {
+                    pinManagerLayer
+                }
+            }
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 12) {
             // 1. Top Floating Pill Search Bar
             searchCapsuleBar
@@ -21,6 +30,33 @@ struct SpotlightView: View {
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 16)
+    }
+
+    // MARK: - Pinned Commands Manager Layer
+
+    /// Covers exactly the bottom results panel (10pt top padding + 54pt capsule +
+    /// 12pt stack spacing = 76pt down, 450pt tall) so the manager reads as a sheet
+    /// over the results while the search field above it keeps focus and keyboard
+    /// routing. Keep these numbers in step with `bottomContentPanel`.
+    private var pinManagerLayer: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: 76)
+
+            PinnedCommandsView(
+                commands: viewModel.pinnedCommands,
+                selectedIndex: viewModel.pinSelectedIndex,
+                onSelect: { index in viewModel.pinSelectedIndex = index },
+                onRun: { index in viewModel.runPinnedCommand(at: index) },
+                onUnpin: { index in viewModel.unpinCommand(at: index) },
+                onMove: { index, offset in viewModel.movePinnedCommand(at: index, offset: offset) },
+                onClose: { viewModel.hidePinManager() }
+            )
+            .frame(height: 450)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
     }
 
     // MARK: - Top Search Capsule Bar
@@ -98,6 +134,19 @@ struct SpotlightView: View {
                     }
                     Button("Previous Category (⇧Tab)") {
                         viewModel.previousCategory()
+                    }
+
+                    Divider()
+
+                    // Pinned Terminal commands
+                    Button("Pinned Commands... (⌘⇧P)") {
+                        viewModel.showPinManager()
+                    }
+                    // Deliberately not a state-dependent title: SwiftUI re-evaluates
+                    // Menu content on every body pass, so reading the selection here
+                    // would re-flatten the results on every keystroke.
+                    Button("Pin / Unpin Selected Command (⌘P)") {
+                        viewModel.togglePinForSelection()
                     }
 
                     Divider()
@@ -288,6 +337,11 @@ struct SpotlightView: View {
                                 if let idx = viewModel.flatSearchResults.firstIndex(of: result) {
                                     viewModel.searchSelectedIndex = idx
                                     viewModel.activateSelected()
+                                }
+                            },
+                            onTogglePin: { result in
+                                if case .runInTerminal(let command) = result.action {
+                                    viewModel.togglePin(for: command)
                                 }
                             }
                         )

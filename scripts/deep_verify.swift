@@ -1,6 +1,15 @@
 import AppKit
 import Foundation
 
+// Live-system verification. Everything here talks to the real machine: it resolves
+// every settings deep link through NSWorkspace, compiles every AppleScript Lightspot
+// can emit, scans the real /Applications, and parses the real zsh history file.
+//
+// Build & run:
+//   swiftc -o /tmp/deep_verify scripts/deep_verify.swift \
+//       Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift \
+//       && /tmp/deep_verify
+
 @main
 struct DeepVerifier {
     static func main() {
@@ -79,30 +88,95 @@ struct DeepVerifier {
         // Wait briefly for scan
         Thread.sleep(forTimeInterval: 0.8)
 
-        let safariResults = AppScanner.shared.search("safari")
+        let safariResults = AppScanner.shared.search(SearchQuery("safari"))
         check("Discovered Safari.app on system", !safariResults.isEmpty && safariResults.first?.title.lowercased().contains("safari") == true)
 
-        let termResults = AppScanner.shared.search("terminal")
+        let termResults = AppScanner.shared.search(SearchQuery("terminal"))
         check("Discovered Terminal.app on system", !termResults.isEmpty && termResults.first?.title.lowercased().contains("terminal") == true)
 
         // Verify strictly NO file indexing
         print("\n--- 4. Verifying Strictly ZERO File Indexing ---")
-        let docQuery1 = SearchEngine.shared.searchImmediate("README.md")
+        let docQuery1 = SearchEngine.shared.searchImmediate(SearchQuery("README.md"))
         let hasDocResult1 = docQuery1.values.flatMap { $0 }.contains { $0.subtitle.hasSuffix(".md") && $0.category != .webSearch }
         check("Does not index README.md", !hasDocResult1)
 
-        let docQuery2 = SearchEngine.shared.searchImmediate("Package.swift")
+        let docQuery2 = SearchEngine.shared.searchImmediate(SearchQuery("Package.swift"))
         let hasDocResult2 = docQuery2.values.flatMap { $0 }.contains { $0.subtitle.hasSuffix(".swift") && $0.category != .webSearch }
         check("Does not index Package.swift", !hasDocResult2)
 
-        let docQuery3 = SearchEngine.shared.searchImmediate(".pdf")
+        let docQuery3 = SearchEngine.shared.searchImmediate(SearchQuery(".pdf"))
         let hasDocResult3 = docQuery3.values.flatMap { $0 }.contains { $0.subtitle.hasSuffix(".pdf") && $0.category != .webSearch }
         check("Does not index .pdf documents", !hasDocResult3)
 
+        // The history provider is the only thing that reads a user file, and it reads
+        // exactly one: a query that cannot appear in it must return nothing.
+        let nonsense = SearchEngine.shared.searchImmediate(SearchQuery("zz-\(UUID().uuidString)"))
+        check("Unknown query produces no Terminal History results", nonsense[.shellHistory] == nil)
+
         // ----------------------------------------------------
-        // SECTION 5: Math Calculator Comprehensive Suite
+        // SECTION 5: zsh History (single file, parsed off the app's search path)
         // ----------------------------------------------------
-        print("\n--- 5. Testing Calculator Engine Comprehensive Suite ---")
+        print("\n--- 5. Testing Shell History Provider Against the Real History File ---")
+        if let historyURL = ShellHistoryProvider.historyFileURL() {
+            print("History file: \(historyURL.path)")
+            let name = historyURL.lastPathComponent
+            let histfile = ProcessInfo.processInfo.environment["HISTFILE"].map { ($0 as NSString).expandingTildeInPath }
+            check("Reads a shell history file only", name == ".zsh_history" || name == ".zhistory" || historyURL.path == histfile)
+
+            let entries = ShellHistoryProvider.loadEntries(from: historyURL)
+            print("Parsed unique commands: \(entries.count)")
+            check("Entry count is capped (<= 1200)", entries.count <= 1200)
+            check("No empty commands parsed", entries.allSatisfy { !$0.command.isEmpty })
+            check("No command exceeds the length cap", entries.allSatisfy { $0.command.count <= 300 })
+            check("Display titles are single-line", entries.allSatisfy { !$0.displayTitle.contains("\n") })
+            check("Commands are de-duplicated", Set(entries.map { $0.command }).count == entries.count)
+
+            if let newest = entries.first, let token = newest.tokens.first, token.count >= 2 {
+                let results = ShellHistoryProvider.search(SearchQuery(token), pinned: [], history: entries)
+                check("Searching '\(token)' finds the command it came from", results.contains { $0.title == newest.displayTitle })
+                check("History results never leak a path into the subtitle", results.allSatisfy { $0.subtitle.hasSuffix("Run in Terminal") })
+                check("History results all carry a run-in-Terminal action", results.allSatisfy {
+                    if case .runInTerminal = $0.action { return true }
+                    return false
+                })
+                check("History results are capped per search", results.count <= 12)
+            } else {
+                print("     ⚠️ History file has no usable entries — skipping search checks")
+            }
+        } else {
+            print("     ⚠️ No zsh history file on this machine — skipping history checks")
+        }
+
+        // ----------------------------------------------------
+        // SECTION 6: Terminal command escaping compiles as AppleScript
+        // ----------------------------------------------------
+        print("\n--- 6. Testing Terminal Launcher AppleScript Generation ---")
+        check("Terminal.app is installed", FileManager.default.fileExists(atPath: "/System/Applications/Utilities/Terminal.app"))
+
+        let commandSamples = [
+            "git status",
+            "echo \"hello world\"",
+            "grep -R 'needle' . | wc -l",
+            "printf 'a\tb\n'",
+            "cd ~/Projects && ls -la",
+            "echo back\\slash",
+            // A command written to break out of the AppleScript literal.
+            "\"\nactivate\ndo shell script \"whoami"
+        ]
+        for command in commandSamples {
+            let source = TerminalLauncher.script(for: command)
+            var error: NSDictionary?
+            let compiled = NSAppleScript(source: source)?.compileAndReturnError(&error) ?? false
+            check("Generated AppleScript compiles for: \(command.replacingOccurrences(of: "\n", with: "⏎"))", compiled)
+            if !compiled, let err = error {
+                print("     Error: \(err)")
+            }
+        }
+
+        // ----------------------------------------------------
+        // SECTION 7: Math Calculator Comprehensive Suite
+        // ----------------------------------------------------
+        print("\n--- 7. Testing Calculator Engine Comprehensive Suite ---")
         let mathCases: [(String, String?)] = [
             ("1 + 1", "2"),
             ("100 - 37", "63"),
@@ -147,15 +221,15 @@ struct DeepVerifier {
         }
 
         // ----------------------------------------------------
-        // SECTION 6: Search Engine Aggregation & Fallbacks
+        // SECTION 8: Search Engine Aggregation & Fallbacks
         // ----------------------------------------------------
-        print("\n--- 6. Testing Search Engine Categorization ---")
-        let search1 = SearchEngine.shared.searchImmediate("sound")
+        print("\n--- 8. Testing Search Engine Categorization ---")
+        let search1 = SearchEngine.shared.searchImmediate(SearchQuery("sound"))
         check("Search 'sound' produces Top Hit", search1[.topHit] != nil)
         check("Search 'sound' produces System Settings", search1[.systemSettings] != nil)
         check("Search 'sound' produces Web Search fallback", search1[.webSearch] != nil)
 
-        let search2 = SearchEngine.shared.searchImmediate("50 * 50")
+        let search2 = SearchEngine.shared.searchImmediate(SearchQuery("50 * 50"))
         check("Search '50 * 50' produces Calculator result", search2[.calculator] != nil)
         check("Search '50 * 50' Calculator value is 2.500 or 2,500", search2[.calculator]?.first?.title == CalculatorEngine.evaluate("2500 + 0"))
 

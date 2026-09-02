@@ -2,7 +2,7 @@
 
 A lightweight, pixel-perfect replacement for macOS Spotlight built in pure Swift (no Xcode required).
 
-Lightspot brings the modern floating pill design and translucent glass aesthetic of macOS Spotlight with instant responsiveness and a strictly focused search scope: **Applications, System Settings, Quick Actions, Math Calculations, and Web Search** — **never indexing user files**.
+Lightspot brings the modern floating pill design and translucent glass aesthetic of macOS Spotlight with instant responsiveness and a strictly focused search scope: **Applications, System Settings, Quick Actions, Math Calculations, zsh History, and Web Search** — **never indexing user files**.
 
 ---
 
@@ -13,6 +13,7 @@ Lightspot brings the modern floating pill design and translucent glass aesthetic
   - 🚀 **Applications**: Fast scanner for installed apps in `/Applications`, `/System/Applications`, `~/Applications`, and Utilities.
   - ⚙️ **macOS System Settings**: 30+ deep links (`x-apple.systempreferences:...`) directly opening settings panes with authentic SF Symbols.
   - ⚡️ **Quick Actions**: Lock Screen, Sleep, Restart, Shut Down, Empty Trash, Toggle Dark Mode, Mute/Unmute Volume, Screenshot, Activity Monitor, Force Quit.
+  - 🖥️ **zsh History**: Searches your own `~/.zsh_history` (or `$HISTFILE`) — press `Return` to run the matching command in a new Terminal window. Pin the commands you use most with `⌘P` so they always rank first, and manage them in the pinned-commands sheet (`⌘⇧P`). Only that one file is ever read; no directory is scanned.
   - 🔢 **Instant Calculator**: Safe, crash-free math evaluation (`+`, `-`, `*`, `/`, `^`, `%`, `sqrt`, `abs`, `sin`, `cos`, `tan`, `log`, `ln`, `pi`, `e`, parentheses) with live preview and clipboard copy.
   - 🌐 **Google Web Search**: Seamless fallback opening search queries in your default web browser.
 - **Global Hotkey**: Supports **`⌘Space`** (Command + Space) as a direct replacement for Spotlight, or **`⌘⇧Space`** / **`⌥Space`** (configurable from menu bar). Zero Accessibility permissions required.
@@ -86,8 +87,10 @@ make icon
 | **`⌘Space`** / **`⌘⇧Space`** | Summon or dismiss Lightspot anywhere (configurable) |
 | **`↓` (Down Arrow)** | Move to next search result |
 | **`↑` (Up Arrow)** | Move to previous search result |
-| **`Return` (Enter)** | Open selected application, settings pane, or execute action |
-| **`Escape`** | Clear search field, or dismiss Lightspot if empty |
+| **`Return` (Enter)** | Open selected application, settings pane, run the selected history command in Terminal, or execute action |
+| **`⌘P`** | Pin / unpin the selected Terminal History command |
+| **`⌘⇧P`** | Open the pinned-commands manager (↑↓ select, `Return` run, `⌘P` unpin, `Esc` close) |
+| **`Escape`** | Close the pinned-commands manager, clear the search field, or dismiss Lightspot if empty |
 | **Click Outside** | Auto-dismisses the floating panel |
 
 ---
@@ -108,7 +111,8 @@ mac-lightspot/
 │   └── AppIcon.icns              # Generated high-res multi-size macOS app icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   └── test_engine.swift         # Automated test runner for core search & math engines
+│   ├── test_engine.swift         # Automated test runner for core search & math engines
+│   └── deep_verify.swift         # Live-system verification (deep links, AppleScript, history)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point & NSApplicationDelegate
@@ -118,10 +122,12 @@ mac-lightspot/
         │   ├── SettingsProvider.swift # 30+ macOS System Settings deep links
         │   ├── QuickActionsProvider.swift # Async system actions
         │   ├── CalculatorEngine.swift # Safe recursive-descent math parser
+        │   ├── ShellHistoryProvider.swift # zsh history parser, ranking & pinned commands
         │   ├── WebSearchProvider.swift # Google search query builder
         │   └── SearchEngine.swift # Fuzzy scoring, ranking, & top-hit aggregator
         ├── System/
         │   ├── HotkeyManager.swift # Carbon global hotkey (⌘⇧Space)
+        │   ├── TerminalLauncher.swift # Escaped `do script` runner for Terminal.app
         │   └── MenuBarController.swift # Menu bar status item
         └── UI/
             ├── SearchViewModel.swift # Reactive view model
@@ -130,6 +136,7 @@ mac-lightspot/
             ├── SearchFieldView.swift # AppKit NSTextField bridge with custom field editor
             ├── ResultsListView.swift # Grouped categories list view
             ├── ResultRowView.swift # Individual result row with accent highlight
+            ├── PinnedCommandsView.swift # Pinned command manager sheet
             └── PreviewPaneView.swift # Rich preview details card
 ```
 
@@ -137,5 +144,6 @@ mac-lightspot/
 
 ## 🔒 Privacy & Security
 
-- **No File Indexing**: Lightspot never reads, indexes, or searches your documents, downloads, desktop files, or personal data.
+- **No File Indexing**: Lightspot never reads, indexes, or searches your documents, downloads, desktop files, or personal data. The single exception is your own shell history file (`~/.zsh_history`), which powers the Terminal History results — only its last 2 MB are read, they are kept in memory only, and Lightspot never writes to your history file and never sends any of it anywhere.
+- **Commands Run Only On Return**: A history result is executed only when you explicitly activate it, in a visible Terminal window, and it is never promoted to the Top Hit so `Return` on a normal search can never run a shell command by accident.
 - **Zero Network Tracking**: Lightspot has no analytics or background network requests. Web searches are only performed when explicitly opened in your default browser.
