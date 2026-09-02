@@ -51,8 +51,8 @@ struct ResultsListView: View {
             .onChange(of: selectedIndex) { newIndex in
                 let flat = flatResults
                 if newIndex >= 0 && newIndex < flat.count {
-                    withAnimation(.easeInOut(duration: 0.1)) {
-                        proxy.scrollTo(flat[newIndex].id, anchor: .center)
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        proxy.scrollTo(flat[newIndex].id, anchor: nil)
                     }
                 }
             }

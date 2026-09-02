@@ -253,32 +253,51 @@ struct SearchResultsView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(SearchEngine.orderedCategories(from: groupedResults), id: \.self) { category in
-                    if let items = groupedResults[category] {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(category.displayName)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.5))
-                                .textCase(.uppercase)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 4)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(SearchEngine.orderedCategories(from: groupedResults), id: \.self) { category in
+                        if let items = groupedResults[category] {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(category.displayName)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.5))
+                                    .textCase(.uppercase)
+                                    .padding(.horizontal, 16)
+                                    .padding(.top, 4)
 
-                            ForEach(items, id: \.id) { item in
-                                let isSelected = flatResults.firstIndex(where: { $0.id == item.id }) == selectedIndex
-                                SearchResultRow(
-                                    result: item,
-                                    isSelected: isSelected,
-                                    onTap: { onSelect(item) }
-                                )
+                                ForEach(items, id: \.id) { item in
+                                    let isSelected = flatResults.firstIndex(where: { $0.id == item.id }) == selectedIndex
+                                    SearchResultRow(
+                                        result: item,
+                                        isSelected: isSelected,
+                                        onTap: { onSelect(item) }
+                                    )
+                                    .id(item.id)
+                                }
                             }
                         }
                     }
                 }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
             }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 12)
+            .onChange(of: selectedIndex) { newIndex in
+                let flat = flatResults
+                if newIndex >= 0 && newIndex < flat.count {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        proxy.scrollTo(flat[newIndex].id, anchor: nil)
+                    }
+                }
+            }
+            .onChange(of: groupedResults) { _ in
+                let flat = flatResults
+                if selectedIndex >= 0 && selectedIndex < flat.count {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        proxy.scrollTo(flat[selectedIndex].id, anchor: nil)
+                    }
+                }
+            }
         }
     }
 }
