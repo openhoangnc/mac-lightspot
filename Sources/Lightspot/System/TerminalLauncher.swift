@@ -275,34 +275,82 @@ public enum TerminalLauncher {
 
     // MARK: - Finder Integration
 
+    nonisolated(unsafe) private static var cachedFinderPath: (path: String?, timestamp: Date) = (nil, .distantPast)
+    private static let finderPathLock = NSLock()
+
     /// Queries the frontmost Finder window or selected subfolder and returns its POSIX path.
-    public static func activeFinderFolderPath() -> String? {
+    public static func activeFinderFolderPath(forceRefresh: Bool = false) -> String? {
+        finderPathLock.lock()
+        if !forceRefresh && Date().timeIntervalSince(cachedFinderPath.timestamp) < 1.0 {
+            let cached = cachedFinderPath.path
+            finderPathLock.unlock()
+            return cached
+        }
+        finderPathLock.unlock()
+
         let script = """
         tell application "Finder"
-            if (count of Finder windows) > 0 then
+            if (count of windows) > 0 then
                 try
                     set theSelection to selection
-                    if theSelection is not {} and class of item 1 of theSelection is folder then
-                        return POSIX path of (item 1 of theSelection as alias)
-                    else
-                        return POSIX path of (target of front Finder window as alias)
+                    if theSelection is not {} then
+                        set selItem to item 1 of theSelection
+                        if class of selItem is folder then
+                            return POSIX path of (selItem as alias)
+                        end if
                     end if
-                on error
-                    return ""
+                end try
+                try
+                    set winTarget to target of Finder window 1
+                    return POSIX path of (winTarget as alias)
+                end try
+                try
+                    set frontTarget to target of front window
+                    return POSIX path of (frontTarget as alias)
+                end try
+                try
+                    return POSIX path of (insertion location as alias)
                 end try
             end if
             return ""
         end tell
         """
 
+        var resolvedPath: String? = nil
+
+        // 1. Try in-process NSAppleScript (< 1ms)
         var error: NSDictionary?
         if let appleScript = NSAppleScript(source: script) {
             let output = appleScript.executeAndReturnError(&error)
-            if error == nil, let stringVal = output.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !stringVal.isEmpty {
-                return stringVal
+            if error == nil, let val = output.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                resolvedPath = val
             }
         }
-        return nil
+
+        // 2. Fallback to /usr/bin/osascript if in-process AppleScript failed or returned nil
+        if resolvedPath == nil {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", script]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            process.standardInput = FileHandle.nullDevice
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                if let val = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                    resolvedPath = val
+                }
+            } catch {}
+        }
+
+        finderPathLock.lock()
+        cachedFinderPath = (resolvedPath, Date())
+        finderPathLock.unlock()
+
+        return resolvedPath
     }
 
     /// Opens the current Finder directory in the user's preferred terminal emulator.

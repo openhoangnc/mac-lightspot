@@ -955,8 +955,12 @@ struct TestRunner {
         assertTrue(ipResults.first?.subtitle.contains("Local:") == true, "IP Address subtitle shows Local IP")
 
         let termFinderResults = qaProvider.search(SearchQuery("terminal here"))
-        assertTrue(!termFinderResults.isEmpty, "Terminal here search finds Terminal in Finder Folder")
-        assertEqual(termFinderResults.first?.title, "Terminal in Finder Folder", "Top result is Terminal in Finder Folder")
+        if TerminalLauncher.activeFinderFolderPath() != nil {
+            assertTrue(!termFinderResults.isEmpty, "Terminal here search finds Terminal in Finder Folder when Finder is open")
+            assertEqual(termFinderResults.first?.title, "Terminal in Finder Folder", "Top result is Terminal in Finder Folder")
+        } else {
+            assertTrue(termFinderResults.isEmpty, "Terminal in Finder Folder is hidden when no Finder window is open")
+        }
 
         print("✅ Enhanced Quick Actions passed all tests!\n")
 

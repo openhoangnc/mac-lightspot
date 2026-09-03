@@ -26,5 +26,7 @@
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Lightspot needs permission to detect the current Finder window and control system actions.</string>
 </dict>
 </plist>

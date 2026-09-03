@@ -183,13 +183,12 @@ final class QuickActionsProvider: Sendable {
                     subtitle = "Local: \(local) · Public: \(pub) · Press ↵ to copy"
                     actionPayload = .copyToClipboard(pub != "Fetching..." ? "\(local) (Local) · \(pub) (Public)" : local)
                 } else if action.name == "Terminal in Finder Folder" {
-                    let termName = TerminalLauncher.currentTerminal.displayName
-                    if let folder = TerminalLauncher.activeFinderFolderPath() {
-                        let displayFolder = folder.replacingOccurrences(of: NSHomeDirectory(), with: "~")
-                        subtitle = "Open \(termName) in \(displayFolder)"
-                    } else {
-                        subtitle = "Open \(termName) in ~ (No active Finder window)"
+                    guard let folder = TerminalLauncher.activeFinderFolderPath(), !folder.isEmpty else {
+                        continue
                     }
+                    let termName = TerminalLauncher.currentTerminal.displayName
+                    let displayFolder = folder.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                    subtitle = "Open \(termName) in \(displayFolder)"
                 }
 
                 let result = SearchResult(
