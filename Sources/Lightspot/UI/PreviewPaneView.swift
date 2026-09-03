@@ -137,7 +137,7 @@ struct PreviewPaneView: View {
         case .copyToClipboard: return "Press ↵ to copy result"
         case .openWebSearch: return "Press ↵ to search in browser"
         case .openURL: return "Press ↵ to open in browser"
-        case .openFolder, .openProject: return "Press ↵ to open · ⌥↵ for Terminal · ⌘↵ for Finder"
+        case .openFolder, .openProject: return "Press ↵ to open · ⌘↵ for Terminal · ⌥↵ for Finder"
         case .killProcess: return "Press ↵ to terminate · ⌥↵ to force kill"
         }
     }

@@ -370,7 +370,7 @@ struct SearchResultRow: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help("Open in Finder (⌘↵)")
+                    .help("Open in Finder (⌥↵)")
                     .opacity(isHovered || isSelected ? 1 : 0)
                 }
 
@@ -387,7 +387,7 @@ struct SearchResultRow: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help("Open in Terminal (⌥↵)")
+                    .help("Open in Terminal (⌘↵)")
                     .opacity(isHovered || isSelected ? 1 : 0)
                 }
 
@@ -424,7 +424,7 @@ struct SearchResultRow: View {
                             .background(Capsule().fill(Color.white.opacity(0.18)))
 
                             HStack(spacing: 3) {
-                                Text("⌥↵")
+                                Text("⌘↵")
                                     .font(.system(size: 10, weight: .semibold))
                                 Text("Terminal")
                                     .font(.system(size: 10, weight: .medium))
@@ -435,7 +435,7 @@ struct SearchResultRow: View {
                             .background(Capsule().fill(Color.white.opacity(0.12)))
 
                             HStack(spacing: 3) {
-                                Text("⌘↵")
+                                Text("⌥↵")
                                     .font(.system(size: 10, weight: .semibold))
                                 Text("Finder")
                                     .font(.system(size: 10, weight: .medium))

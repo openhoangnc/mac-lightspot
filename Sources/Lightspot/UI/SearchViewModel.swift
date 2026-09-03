@@ -150,7 +150,7 @@ final class SearchViewModel: ObservableObject {
         }
         switch item.action {
         case .launchApp, .openSettings, .openURL: return "Open"
-        case .openFolder, .openProject: return "Open ↵ · Terminal ⌥↵ · Finder ⌘↵"
+        case .openFolder, .openProject: return "Open ↵ · Terminal ⌘↵ · Finder ⌥↵"
         case .killProcess(_, _, let force): return force ? "Force Kill" : "Terminate"
         case .runInTerminal, .runQuickAction: return "Run"
         case .copyToClipboard: return "Copy"
@@ -447,7 +447,7 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
-    /// Secondary action: triggered by Option+Return (⌥↵)
+    /// Secondary action: triggered by Option+Return (⌥↵) - Opens Finder for projects
     func activateSecondary() {
         guard let result = selectedSearchResult else { return }
 
@@ -458,11 +458,11 @@ final class SearchViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             switch result.action {
             case .openFolder(let path), .openProject(let path, _):
-                TerminalLauncher.openFolder(at: path)
-            case .runInTerminal(let command):
-                TerminalLauncher.run(command)
+                Self.openFolderInFinder(at: path)
             case .killProcess(let pid, _, _):
                 ProcessKillerProvider.terminateProcess(pid: pid, force: true)
+            case .launchApp(let path):
+                NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
             default:
                 break
             }
@@ -486,7 +486,7 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
-    /// Tertiary action: triggered by Command+Return (⌘↵) or Command+R (⌘R)
+    /// Tertiary action: triggered by Command+Return (⌘↵) - Opens Terminal for projects
     func activateFinder() {
         guard let result = selectedSearchResult else { return }
 
@@ -497,7 +497,9 @@ final class SearchViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             switch result.action {
             case .openFolder(let path), .openProject(let path, _):
-                Self.openFolderInFinder(at: path)
+                TerminalLauncher.openFolder(at: path)
+            case .runInTerminal(let command):
+                TerminalLauncher.run(command)
             case .launchApp(let path):
                 NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
             default:
