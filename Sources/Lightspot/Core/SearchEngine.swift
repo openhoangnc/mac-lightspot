@@ -59,16 +59,36 @@ final class SearchEngine: @unchecked Sendable {
         // Web Search (always last)
         allResults.append(contentsOf: WebSearchProvider.shared.search(query))
 
+        // Apply search matching ranking boost: same keyword + recent selected + selected times
+        let rankedResults: [SearchResult] = allResults.map { result in
+            guard result.category != .webSearch && result.category != .calculator else {
+                return result
+            }
+            let boost = SearchHistoryManager.shared.rankingBoost(for: result.id, query: query)
+            if boost > 0 {
+                return result.withScore(result.score + boost)
+            }
+            return result
+        }
+
         // Group by category, limit per category
         var grouped: [ResultCategory: [SearchResult]] = [:]
         grouped.reserveCapacity(ResultCategory.allCases.count)
 
         // Find the top hit (highest score across all non-web/non-calc categories).
-        // Shell history is excluded on purpose: Return on the Top Hit is meant to be
-        // a safe, predictable "open the obvious thing", and silently promoting a
-        // fuzzy history match would make it run a shell command instead.
-        let topHitCandidates = allResults.filter {
-            $0.category != .webSearch && $0.category != .calculator && $0.category != .shellHistory
+        // General unpinned shell history is excluded on purpose to avoid accidental
+        // Return execution of fuzzy commands from ~/.zsh_history. However, explicitly
+        // PINNED commands or commands previously SELECTED by the user for this query are
+        // intentional user choices and can be promoted to Top Hit.
+        let topHitCandidates = rankedResults.filter { result in
+            guard result.category != .webSearch && result.category != .calculator else {
+                return false
+            }
+            if result.category == .shellHistory {
+                let hasKeywordSelection = SearchHistoryManager.shared.itemRecord(for: result.id)?.keywords[query.lowercased] != nil
+                return result.isPinned || hasKeywordSelection
+            }
+            return true
         }
         var topHitOriginalID: String? = nil
         if let topHit = topHitCandidates.max(by: { $0.score < $1.score }), topHit.score >= 60 {
@@ -80,7 +100,8 @@ final class SearchEngine: @unchecked Sendable {
                 iconType: topHit.iconType,
                 category: .topHit,
                 score: topHit.score,
-                action: topHit.action
+                action: topHit.action,
+                isPinned: topHit.isPinned
             )
             grouped[.topHit] = [promoted]
         }
@@ -88,7 +109,7 @@ final class SearchEngine: @unchecked Sendable {
         // Group remaining by their original category (excluding the item already promoted to Top Hit)
         for category in ResultCategory.allCases where category != .topHit {
             let cap = category == .shellHistory ? maxShellHistoryResults : maxResultsPerCategory
-            let categoryResults = allResults
+            let categoryResults = rankedResults
                 .filter { $0.category == category && $0.id != topHitOriginalID }
                 .sorted { $0.score > $1.score }
                 .prefix(cap)

@@ -24,6 +24,11 @@ final class SearchViewModel: ObservableObject {
     @Published var pinnedCommands: [String] = []
     @Published var pinSelectedIndex: Int = 0
 
+    // Search history state
+    @Published var isHistoryManagerPresented: Bool = false
+    @Published var historyEntries: [SearchHistoryEntry] = []
+    @Published var historySelectedIndex: Int = 0
+
     // MARK: - Dependencies
     weak var hotkeyManager: HotkeyManager?
     weak var menuBarController: MenuBarController?
@@ -121,7 +126,19 @@ final class SearchViewModel: ObservableObject {
     }
 
     var hasTopHitOrApp: Bool {
-        topHitAppPath != nil
+        selectedSearchResult != nil || groupedResults[.topHit]?.first != nil || topHitAppPath != nil
+    }
+
+    var topHitBadgeText: String {
+        guard let item = selectedSearchResult ?? groupedResults[.topHit]?.first else {
+            return "Open"
+        }
+        switch item.action {
+        case .launchApp, .openSettings: return "Open"
+        case .runInTerminal, .runQuickAction: return "Run"
+        case .copyToClipboard: return "Copy"
+        case .openWebSearch: return "Search"
+        }
     }
 
     // MARK: - Initialization
@@ -196,7 +213,9 @@ final class SearchViewModel: ObservableObject {
     // MARK: - 2D Keyboard Navigation
 
     func moveLeft() {
-        if isPinManagerPresented {
+        if isHistoryManagerPresented {
+            moveUp()
+        } else if isPinManagerPresented {
             moveUp()
         } else if viewMode == .applications {
             if gridSelectedIndex > 0 {
@@ -208,7 +227,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveRight() {
-        if isPinManagerPresented {
+        if isHistoryManagerPresented {
+            moveDown()
+        } else if isPinManagerPresented {
             moveDown()
         } else if viewMode == .applications {
             let apps = displayedApps
@@ -221,7 +242,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveUp() {
-        if isPinManagerPresented {
+        if isHistoryManagerPresented {
+            guard !historyEntries.isEmpty else { return }
+            historySelectedIndex = historySelectedIndex > 0 ? historySelectedIndex - 1 : historyEntries.count - 1
+        } else if isPinManagerPresented {
             guard !pinnedCommands.isEmpty else { return }
             pinSelectedIndex = pinSelectedIndex > 0 ? pinSelectedIndex - 1 : pinnedCommands.count - 1
         } else if viewMode == .applications {
@@ -241,7 +265,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveDown() {
-        if isPinManagerPresented {
+        if isHistoryManagerPresented {
+            guard !historyEntries.isEmpty else { return }
+            historySelectedIndex = historySelectedIndex < historyEntries.count - 1 ? historySelectedIndex + 1 : 0
+        } else if isPinManagerPresented {
             guard !pinnedCommands.isEmpty else { return }
             pinSelectedIndex = pinSelectedIndex < pinnedCommands.count - 1 ? pinSelectedIndex + 1 : 0
         } else if viewMode == .applications {
@@ -264,7 +291,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func nextCategory() {
-        if isPinManagerPresented { return }
+        if isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let nextIdx = (idx + 1) % all.count
@@ -273,7 +300,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func previousCategory() {
-        if isPinManagerPresented { return }
+        if isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let prevIdx = (idx - 1 + all.count) % all.count
@@ -282,6 +309,11 @@ final class SearchViewModel: ObservableObject {
     }
 
     func activateSelected() {
+        if isHistoryManagerPresented {
+            runHistoryEntry(at: historySelectedIndex)
+            return
+        }
+
         if isPinManagerPresented {
             runPinnedCommand(at: pinSelectedIndex)
             return
@@ -304,6 +336,18 @@ final class SearchViewModel: ObservableObject {
                     launchApp(firstApp)
                 }
                 return
+            }
+
+            // Record selection in SearchHistoryManager
+            SearchHistoryManager.shared.recordSelection(result: result, query: query)
+
+            // If it's an application, also keep RecentAppsManager in sync
+            if result.id.hasPrefix("top-app-") {
+                let bundleId = String(result.id.dropFirst("top-app-".count))
+                RecentAppsManager.shared.recordLaunch(bundleIdentifier: bundleId)
+            } else if result.id.hasPrefix("app-") {
+                let bundleId = String(result.id.dropFirst("app-".count))
+                RecentAppsManager.shared.recordLaunch(bundleIdentifier: bundleId)
             }
             
             onHide?()
@@ -331,6 +375,15 @@ final class SearchViewModel: ObservableObject {
 
     func launchApp(_ app: AppInfo) {
         RecentAppsManager.shared.recordLaunch(bundleIdentifier: app.bundleIdentifier)
+        SearchHistoryManager.shared.recordSelection(
+            itemId: "app-\(app.bundleIdentifier)",
+            title: app.name,
+            subtitle: "Application",
+            category: .applications,
+            iconType: .app(path: app.path),
+            action: .launchApp(path: app.path),
+            query: query
+        )
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             AppScanner.launchApp(at: app.path)
@@ -338,7 +391,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func handleCancel() {
-        if isPinManagerPresented {
+        if isHistoryManagerPresented {
+            hideHistoryManager()
+        } else if isPinManagerPresented {
             hidePinManager()
         } else if !query.isEmpty {
             clearSearch()
@@ -359,8 +414,11 @@ final class SearchViewModel: ObservableObject {
         clearSearch()
         isPanelExpanded = true
         isPinManagerPresented = false
+        isHistoryManagerPresented = false
         pinnedCommands = PinnedCommandsStore.shared.commands()
+        historyEntries = SearchHistoryManager.shared.entries()
         pinSelectedIndex = 0
+        historySelectedIndex = 0
     }
 
     /// Clear all transient arrays to free memory when hidden
@@ -369,13 +427,98 @@ final class SearchViewModel: ObservableObject {
         query = ""
         calculatorResult = nil
         isPinManagerPresented = false
+        isHistoryManagerPresented = false
         pinnedCommands.removeAll(keepingCapacity: false)
+        historyEntries.removeAll(keepingCapacity: false)
         pinSelectedIndex = 0
+        historySelectedIndex = 0
+    }
+
+    // MARK: - Search History
+
+    func showHistoryManager() {
+        if isPinManagerPresented { isPinManagerPresented = false }
+        historyEntries = SearchHistoryManager.shared.entries()
+        historySelectedIndex = 0
+        if !isPanelExpanded {
+            isPanelExpanded = true
+            updateHeight()
+        }
+        isHistoryManagerPresented = true
+    }
+
+    func hideHistoryManager() {
+        isHistoryManagerPresented = false
+    }
+
+    func toggleHistoryManager() {
+        if isHistoryManagerPresented {
+            hideHistoryManager()
+        } else {
+            showHistoryManager()
+        }
+    }
+
+    func deleteHistoryEntry(at index: Int) {
+        guard index >= 0, index < historyEntries.count else { return }
+        let entry = historyEntries[index]
+        SearchHistoryManager.shared.deleteEntry(id: entry.id)
+        historyEntries = SearchHistoryManager.shared.entries()
+        historySelectedIndex = min(index, max(historyEntries.count - 1, 0))
+    }
+
+    func clearAllHistory() {
+        SearchHistoryManager.shared.clearHistory()
+        historyEntries = []
+        historySelectedIndex = 0
+    }
+
+    func runHistoryEntry(at index: Int) {
+        guard index >= 0, index < historyEntries.count else { return }
+        let entry = historyEntries[index]
+        isHistoryManagerPresented = false
+
+        // Re-record this selection
+        SearchHistoryManager.shared.recordSelection(
+            itemId: entry.itemId,
+            title: entry.title,
+            subtitle: entry.subtitle,
+            category: entry.category,
+            iconType: entry.iconType,
+            action: entry.action,
+            query: entry.query
+        )
+
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            switch entry.action {
+            case .launchApp(let path):
+                if entry.itemId.hasPrefix("app-") {
+                    let bundleId = String(entry.itemId.dropFirst("app-".count))
+                    RecentAppsManager.shared.recordLaunch(bundleIdentifier: bundleId)
+                }
+                AppScanner.launchApp(at: path)
+            case .openSettings(let deepLink):
+                if let url = URL(string: deepLink) {
+                    NSWorkspace.shared.open(url)
+                }
+            case .runQuickAction(let script, let usesOsascript):
+                QuickActionsProvider.execute(script: script, usesOsascript: usesOsascript)
+            case .copyToClipboard(let text):
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            case .openWebSearch(let url):
+                NSWorkspace.shared.open(url)
+            case .runInTerminal(let command):
+                TerminalLauncher.run(command)
+            }
+        }
     }
 
     // MARK: - Pinned Commands
 
     func showPinManager() {
+        if isHistoryManagerPresented { isHistoryManagerPresented = false }
         pinnedCommands = PinnedCommandsStore.shared.commands()
         pinSelectedIndex = 0
         if !isPanelExpanded {

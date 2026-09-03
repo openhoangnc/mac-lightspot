@@ -10,6 +10,8 @@ struct SpotlightView: View {
             .overlay {
                 if viewModel.isPinManagerPresented {
                     pinManagerLayer
+                } else if viewModel.isHistoryManagerPresented {
+                    historyManagerLayer
                 }
             }
     }
@@ -59,6 +61,29 @@ struct SpotlightView: View {
         .padding(.horizontal, 16)
     }
 
+    // MARK: - Search History Manager Layer
+
+    private var historyManagerLayer: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: 76)
+
+            SearchHistoryView(
+                entries: viewModel.historyEntries,
+                selectedIndex: viewModel.historySelectedIndex,
+                onSelect: { index in viewModel.historySelectedIndex = index },
+                onRun: { index in viewModel.runHistoryEntry(at: index) },
+                onDelete: { index in viewModel.deleteHistoryEntry(at: index) },
+                onClearAll: { viewModel.clearAllHistory() },
+                onClose: { viewModel.hideHistoryManager() }
+            )
+            .frame(height: 450)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+    }
+
     // MARK: - Top Search Capsule Bar
 
     private var searchCapsuleBar: some View {
@@ -92,7 +117,7 @@ struct SpotlightView: View {
                         Text("―")
                             .font(.system(size: 12))
                             .foregroundColor(.white.opacity(0.35))
-                        Text("Open")
+                        Text(viewModel.topHitBadgeText)
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundColor(.white.opacity(0.55))
                     }
@@ -147,6 +172,16 @@ struct SpotlightView: View {
                     // would re-flatten the results on every keystroke.
                     Button("Pin / Unpin Selected Command (⌘P)") {
                         viewModel.togglePinForSelection()
+                    }
+
+                    Divider()
+
+                    // Search History
+                    Button("Search History... (⌘⇧H)") {
+                        viewModel.showHistoryManager()
+                    }
+                    Button("Clear Search History") {
+                        viewModel.clearAllHistory()
                     }
 
                     Divider()

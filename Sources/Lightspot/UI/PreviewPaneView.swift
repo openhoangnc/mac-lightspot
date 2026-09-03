@@ -83,12 +83,13 @@ struct PreviewPaneView: View {
     }
 
     private func actionHint(for result: SearchResult) -> String {
-        switch result.category {
-        case .topHit, .applications: return "Press ↵ to open"
-        case .systemSettings: return "Press ↵ to open settings"
-        case .quickActions: return "Press ↵ to execute"
-        case .calculator: return "Press ↵ to copy result"
-        case .webSearch: return "Press ↵ to search in browser"
+        switch result.action {
+        case .launchApp: return "Press ↵ to open"
+        case .openSettings: return "Press ↵ to open settings"
+        case .runQuickAction: return "Press ↵ to execute"
+        case .runInTerminal: return "Press ↵ to run in Terminal"
+        case .copyToClipboard: return "Press ↵ to copy result"
+        case .openWebSearch: return "Press ↵ to search in browser"
         }
     }
 }

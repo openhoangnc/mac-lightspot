@@ -15,6 +15,7 @@ final class SpotlightFieldEditor: NSTextView {
     var onCancel: (@MainActor () -> Void)?
     var onTogglePin: (@MainActor () -> Void)?
     var onManagePins: (@MainActor () -> Void)?
+    var onManageHistory: (@MainActor () -> Void)?
 
     override func doCommand(by selector: Selector) {
         if selector == #selector(NSResponder.moveUp(_:)) {
@@ -66,6 +67,10 @@ final class SpotlightFieldEditor: NSTextView {
                 // the key can be caught.
                 onTogglePin?()
                 return true
+            case "y":
+                // ⌘Y opens the search history manager
+                onManageHistory?()
+                return true
             default:
                 break
             }
@@ -79,6 +84,10 @@ final class SpotlightFieldEditor: NSTextView {
                 return true
             case "p":
                 onManagePins?()
+                return true
+            case "h":
+                // ⌘⇧H opens the search history manager
+                onManageHistory?()
                 return true
             default:
                 break
@@ -141,6 +150,7 @@ final class SpotlightPanel: NSPanel {
     var onCancel: (() -> Void)?
     var onTogglePin: (() -> Void)?
     var onManagePins: (() -> Void)?
+    var onManageHistory: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -195,6 +205,7 @@ final class SpotlightPanel: NSPanel {
             editor.onCancel = { [weak self] in self?.onCancel?() }
             editor.onTogglePin = { [weak self] in self?.onTogglePin?() }
             editor.onManagePins = { [weak self] in self?.onManagePins?() }
+            editor.onManageHistory = { [weak self] in self?.onManageHistory?() }
             fieldEditor = editor
         }
         return fieldEditor

@@ -95,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onManagePins = { [weak self] in
             self?.viewModel.togglePinManager()
         }
+        panel.onManageHistory = { [weak self] in
+            self?.viewModel.toggleHistoryManager()
+        }
 
         // Set up hotkey
         hotkeyManager = HotkeyManager()
@@ -117,6 +120,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.showPanel()
             }
             self.viewModel.showPinManager()
+        }
+        menuBarController.onManageHistory = { [weak self] in
+            guard let self = self else { return }
+            if !self.panel.isVisible {
+                self.showPanel()
+            }
+            self.viewModel.showHistoryManager()
         }
         menuBarController.setup(hotkeyManager: hotkeyManager)
 

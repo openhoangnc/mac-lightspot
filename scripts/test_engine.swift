@@ -167,6 +167,7 @@ struct TestRunner {
         print("✅ SearchEngine passed all tests!\n")
 
         testPinnedCommandsStore()
+        testSearchRankingAndHistoryManager()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -323,11 +324,11 @@ struct TestRunner {
         assertEqual(store.toggle(alpha), true, "Toggling again re-pins it")
 
         // Engine integration: a pinned command is searchable with no history file, and
-        // it must never be promoted to the Top Hit (Return there would run a command).
+        // it is promoted to the Top Hit because it is an intentional user pin.
         let grouped = SearchEngine.shared.searchImmediate(SearchQuery("lightspot-selftest-alpha"))
-        assertEqual(grouped[.shellHistory]?.count, 1, "Pinned command shows up in Terminal History")
-        assertEqual(grouped[.shellHistory]?.first?.title, alpha, "…as the pinned command itself")
-        assertEqual(grouped[.topHit]?.count, nil, "Shell history is never promoted to the Top Hit")
+        assertEqual(grouped[.topHit]?.count, 1, "Pinned command is promoted to Top Hit")
+        assertEqual(grouped[.topHit]?.first?.title, alpha, "…as the pinned command itself")
+        assertEqual(grouped[.shellHistory]?.count, nil, "Top Hit item is not duplicated in shellHistory")
 
         // Clean up so repeat runs start from an empty list.
         store.unpin(alpha)
@@ -336,5 +337,90 @@ struct TestRunner {
         assertEqual(store.commands().count, existing.count, "Pre-existing pins are restored")
 
         print("✅ PinnedCommandsStore passed all tests!\n")
+    }
+
+    // MARK: - Test 13: search ranking & history manager
+
+    static func testSearchRankingAndHistoryManager() {
+        print("Testing SearchRanking and SearchHistoryManager...")
+
+        let manager = SearchHistoryManager.shared
+        manager.reset()
+
+        let testAppId = "app-com.test.terminal"
+        let now = Date()
+
+        // 1. Fresh state: zero boost
+        let initialBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: now)
+        assertEqual(initialBoost, 0.0, "Unselected item has 0 boost")
+
+        // 2. Record single selection for keyword "term"
+        manager.recordSelection(
+            itemId: testAppId,
+            title: "Terminal Test",
+            subtitle: "Application",
+            category: .applications,
+            iconType: .systemSymbol(name: "terminal"),
+            action: .launchApp(path: "/Applications/Terminal.app"),
+            query: "term",
+            date: now
+        )
+
+        // Exact same keyword boost
+        let exactBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: now)
+        assertTrue(exactBoost >= 38.0 && exactBoost <= 39.0, "Exact same keyword produces ~38.5 boost (20 keyword + 15 recency + 3.5 freq)")
+
+        // Different keyword: no same-keyword bonus, only recency + frequency
+        let diffBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("other"), now: now)
+        assertTrue(diffBoost >= 18.0 && diffBoost <= 19.0, "Different keyword has no same-keyword bonus (~18.5)")
+        assertTrue(exactBoost > diffBoost + 19.0, "Same keyword outscores different keyword by ~20 points")
+
+        // Prefix keyword match: query "te" is prefix of "term"
+        let prefixBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("te"), now: now)
+        assertTrue(prefixBoost > diffBoost, "Prefix of keyword gets partial keyword bonus")
+        assertTrue(exactBoost > prefixBoost, "Exact keyword match beats prefix keyword match")
+
+        // 3. Frequency boost with multiple selections
+        for _ in 1...4 {
+            manager.recordSelection(
+                itemId: testAppId,
+                title: "Terminal Test",
+                subtitle: "Application",
+                category: .applications,
+                iconType: .systemSymbol(name: "terminal"),
+                action: .launchApp(path: "/Applications/Terminal.app"),
+                query: "term",
+                date: now
+            )
+        }
+        let multiBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: now)
+        assertTrue(multiBoost > exactBoost + 5.0, "5 selections increase boost significantly over 1 selection")
+
+        // 4. Recency decay over time
+        let twoDaysLater = now.addingTimeInterval(86400 * 2)
+        let decayedBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: twoDaysLater)
+        assertTrue(decayedBoost < multiBoost, "Boost decays over time")
+
+        let thirtyDaysLater = now.addingTimeInterval(86400 * 30)
+        let staleBoost = manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: thirtyDaysLater)
+        assertTrue(staleBoost < decayedBoost, "Boost continues decaying over 30 days")
+
+        // 5. History entries inspection and deletion
+        let entries = manager.entries()
+        assertEqual(entries.count, 1, "History has 1 entry for this query/item pair")
+        assertEqual(entries.first?.itemId, testAppId, "History records correct itemId")
+        assertEqual(entries.first?.query, "term", "History records query")
+        assertEqual(entries.first?.selectionCount, 5, "History records selection count 5")
+
+        if let entryId = entries.first?.id {
+            manager.deleteEntry(id: entryId)
+            assertEqual(manager.entries().count, 0, "deleteEntry removes the item from history")
+        }
+
+        manager.clearHistory()
+        assertEqual(manager.entries().count, 0, "clearHistory empties history entries")
+        assertEqual(manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: now), 0.0, "clearHistory resets ranking boosts to 0")
+
+        print("✅ SearchRanking and SearchHistoryManager passed all tests!\n")
     }
 }

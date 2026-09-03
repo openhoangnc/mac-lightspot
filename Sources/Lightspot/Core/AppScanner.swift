@@ -88,7 +88,8 @@ final class AppScanner: @unchecked Sendable {
         var scored: [(app: AppInfo, score: Double)] = []
         for app in apps {
             if let score = FuzzyMatcher.score(query: query, targetLower: app.lowercaseName, targetTokens: app.searchTokens, targetInitials: app.initials) {
-                scored.append((app, score))
+                let boost = SearchHistoryManager.shared.rankingBoost(for: "app-\(app.bundleIdentifier)", query: query)
+                scored.append((app, score + boost))
             }
         }
         return scored.sorted { $0.score > $1.score }.map { $0.app }

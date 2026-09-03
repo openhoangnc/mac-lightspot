@@ -2,7 +2,7 @@ import AppKit
 
 // MARK: - Result Category
 
-enum ResultCategory: Int, CaseIterable, Sendable {
+enum ResultCategory: Int, CaseIterable, Sendable, Codable {
     case topHit = 0
     case applications
     case systemSettings
@@ -26,12 +26,12 @@ enum ResultCategory: Int, CaseIterable, Sendable {
 
 // MARK: - Search Enums
 
-enum ResultIconType: Sendable, Hashable {
+enum ResultIconType: Sendable, Hashable, Codable {
     case app(path: String)
     case systemSymbol(name: String)
 }
 
-enum SearchAction: Sendable {
+enum SearchAction: Sendable, Codable {
     case launchApp(path: String)
     case openSettings(deepLink: String)
     case runQuickAction(script: String, usesOsascript: Bool)
@@ -54,6 +54,19 @@ struct SearchResult: Identifiable, Sendable, Hashable {
     /// `var` with a default so the memberwise initializer stays source-compatible
     /// with the providers that do not care about pinning.
     var isPinned: Bool = false
+
+    func withScore(_ newScore: Double) -> SearchResult {
+        SearchResult(
+            id: id,
+            title: title,
+            subtitle: subtitle,
+            iconType: iconType,
+            category: category,
+            score: newScore,
+            action: action,
+            isPinned: isPinned
+        )
+    }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
