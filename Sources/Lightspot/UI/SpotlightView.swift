@@ -414,6 +414,9 @@ struct SpotlightView: View {
                             },
                             onOpenTerminal: { result in
                                 viewModel.openProjectInTerminal(result)
+                            },
+                            onOpenFinder: { result in
+                                viewModel.openProjectInFinder(result)
                             }
                         )
                     } else if !viewModel.displayedApps.isEmpty {

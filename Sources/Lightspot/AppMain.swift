@@ -92,6 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onSecondarySubmit = { [weak self] in
             self?.viewModel.activateSecondary()
         }
+        panel.onOpenInFinder = { [weak self] in
+            self?.viewModel.activateFinder()
+        }
         panel.onCancel = { [weak self] in
             self?.viewModel.handleCancel()
         }

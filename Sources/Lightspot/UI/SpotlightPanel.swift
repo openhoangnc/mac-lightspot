@@ -13,6 +13,7 @@ final class SpotlightFieldEditor: NSTextView {
     var onPrevTab: (@MainActor () -> Void)?
     var onSubmit: (@MainActor () -> Void)?
     var onSecondarySubmit: (@MainActor () -> Void)?
+    var onOpenInFinder: (@MainActor () -> Void)?
     var onCancel: (@MainActor () -> Void)?
     var onTogglePin: (@MainActor () -> Void)?
     var onManagePins: (@MainActor () -> Void)?
@@ -33,9 +34,14 @@ final class SpotlightFieldEditor: NSTextView {
         } else if selector == #selector(NSResponder.insertBacktab(_:)) {
             onPrevTab?()
         } else if selector == #selector(NSResponder.insertNewline(_:)) {
-            if let event = NSApp.currentEvent,
-               (event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command)) {
-                onSecondarySubmit?()
+            if let event = NSApp.currentEvent {
+                if event.modifierFlags.contains(.command) {
+                    onOpenInFinder?()
+                } else if event.modifierFlags.contains(.option) {
+                    onSecondarySubmit?()
+                } else {
+                    onSubmit?()
+                }
             } else {
                 onSubmit?()
             }
@@ -58,8 +64,8 @@ final class SpotlightFieldEditor: NSTextView {
                 return super.performKeyEquivalent(with: event)
             }
             switch chars {
-            case "\r", "\n":
-                onSecondarySubmit?()
+            case "\r", "\n", "r":
+                onOpenInFinder?()
                 return true
             case "a":
                 selectAll(nil)
@@ -167,6 +173,7 @@ final class SpotlightPanel: NSPanel {
     var onPrevTab: (() -> Void)?
     var onSubmit: (() -> Void)?
     var onSecondarySubmit: (() -> Void)?
+    var onOpenInFinder: (() -> Void)?
     var onCancel: (() -> Void)?
     var onTogglePin: (() -> Void)?
     var onManagePins: (() -> Void)?
@@ -224,6 +231,7 @@ final class SpotlightPanel: NSPanel {
             editor.onPrevTab = { [weak self] in self?.onPrevTab?() }
             editor.onSubmit = { [weak self] in self?.onSubmit?() }
             editor.onSecondarySubmit = { [weak self] in self?.onSecondarySubmit?() }
+            editor.onOpenInFinder = { [weak self] in self?.onOpenInFinder?() }
             editor.onCancel = { [weak self] in self?.onCancel?() }
             editor.onTogglePin = { [weak self] in self?.onTogglePin?() }
             editor.onManagePins = { [weak self] in self?.onManagePins?() }

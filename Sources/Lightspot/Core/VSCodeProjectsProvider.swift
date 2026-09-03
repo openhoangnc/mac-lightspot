@@ -340,7 +340,7 @@ final class VSCodeProjectsProvider: @unchecked Sendable {
         var scored: [(project: VSCodeProject, score: Double)] = []
         scored.reserveCapacity(min(projects.count, 16))
 
-        let isBrowseQuery = (q == "proj" || q == "project" || q == "vscode" || q == "code" || q == "recent")
+        let isBrowseQuery = (q == "proj" || q == "project" || q == "vscode" || q == "code" || q == "recent" || q == "finder")
 
         for (index, project) in projects.enumerated() {
             var highestScore: Double? = FuzzyMatcher.score(

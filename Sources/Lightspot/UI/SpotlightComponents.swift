@@ -249,6 +249,7 @@ struct SearchResultsView: View {
     let onSelect: (SearchResult) -> Void
     let onTogglePin: (SearchResult) -> Void
     var onOpenTerminal: ((SearchResult) -> Void)? = nil
+    var onOpenFinder: ((SearchResult) -> Void)? = nil
 
     private var flatResults: [SearchResult] {
         SearchEngine.flatResults(from: groupedResults)
@@ -278,7 +279,8 @@ struct SearchResultsView: View {
                                         isSelected: isSelected,
                                         onTap: { onSelect(item) },
                                         onTogglePin: { onTogglePin(item) },
-                                        onOpenTerminal: { onOpenTerminal?(item) }
+                                        onOpenTerminal: { onOpenTerminal?(item) },
+                                        onOpenFinder: { onOpenFinder?(item) }
                                     )
                                     .id(item.id)
                                 }
@@ -305,6 +307,7 @@ struct SearchResultRow: View {
     let onTap: () -> Void
     var onTogglePin: (() -> Void)? = nil
     var onOpenTerminal: (() -> Void)? = nil
+    var onOpenFinder: (() -> Void)? = nil
 
     @State private var isHovered: Bool = false
 
@@ -351,6 +354,23 @@ struct SearchResultRow: View {
                 }
 
                 Spacer()
+
+                // Finder button (Recent Projects only)
+                if isProject && onOpenFinder != nil {
+                    Button(action: { onOpenFinder?() }) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .frame(width: 26, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.white.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in Finder (⌘↵)")
+                    .opacity(isHovered || isSelected ? 1 : 0)
+                }
 
                 // Terminal button (Recent Projects only)
                 if isProject && onOpenTerminal != nil {
@@ -405,6 +425,17 @@ struct SearchResultRow: View {
                                 Text("⌥↵")
                                     .font(.system(size: 10, weight: .semibold))
                                 Text("Terminal")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.white.opacity(0.12)))
+
+                            HStack(spacing: 3) {
+                                Text("⌘↵")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Finder")
                                     .font(.system(size: 10, weight: .medium))
                             }
                             .foregroundColor(.white.opacity(0.7))

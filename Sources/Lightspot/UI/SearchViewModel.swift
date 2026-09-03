@@ -150,7 +150,7 @@ final class SearchViewModel: ObservableObject {
         }
         switch item.action {
         case .launchApp, .openSettings, .openURL: return "Open"
-        case .openFolder: return "VS Code ↵ · Terminal ⌥↵"
+        case .openFolder: return "VS Code ↵ · Terminal ⌥↵ · Finder ⌘↵"
         case .runInTerminal, .runQuickAction: return "Run"
         case .copyToClipboard: return "Copy"
         case .openWebSearch: return "Search"
@@ -425,7 +425,7 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
-    /// Secondary action: triggered by Option+Return (⌥↵) or Command+Return (⌘↵)
+    /// Secondary action: triggered by Option+Return (⌥↵)
     func activateSecondary() {
         guard let result = selectedSearchResult else { return }
 
@@ -452,6 +452,48 @@ final class SearchViewModel: ObservableObject {
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             TerminalLauncher.openFolder(at: path)
+        }
+    }
+
+    /// Tertiary action: triggered by Command+Return (⌘↵) or Command+R (⌘R)
+    func activateFinder() {
+        guard let result = selectedSearchResult else { return }
+
+        // Record selection in SearchHistoryManager
+        SearchHistoryManager.shared.recordSelection(result: result, query: query)
+
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            switch result.action {
+            case .openFolder(let path):
+                Self.openFolderInFinder(at: path)
+            case .launchApp(let path):
+                NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+            default:
+                break
+            }
+        }
+    }
+
+    /// Dedicated action for clicking the Finder button on a project row
+    func openProjectInFinder(_ result: SearchResult) {
+        guard case .openFolder(let path) = result.action else { return }
+        SearchHistoryManager.shared.recordSelection(result: result, query: query)
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            Self.openFolderInFinder(at: path)
+        }
+    }
+
+    /// Opens folder directly in Finder
+    static func openFolderInFinder(at path: String) {
+        let folderURL = URL(fileURLWithPath: path)
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        if let finderURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.finder") {
+            NSWorkspace.shared.open([folderURL], withApplicationAt: finderURL, configuration: config)
+        } else {
+            NSWorkspace.shared.open(folderURL)
         }
     }
 

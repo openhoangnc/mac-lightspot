@@ -91,7 +91,7 @@ struct PreviewPaneView: View {
         case .copyToClipboard: return "Press ↵ to copy result"
         case .openWebSearch: return "Press ↵ to search in browser"
         case .openURL: return "Press ↵ to open in browser"
-        case .openFolder: return "Press ↵ to open in VS Code · ⌥↵ for Terminal"
+        case .openFolder: return "Press ↵ to open in VS Code · ⌥↵ for Terminal · ⌘↵ for Finder"
         }
     }
 }
