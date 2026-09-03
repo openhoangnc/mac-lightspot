@@ -1009,6 +1009,12 @@ struct TestRunner {
             assertTrue(!defaultBrowser.name.isEmpty, "Default browser has name")
             assertTrue(!defaultBrowser.bundleID.isEmpty, "Default browser has bundle ID")
         }
+        let formattedURL1 = BrowserIntegrationProvider.formatDisplayURL("https://partners.shopify.com/12345/stores")
+        assertEqual(formattedURL1, "partners.shopify.com/12345/stores", "Formats clean URL with full path")
+        let formattedURL2 = BrowserIntegrationProvider.formatDisplayURL("https://apple.com/")
+        assertEqual(formattedURL2, "apple.com", "Strips trailing slash for root URL")
+        let formattedURL3 = BrowserIntegrationProvider.formatDisplayURL("https://github.com/pulls?q=is%3Apr")
+        assertEqual(formattedURL3, "github.com/pulls?q=is%3Apr", "Preserves query parameters")
 
         // Test 22: In-Memory Clipboard History
         print("Testing ClipboardHistoryManager...")

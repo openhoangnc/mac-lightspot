@@ -351,6 +351,7 @@ struct SearchResultRow: View {
                             .font(.system(size: 11.5))
                             .foregroundColor(.white.opacity(0.6))
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
 

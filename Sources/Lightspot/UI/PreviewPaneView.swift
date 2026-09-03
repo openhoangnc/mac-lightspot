@@ -74,6 +74,24 @@ struct PreviewPaneView: View {
                             .fill(Color.black.opacity(0.35))
                     )
                     .padding(.horizontal, 16)
+                } else if case .openURL(let url) = result.action {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("URL")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.4))
+                        Text(url.absoluteString)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.9))
+                            .lineLimit(5)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.black.opacity(0.35))
+                    )
+                    .padding(.horizontal, 16)
                 } else {
                     Text(result.subtitle)
                         .font(.system(size: 11))

@@ -19,6 +19,8 @@ public struct BrowserItem: Sendable, Hashable {
     public let lowercaseTitle: String
     public let titleTokens: [String]
     public let host: String
+    public let displayURL: String
+    public let pathTokens: [String]
 
     public init(
         title: String,
@@ -39,6 +41,11 @@ public struct BrowserItem: Sendable, Hashable {
         let separators = CharacterSet(charactersIn: " -_.:/[]()")
         self.titleTokens = lower.components(separatedBy: separators).filter { !$0.isEmpty }
         self.host = self.url.host?.lowercased() ?? ""
+        self.displayURL = BrowserIntegrationProvider.formatDisplayURL(urlString)
+
+        let urlLower = urlString.lowercased()
+        let pathSeps = CharacterSet(charactersIn: " /?&=#-_.:")
+        self.pathTokens = urlLower.components(separatedBy: pathSeps).filter { !$0.isEmpty && $0 != "http" && $0 != "https" }
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -63,6 +70,32 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     private var lastTabsQuery: Date = .distantPast
 
     private init() {}
+
+    // MARK: - URL Formatting
+
+    public static func formatDisplayURL(_ urlString: String) -> String {
+        guard let url = URL(string: urlString) else {
+            return urlString
+        }
+        let host = url.host ?? ""
+        var pathAndQuery = url.path
+        if let query = url.query, !query.isEmpty {
+            pathAndQuery += "?\(query)"
+        }
+        if pathAndQuery == "/" {
+            pathAndQuery = ""
+        }
+        let formatted = host + pathAndQuery
+        if !formatted.isEmpty {
+            return formatted
+        }
+        if urlString.hasPrefix("https://") {
+            return String(urlString.dropFirst("https://".count))
+        } else if urlString.hasPrefix("http://") {
+            return String(urlString.dropFirst("http://".count))
+        }
+        return urlString
+    }
 
     // MARK: - Default Browser Resolution
 
@@ -117,8 +150,22 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
                 }
             }
 
+            // Or match against path tokens in the detail URL (e.g. "stores", "apps")
+            if score == nil {
+                for token in item.pathTokens {
+                    if let pScore = FuzzyMatcher.score(query: query, targetLower: token, targetTokens: [], targetInitials: nil) {
+                        let weighted = pScore * 0.85
+                        if let current = score {
+                            score = max(current, weighted)
+                        } else {
+                            score = weighted
+                        }
+                    }
+                }
+            }
+
             if let s = score, s >= 55 {
-                // Slight boost for open tabs vs bookmarks
+                // Boost open tabs vs bookmarks
                 let finalScore = item.itemType == .openTab ? min(s + 5.0, 99.0) : s
                 matches.append((item, finalScore))
             }
@@ -126,15 +173,14 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
 
         matches.sort { $0.score > $1.score }
 
-        return matches.prefix(6).map { match in
+        return matches.prefix(8).map { match in
             let item = match.item
             let icon: ResultIconType = item.browserAppPath != nil ? .app(path: item.browserAppPath!) : .systemSymbol(name: "safari.fill")
-            let hostDisplay = item.host.isEmpty ? item.urlString : item.host
-            let subtitle = "\(hostDisplay) · \(item.itemType.rawValue) · \(item.browserName)"
+            let subtitle = "\(item.displayURL) · \(item.itemType.rawValue) · \(item.browserName)"
 
             return SearchResult(
                 id: "browser-\(item.itemType.rawValue)-\(item.urlString)",
-                title: item.title.isEmpty ? item.urlString : item.title,
+                title: item.title.isEmpty ? item.displayURL : item.title,
                 subtitle: subtitle,
                 iconType: icon,
                 category: .browser,
