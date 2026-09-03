@@ -4,12 +4,13 @@ import AppKit
 
 enum ResultCategory: Int, CaseIterable, Sendable, Codable {
     case topHit = 0
-    case applications
-    case systemSettings
-    case quickActions
-    case shellHistory
-    case calculator
-    case webSearch
+    case applications = 1
+    case systemSettings = 2
+    case quickActions = 3
+    case customCommands = 7
+    case shellHistory = 4
+    case calculator = 5
+    case webSearch = 6
 
     var displayName: String {
         switch self {
@@ -17,6 +18,7 @@ enum ResultCategory: Int, CaseIterable, Sendable, Codable {
         case .applications: return "Applications"
         case .systemSettings: return "System Settings"
         case .quickActions: return "Quick Actions"
+        case .customCommands: return "Custom Commands"
         case .shellHistory: return "Terminal History"
         case .calculator: return "Calculator"
         case .webSearch: return "Web Search"
@@ -38,6 +40,7 @@ enum SearchAction: Sendable, Codable {
     case copyToClipboard(String)
     case openWebSearch(url: URL)
     case runInTerminal(command: String)
+    case openURL(url: URL)
 }
 
 // MARK: - Search Result

@@ -90,6 +90,7 @@ struct PreviewPaneView: View {
         case .runInTerminal: return "Press ↵ to run in Terminal"
         case .copyToClipboard: return "Press ↵ to copy result"
         case .openWebSearch: return "Press ↵ to search in browser"
+        case .openURL: return "Press ↵ to open in browser"
         }
     }
 }

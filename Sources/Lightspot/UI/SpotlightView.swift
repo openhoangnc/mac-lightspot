@@ -8,7 +8,9 @@ struct SpotlightView: View {
     var body: some View {
         mainContent
             .overlay {
-                if viewModel.isPinManagerPresented {
+                if viewModel.isCustomCommandManagerPresented {
+                    customCommandManagerLayer
+                } else if viewModel.isPinManagerPresented {
                     pinManagerLayer
                 } else if viewModel.isHistoryManagerPresented {
                     historyManagerLayer
@@ -32,6 +34,30 @@ struct SpotlightView: View {
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 16)
+    }
+
+    // MARK: - Custom Commands Manager Layer
+
+    private var customCommandManagerLayer: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: 76)
+
+            CustomCommandsView(
+                commands: viewModel.customCommands,
+                selectedIndex: viewModel.customCommandSelectedIndex,
+                onSelect: { index in viewModel.customCommandSelectedIndex = index },
+                onRun: { index in viewModel.runCustomCommand(at: index) },
+                onDelete: { index in viewModel.deleteCustomCommand(at: index) },
+                onMove: { index, offset in viewModel.moveCustomCommand(at: index, offset: offset) },
+                onSave: { command in viewModel.saveCustomCommand(command) },
+                onClose: { viewModel.hideCustomCommandManager() }
+            )
+            .frame(height: 450)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
     }
 
     // MARK: - Pinned Commands Manager Layer
@@ -159,6 +185,13 @@ struct SpotlightView: View {
                     }
                     Button("Previous Category (⇧Tab)") {
                         viewModel.previousCategory()
+                    }
+
+                    Divider()
+
+                    // Custom Commands
+                    Button("Custom Commands... (⌘⇧C)") {
+                        viewModel.showCustomCommandManager()
                     }
 
                     Divider()

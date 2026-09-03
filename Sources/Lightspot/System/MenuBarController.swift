@@ -5,6 +5,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private weak var hotkeyManager: HotkeyManager?
     var onShowToggle: (() -> Void)?
+    var onManageCustomCommands: (() -> Void)?
     var onManagePins: (() -> Void)?
     var onManageHistory: (() -> Void)?
 
@@ -45,6 +46,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let showItem = NSMenuItem(title: "Show Lightspot (\(currentOption.shortLabel))", action: #selector(showAction), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
+
+        let customCommandsItem = NSMenuItem(title: "Custom Commands...", action: #selector(manageCustomCommandsAction), keyEquivalent: "")
+        customCommandsItem.target = self
+        menu.addItem(customCommandsItem)
 
         let pinnedItem = NSMenuItem(title: "Pinned Commands...", action: #selector(managePinsAction), keyEquivalent: "")
         pinnedItem.target = self
@@ -203,6 +208,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func showAction() {
         onShowToggle?()
+    }
+
+    @objc private func manageCustomCommandsAction() {
+        onManageCustomCommands?()
     }
 
     @objc private func managePinsAction() {

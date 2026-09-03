@@ -168,6 +168,7 @@ struct TestRunner {
 
         testPinnedCommandsStore()
         testSearchRankingAndHistoryManager()
+        testCustomCommandsStore()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -422,5 +423,132 @@ struct TestRunner {
         assertEqual(manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: now), 0.0, "clearHistory resets ranking boosts to 0")
 
         print("✅ SearchRanking and SearchHistoryManager passed all tests!\n")
+    }
+
+    // MARK: - Test 14: Custom Commands Store & Engine Integration
+
+    static func testCustomCommandsStore() {
+        print("Testing CustomCommandsStore...")
+
+        let store = CustomCommandsStore.shared
+        let existing = store.entries()
+
+        // 1. Reset to empty and test defaults / initial seeding
+        store.reset(to: [])
+        assertEqual(store.count(), 0, "Store reset to empty")
+
+        // 2. Add commands of different types
+        let urlCmd = CustomCommand(
+            name: "Hacker News",
+            type: .url,
+            target: "news.ycombinator.com",
+            keywords: ["hn", "tech", "news"]
+        )
+        let termCmd = CustomCommand(
+            name: "Disk Usage",
+            type: .terminal,
+            target: "df -h",
+            keywords: ["disk", "space", "storage"]
+        )
+        let appleCmd = CustomCommand(
+            name: "Mute System",
+            type: .appleScript,
+            target: "set volume with output muted",
+            keywords: ["sound", "silence"]
+        )
+        let shellCmd = CustomCommand(
+            name: "Touch Scratch",
+            type: .shell,
+            target: "touch /tmp/scratch.txt",
+            keywords: ["scratch", "file"]
+        )
+
+        store.add(urlCmd)
+        store.add(termCmd)
+        store.add(appleCmd)
+        store.add(shellCmd)
+
+        assertEqual(store.count(), 4, "Store has 4 commands")
+        // Newly added items are at the front
+        assertEqual(store.entries().first?.id, shellCmd.id, "Latest added command is at index 0")
+
+        // 3. URL normalization
+        assertEqual(urlCmd.normalizedURL?.absoluteString, "https://news.ycombinator.com", "Bare hostname gets https:// prepended")
+        let fullURL = CustomCommand(name: "Full", type: .url, target: "http://localhost:8080/app")
+        assertEqual(fullURL.normalizedURL?.absoluteString, "http://localhost:8080/app", "Explicit scheme preserved")
+
+        // 4. Action mapping
+        if case .openURL(let url) = urlCmd.searchAction {
+            assertEqual(url.absoluteString, "https://news.ycombinator.com", "URL action maps correctly")
+        } else {
+            assertTrue(false, "urlCmd should produce .openURL action")
+        }
+
+        if case .runInTerminal(let command) = termCmd.searchAction {
+            assertEqual(command, "df -h", "Terminal action maps correctly")
+        } else {
+            assertTrue(false, "termCmd should produce .runInTerminal action")
+        }
+
+        if case .runQuickAction(let script, let usesOsascript) = appleCmd.searchAction {
+            assertEqual(script, "set volume with output muted", "AppleScript action maps correctly")
+            assertTrue(usesOsascript, "AppleScript uses osascript")
+        } else {
+            assertTrue(false, "appleCmd should produce .runQuickAction with usesOsascript: true")
+        }
+
+        if case .runQuickAction(let script, let usesOsascript) = shellCmd.searchAction {
+            assertEqual(script, "touch /tmp/scratch.txt", "Shell action maps correctly")
+            assertTrue(!usesOsascript, "Shell does not use osascript")
+        } else {
+            assertTrue(false, "shellCmd should produce .runQuickAction with usesOsascript: false")
+        }
+
+        // 5. Update
+        var updatedTerm = termCmd
+        updatedTerm.name = "Disk Free Space"
+        store.update(updatedTerm)
+        let foundUpdated = store.entries().first(where: { $0.id == termCmd.id })
+        assertEqual(foundUpdated?.name, "Disk Free Space", "Command updated successfully")
+
+        // 6. Move / Reorder
+        store.move(from: 0, offset: 2)
+        assertEqual(store.entries()[2].id, shellCmd.id, "Move reorders command")
+        store.move(from: 2, offset: -10)
+        assertEqual(store.entries()[0].id, shellCmd.id, "Move clamps to bounds")
+
+        // 7. Search matching (Name, Keyword, Target)
+        let searchName = store.search(SearchQuery("hacker"))
+        assertTrue(!searchName.isEmpty, "Search by name finds command")
+        assertEqual(searchName.first?.title, "Hacker News", "Top match is Hacker News")
+        assertEqual(searchName.first?.category, .customCommands, "Category is .customCommands")
+
+        let searchKeyword = store.search(SearchQuery("storage"))
+        assertTrue(!searchKeyword.isEmpty, "Search by keyword finds command")
+        assertEqual(searchKeyword.first?.title, "Disk Free Space", "Keyword search matches Disk Free Space")
+
+        let searchTarget = store.search(SearchQuery("output muted"))
+        assertTrue(!searchTarget.isEmpty, "Search by target content finds command")
+        assertEqual(searchTarget.first?.title, "Mute System", "Target search matches Mute System")
+
+        // Subsequence noise below 65 is dropped
+        let searchNoise = store.search(SearchQuery("zzq"))
+        assertTrue(searchNoise.isEmpty, "Unrelated query returns empty results")
+
+        // 8. SearchEngine integration & Top Hit promotion
+        let engineGrouped = SearchEngine.shared.searchImmediate(SearchQuery("Hacker News"))
+        assertEqual(engineGrouped[.topHit]?.count, 1, "Custom command promoted to Top Hit for exact match")
+        assertEqual(engineGrouped[.topHit]?.first?.title, "Hacker News", "Top Hit title matches custom command")
+
+        // 9. Delete
+        store.delete(id: urlCmd.id)
+        assertEqual(store.count(), 3, "Delete removes command")
+        assertTrue(store.entries().allSatisfy { $0.id != urlCmd.id }, "Deleted command no longer in store")
+
+        // Restore pre-existing state
+        store.reset(to: existing)
+        assertEqual(store.count(), existing.count, "Pre-existing custom commands restored")
+
+        print("✅ CustomCommandsStore passed all tests!\n")
     }
 }

@@ -40,6 +40,9 @@ final class SearchEngine: @unchecked Sendable {
         // Quick Actions
         allResults.append(contentsOf: QuickActionsProvider.shared.search(query))
 
+        // Custom Commands
+        allResults.append(contentsOf: CustomCommandsStore.shared.search(query))
+
         // Shell (zsh) history
         allResults.append(contentsOf: ShellHistoryProvider.shared.search(query))
 

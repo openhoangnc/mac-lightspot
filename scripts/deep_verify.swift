@@ -233,6 +233,34 @@ struct DeepVerifier {
         check("Search '50 * 50' produces Calculator result", search2[.calculator] != nil)
         check("Search '50 * 50' Calculator value is 2.500 or 2,500", search2[.calculator]?.first?.title == CalculatorEngine.evaluate("2500 + 0"))
 
+        // ----------------------------------------------------
+        // SECTION 9: Custom Commands Live Integration
+        // ----------------------------------------------------
+        print("\n--- 9. Testing Custom Commands Live System Integration ---")
+        let store = CustomCommandsStore.shared
+        let existingCommands = store.entries()
+
+        let testCmd = CustomCommand(
+            name: "Live Verification Command",
+            type: .appleScript,
+            target: #"display notification "Lightspot verification" with title "Test""#,
+            keywords: ["selftest", "livecheck"]
+        )
+        store.add(testCmd)
+
+        let customSearch = SearchEngine.shared.searchImmediate(SearchQuery("selftest"))
+        check("SearchEngine finds custom command by keyword", customSearch[.customCommands]?.contains { $0.title == testCmd.name } == true || customSearch[.topHit]?.first?.title == testCmd.name)
+
+        // Verify AppleScript compilation for custom command
+        var asError: NSDictionary?
+        let asCompiled = NSAppleScript(source: testCmd.target)?.compileAndReturnError(&asError) ?? false
+        check("AppleScript compiles for test custom command", asCompiled)
+
+        // Clean up
+        store.delete(id: testCmd.id)
+        store.reset(to: existingCommands)
+        check("Cleaned up test custom command", store.entries().allSatisfy { $0.id != testCmd.id })
+
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")
         print("======================================================")

@@ -14,6 +14,7 @@ Lightspot brings the modern floating pill design and translucent glass aesthetic
   - ⚙️ **macOS System Settings**: 30+ deep links (`x-apple.systempreferences:...`) directly opening settings panes with authentic SF Symbols.
   - ⚡️ **Quick Actions**: Lock Screen, Sleep, Restart, Shut Down, Empty Trash, Toggle Dark Mode, Mute/Unmute Volume, Screenshot, Activity Monitor, Force Quit.
   - 🖥️ **zsh History**: Searches your own `~/.zsh_history` (or `$HISTFILE`) — press `Return` to run the matching command in a new Terminal window. Pin the commands you use most with `⌘P` so they always rank first, and manage them in the pinned-commands sheet (`⌘⇧P`). Only that one file is ever read; no directory is scanned.
+  - 🛠️ **Custom Commands**: Create, edit, and organize custom commands across 4 types — Open Web URLs in your browser, launch interactive commands in Terminal.app, execute AppleScript automations, or run background shell scripts. Manage them via the built-in sheet (`⌘⇧C`) or search and run them directly with Top Hit promotion.
   - 🔢 **Instant Calculator**: Safe, crash-free math evaluation (`+`, `-`, `*`, `/`, `^`, `%`, `sqrt`, `abs`, `sin`, `cos`, `tan`, `log`, `ln`, `pi`, `e`, parentheses) with live preview and clipboard copy.
   - 🌐 **Google Web Search**: Seamless fallback opening search queries in your default web browser.
 - **Global Hotkey**: Supports **`⌘Space`** (Command + Space) as a direct replacement for Spotlight, or **`⌘⇧Space`** / **`⌥Space`** (configurable from menu bar). Zero Accessibility permissions required.
@@ -90,7 +91,8 @@ make icon
 | **`Return` (Enter)** | Open selected application, settings pane, run the selected history command in Terminal, or execute action |
 | **`⌘P`** | Pin / unpin the selected Terminal History command |
 | **`⌘⇧P`** | Open the pinned-commands manager (↑↓ select, `Return` run, `⌘P` unpin, `Esc` close) |
-| **`Escape`** | Close the pinned-commands manager, clear the search field, or dismiss Lightspot if empty |
+| **`⌘⇧C`** | Open the custom commands manager (↑↓ select, `Return` run, `+ New`, edit, `⌫` delete, `Esc` close) |
+| **`Escape`** | Close overlays, clear search, or dismiss Lightspot |
 | **Click Outside** | Auto-dismisses the floating panel |
 
 ---
@@ -121,6 +123,7 @@ mac-lightspot/
         │   ├── AppScanner.swift  # Fast async app scanner & memory icon cache
         │   ├── SettingsProvider.swift # 30+ macOS System Settings deep links
         │   ├── QuickActionsProvider.swift # Async system actions
+        │   ├── CustomCommandsStore.swift # Custom commands model, persistence & search
         │   ├── CalculatorEngine.swift # Safe recursive-descent math parser
         │   ├── ShellHistoryProvider.swift # zsh history parser, ranking & pinned commands
         │   ├── WebSearchProvider.swift # Google search query builder
@@ -137,6 +140,7 @@ mac-lightspot/
             ├── ResultsListView.swift # Grouped categories list view
             ├── ResultRowView.swift # Individual result row with accent highlight
             ├── PinnedCommandsView.swift # Pinned command manager sheet
+            ├── CustomCommandsView.swift # Custom command manager & editor overlay
             └── PreviewPaneView.swift # Rich preview details card
 ```
 

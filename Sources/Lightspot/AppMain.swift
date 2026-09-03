@@ -98,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onManageHistory = { [weak self] in
             self?.viewModel.toggleHistoryManager()
         }
+        panel.onManageCustomCommands = { [weak self] in
+            self?.viewModel.toggleCustomCommandManager()
+        }
 
         // Set up hotkey
         hotkeyManager = HotkeyManager()
@@ -112,6 +115,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController()
         menuBarController.onShowToggle = { [weak self] in
             self?.togglePanel()
+        }
+        menuBarController.onManageCustomCommands = { [weak self] in
+            guard let self = self else { return }
+            if !self.panel.isVisible {
+                self.showPanel()
+            }
+            self.viewModel.showCustomCommandManager()
         }
         menuBarController.onManagePins = { [weak self] in
             guard let self = self else { return }

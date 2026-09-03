@@ -29,6 +29,11 @@ final class SearchViewModel: ObservableObject {
     @Published var historyEntries: [SearchHistoryEntry] = []
     @Published var historySelectedIndex: Int = 0
 
+    // Custom commands state
+    @Published var isCustomCommandManagerPresented: Bool = false
+    @Published var customCommands: [CustomCommand] = []
+    @Published var customCommandSelectedIndex: Int = 0
+
     // MARK: - Dependencies
     weak var hotkeyManager: HotkeyManager?
     weak var menuBarController: MenuBarController?
@@ -134,7 +139,7 @@ final class SearchViewModel: ObservableObject {
             return "Open"
         }
         switch item.action {
-        case .launchApp, .openSettings: return "Open"
+        case .launchApp, .openSettings, .openURL: return "Open"
         case .runInTerminal, .runQuickAction: return "Run"
         case .copyToClipboard: return "Copy"
         case .openWebSearch: return "Search"
@@ -213,7 +218,9 @@ final class SearchViewModel: ObservableObject {
     // MARK: - 2D Keyboard Navigation
 
     func moveLeft() {
-        if isHistoryManagerPresented {
+        if isCustomCommandManagerPresented {
+            moveUp()
+        } else if isHistoryManagerPresented {
             moveUp()
         } else if isPinManagerPresented {
             moveUp()
@@ -227,7 +234,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveRight() {
-        if isHistoryManagerPresented {
+        if isCustomCommandManagerPresented {
+            moveDown()
+        } else if isHistoryManagerPresented {
             moveDown()
         } else if isPinManagerPresented {
             moveDown()
@@ -242,7 +251,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveUp() {
-        if isHistoryManagerPresented {
+        if isCustomCommandManagerPresented {
+            guard !customCommands.isEmpty else { return }
+            customCommandSelectedIndex = customCommandSelectedIndex > 0 ? customCommandSelectedIndex - 1 : customCommands.count - 1
+        } else if isHistoryManagerPresented {
             guard !historyEntries.isEmpty else { return }
             historySelectedIndex = historySelectedIndex > 0 ? historySelectedIndex - 1 : historyEntries.count - 1
         } else if isPinManagerPresented {
@@ -265,7 +277,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveDown() {
-        if isHistoryManagerPresented {
+        if isCustomCommandManagerPresented {
+            guard !customCommands.isEmpty else { return }
+            customCommandSelectedIndex = customCommandSelectedIndex < customCommands.count - 1 ? customCommandSelectedIndex + 1 : 0
+        } else if isHistoryManagerPresented {
             guard !historyEntries.isEmpty else { return }
             historySelectedIndex = historySelectedIndex < historyEntries.count - 1 ? historySelectedIndex + 1 : 0
         } else if isPinManagerPresented {
@@ -291,7 +306,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func nextCategory() {
-        if isPinManagerPresented || isHistoryManagerPresented { return }
+        if isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let nextIdx = (idx + 1) % all.count
@@ -300,7 +315,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func previousCategory() {
-        if isPinManagerPresented || isHistoryManagerPresented { return }
+        if isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let prevIdx = (idx - 1 + all.count) % all.count
@@ -309,6 +324,11 @@ final class SearchViewModel: ObservableObject {
     }
 
     func activateSelected() {
+        if isCustomCommandManagerPresented {
+            runCustomCommand(at: customCommandSelectedIndex)
+            return
+        }
+
         if isHistoryManagerPresented {
             runHistoryEntry(at: historySelectedIndex)
             return
@@ -368,6 +388,8 @@ final class SearchViewModel: ObservableObject {
                     NSWorkspace.shared.open(url)
                 case .runInTerminal(let command):
                     TerminalLauncher.run(command)
+                case .openURL(let url):
+                    NSWorkspace.shared.open(url)
                 }
             }
         }
@@ -391,7 +413,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func handleCancel() {
-        if isHistoryManagerPresented {
+        if isCustomCommandManagerPresented {
+            hideCustomCommandManager()
+        } else if isHistoryManagerPresented {
             hideHistoryManager()
         } else if isPinManagerPresented {
             hidePinManager()
@@ -415,10 +439,13 @@ final class SearchViewModel: ObservableObject {
         isPanelExpanded = true
         isPinManagerPresented = false
         isHistoryManagerPresented = false
+        isCustomCommandManagerPresented = false
         pinnedCommands = PinnedCommandsStore.shared.commands()
         historyEntries = SearchHistoryManager.shared.entries()
+        customCommands = CustomCommandsStore.shared.entries()
         pinSelectedIndex = 0
         historySelectedIndex = 0
+        customCommandSelectedIndex = 0
     }
 
     /// Clear all transient arrays to free memory when hidden
@@ -428,10 +455,13 @@ final class SearchViewModel: ObservableObject {
         calculatorResult = nil
         isPinManagerPresented = false
         isHistoryManagerPresented = false
+        isCustomCommandManagerPresented = false
         pinnedCommands.removeAll(keepingCapacity: false)
         historyEntries.removeAll(keepingCapacity: false)
+        customCommands.removeAll(keepingCapacity: false)
         pinSelectedIndex = 0
         historySelectedIndex = 0
+        customCommandSelectedIndex = 0
     }
 
     // MARK: - Search History
@@ -511,7 +541,83 @@ final class SearchViewModel: ObservableObject {
                 NSWorkspace.shared.open(url)
             case .runInTerminal(let command):
                 TerminalLauncher.run(command)
+            case .openURL(let url):
+                NSWorkspace.shared.open(url)
             }
+        }
+    }
+
+    // MARK: - Custom Commands
+
+    func showCustomCommandManager() {
+        if isPinManagerPresented { isPinManagerPresented = false }
+        if isHistoryManagerPresented { isHistoryManagerPresented = false }
+        customCommands = CustomCommandsStore.shared.entries()
+        customCommandSelectedIndex = 0
+        if !isPanelExpanded {
+            isPanelExpanded = true
+            updateHeight()
+        }
+        isCustomCommandManagerPresented = true
+    }
+
+    func hideCustomCommandManager() {
+        isCustomCommandManagerPresented = false
+    }
+
+    func toggleCustomCommandManager() {
+        if isCustomCommandManagerPresented {
+            hideCustomCommandManager()
+        } else {
+            showCustomCommandManager()
+        }
+    }
+
+    func runCustomCommand(at index: Int) {
+        guard index >= 0, index < customCommands.count else { return }
+        let command = customCommands[index]
+        isCustomCommandManagerPresented = false
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            switch command.type {
+            case .url:
+                if let url = command.normalizedURL {
+                    NSWorkspace.shared.open(url)
+                }
+            case .terminal:
+                TerminalLauncher.run(command.target)
+            case .appleScript:
+                QuickActionsProvider.execute(script: command.target, usesOsascript: true)
+            case .shell:
+                QuickActionsProvider.execute(script: command.target, usesOsascript: false)
+            }
+        }
+    }
+
+    func deleteCustomCommand(at index: Int) {
+        guard index >= 0, index < customCommands.count else { return }
+        let command = customCommands[index]
+        CustomCommandsStore.shared.delete(id: command.id)
+        customCommands = CustomCommandsStore.shared.entries()
+        customCommandSelectedIndex = min(index, max(customCommands.count - 1, 0))
+    }
+
+    func moveCustomCommand(at index: Int, offset: Int) {
+        guard index >= 0, index < customCommands.count else { return }
+        CustomCommandsStore.shared.move(from: index, offset: offset)
+        customCommands = CustomCommandsStore.shared.entries()
+        customCommandSelectedIndex = min(max(index + offset, 0), max(customCommands.count - 1, 0))
+    }
+
+    func saveCustomCommand(_ command: CustomCommand) {
+        if customCommands.contains(where: { $0.id == command.id }) {
+            CustomCommandsStore.shared.update(command)
+        } else {
+            CustomCommandsStore.shared.add(command)
+        }
+        customCommands = CustomCommandsStore.shared.entries()
+        if let idx = customCommands.firstIndex(where: { $0.id == command.id }) {
+            customCommandSelectedIndex = idx
         }
     }
 
