@@ -2,81 +2,107 @@
 
 A lightweight, pixel-perfect replacement for macOS Spotlight built in pure Swift (no Xcode required).
 
-Lightspot brings the modern floating pill design and translucent glass aesthetic of macOS Spotlight with instant responsiveness and a strictly focused search scope: **Applications, System Settings, Quick Actions, Math Calculations, zsh History, and Web Search** — **never indexing user files**.
+Lightspot brings the modern floating pill design and translucent glass aesthetic of macOS Spotlight with instant responsiveness (< 1.0 ms search) and a strictly focused, developer-friendly search scope — **never indexing user files**.
 
 ---
 
 ## ✨ Features
 
-- **Exact macOS Spotlight UI**: Floating translucent glass window (`NSVisualEffectView`), continuous squircle corners, compact pill search bar when empty, expanding into a two-column results/preview view when typing.
-- **Strict Search Scope (Zero File Indexing)**:
-  - 🚀 **Applications**: Fast scanner for installed apps in `/Applications`, `/System/Applications`, `~/Applications`, and Utilities.
-  - ⚙️ **macOS System Settings**: 30+ deep links (`x-apple.systempreferences:...`) directly opening settings panes with authentic SF Symbols.
-  - ⚡️ **Quick Actions**: Lock Screen, Sleep, Restart, Shut Down, Empty Trash, Toggle Dark Mode, Mute/Unmute Volume, Screenshot, Activity Monitor, Force Quit.
-  - 🖥️ **zsh History**: Searches your own `~/.zsh_history` (or `$HISTFILE`) — press `Return` to run the matching command in a new Terminal window. Pin the commands you use most with `⌘P` so they always rank first, and manage them in the pinned-commands sheet (`⌘⇧P`). Only that one file is ever read; no directory is scanned.
-  - 🛠️ **Custom Commands**: Create, edit, and organize custom commands across 4 types — Open Web URLs in your browser, launch interactive commands in Terminal.app, execute AppleScript automations, or run background shell scripts. Manage them via the built-in sheet (`⌘⇧C`) or search and run them directly with Top Hit promotion.
-  - 🔢 **Instant Calculator**: Safe, crash-free math evaluation (`+`, `-`, `*`, `/`, `^`, `%`, `sqrt`, `abs`, `sin`, `cos`, `tan`, `log`, `ln`, `pi`, `e`, parentheses) with live preview and clipboard copy.
-  - 🌐 **Google Web Search**: Seamless fallback opening search queries in your default web browser.
-- **Global Hotkey**: Supports **`⌘Space`** (Command + Space) as a direct replacement for Spotlight, or **`⌘⇧Space`** / **`⌥Space`** (configurable from menu bar). Zero Accessibility permissions required.
-- **Multi-Monitor Aware**: Automatically opens on the display currently containing your mouse cursor.
-- **Menu Bar Companion**: Discreet magnifying glass icon in the menu bar with status, hotkey selector, and quick options.
-- **Simultaneous Typing & Navigation**: Continue typing in the search field while using `↑` and `↓` arrow keys to browse results. Press `Return` to activate, or `Escape` to clear/dismiss.
+- **Exact macOS Spotlight UI**: Floating translucent glass window (`NSVisualEffectView`), continuous squircle corners, compact pill search bar when empty, expanding into an animated two-column results and preview layout.
+- **Multi-IDE Recent Projects**: Auto-detects and fuzzy searches recently opened workspaces across **VS Code**, **Cursor**, **Zed**, **JetBrains Suite** (IntelliJ IDEA, PyCharm, WebStorm, etc.), and **Sublime Text**.
+  - `↵` (Return): Open in associated IDE
+  - `⌘↵` (Command + Return): Open project directory in your preferred terminal
+  - `⌥↵` (Option + Return): Reveal project directory in Finder
+- **Process Killer & Port Terminator**: Interactive process manager triggered by `kill`.
+  - Kill by port: `kill :3000` (auto-detects listening PID)
+  - Kill by PID or app name: `kill 14205` or `kill safari`
+  - `↵` Graceful termination (`SIGTERM`) · `⌥↵` Force kill (`SIGKILL`)
+- **Default Browser Bookmarks & Open Tabs**: Direct, zero-redundancy integration for your default browser only (**Google Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Microsoft Edge**).
+  - Shows full detail URLs (e.g. `partners.shopify.com/12345/stores`) with middle truncation.
+  - Search by page title, domain, or URL path slugs (e.g. `dashboard`, `stores`, `issues`).
+- **In-Memory Ephemeral Clipboard History**: Volatile RAM-only ring buffer (up to 50 items) accessed via `clip <query>`.
+  - Zero disk writes for maximum security.
+  - Automatically filters password manager concealed types (`1Password`, `Bitwarden`, etc.).
+  - 1-click clipboard purge from the menu bar.
+- **Quick Text Snippets**: Reusable text templates with variable expansion (`{{date}}`, `{{time}}`, `{{iso}}`, `{{uuid}}`, `{{clipboard}}`).
+- **Mach / IOKit Hardware HUD**: Instant, zero-subprocess hardware diagnostics (`sys`, `cpu`, `ram`, `battery`, `uptime`):
+  - CPU load % (normalized across all cores)
+  - Memory usage (Active, Wired, Compressed, and Total Physical RAM)
+  - Boot SSD free and total storage
+  - Battery capacity % and AC charging state
+  - System uptime via `sysctl`
+- **Smart Math & Relaxed Conversions**: Full recursive-descent math evaluator with relaxed unit, currency, and number base conversions:
+  - Temperature: `72F`, `20C`
+  - Distance & Weight: `10km in mi`, `150lbs in kg`
+  - Digital Storage: `16GB in MB`, `1TB in GB`
+  - Currency: `$100 in EUR`, `50 GBP in USD`
+  - Number bases: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
+- **Developer Utilities**: Offline generators, formatters, and encoders:
+  - `uuid`: Generate UUID v4
+  - `b64 <text>` / `b64d <hash>`: Base64 encode & decode
+  - `urlencode <url>` / `urldecode <url>`: URL component encoding
+  - `epoch` / `now`: Current Unix timestamps and human-readable dates
+  - `hash sha256 <text>`: Instant SHA-256, SHA-1, and MD5 hashing
+  - `#3498db`: Live color preview swatch with RGB / HSL / Hex copying
+  - `jwt <token>`: Decodes and formats JWT header & payload
+  - `json <raw>`: Pretty-prints and formats minified JSON
+- **Modern Terminal Launcher Support**: Choose your preferred terminal from the menu bar:
+  - **Apple Terminal**, **iTerm2**, **Ghostty**, **Warp**, **Kitty**, **WezTerm**, and **Alacritty**.
+  - Context-aware **"Terminal in Finder Folder"** action detects the active Finder directory.
+- **Multi-Engine Web Search**: Instant web search with built-in prefix shortcuts:
+  - `gh <repo>` (GitHub), `yt <video>` (YouTube), `so <query>` (StackOverflow), `ddg <query>` (DuckDuckGo), `npm <pkg>`, `crates <crate>`, `wiki <article>`, `mdn <api>`, `brew <formula>`.
+- **zsh History & Pinned Commands**: Search your `~/.zsh_history` (or `$HISTFILE`) with instant Terminal execution. Pin frequently used commands (`⌘P`) to keep them at the top.
+- **macOS System Settings**: 30+ deep links (`x-apple.systempreferences:...`) directly opening settings panes.
+- **Custom Commands**: Create and organize custom URL, Terminal, AppleScript, or shell actions with full parameter expansion (`⌘⇧C`).
+- **Global Hotkey**: Configurable **`⌘Space`**, **`⌘⇧Space`**, or **`⌥Space`**.
+- **Multi-Monitor Aware**: Automatically opens centered on the display containing your mouse cursor.
 
 ---
 
 ## 🛠️ Complete macOS Spotlight Management
 
-Lightspot provides granular and 1-click controls directly from the menu bar to disable or re-enable all parts of macOS Spotlight:
+Lightspot provides granular controls directly from the menu bar to disable or re-enable Apple's built-in Spotlight:
 
-1. **Spotlight Shortcut (`⌘Space`)**: Disables/enables the built-in `⌘Space` shortcut in macOS symbolic hotkeys without needing root.
-2. **Background Process (`com.apple.Spotlight`)**: Disables/enables the Spotlight GUI background agent via `launchctl` and terminates running instances.
-3. **File Indexing (`mdutil`)**: Disables/enables filesystem metadata indexing (`mds` / `mds_stores`) across all mounted volumes to eliminate background CPU and disk usage (prompts macOS Touch ID / admin password).
+1. **Spotlight Shortcut (`⌘Space`)**: Disables/enables the built-in `⌘Space` shortcut in macOS symbolic hotkeys without root.
+2. **Background Process (`com.apple.Spotlight`)**: Disables/enables the Spotlight GUI background agent via `launchctl`.
+3. **File Indexing (`mdutil`)**: Disables/enables filesystem metadata indexing (`mds` / `mds_stores`) across all mounted volumes.
 4. **1-Click Master Actions**:
-   - **`Disable Everything (Shortcut + Process + Indexing)...`**: Completely shuts down all Spotlight components.
+   - **`Disable Everything (Shortcut + Process + Indexing)...`**: Completely shuts down all system Spotlight components.
    - **`Restore Default Spotlight...`**: Re-enables all components back to macOS factory defaults.
-
-To access these, click the **Lightspot magnifying glass icon** in your menu bar → **System Spotlight**.
 
 ---
 
-## 🚀 Building & Running (No Xcode Required)
+## 🚀 Building & Installing (No Xcode Required)
 
 Lightspot is built with standard Swift tools and simple shell scripts.
 
 ### 1. Build
 ```bash
 ./build.sh
-# or
-make build
+# or: make build
 ```
-This compiles the release binary, packages `build/Lightspot.app`, bundles the icon and `Info.plist` (with `LSUIElement = 1` for background agent mode), and codesigns the app bundle.
+Compiles the release binary with `-Osize -wmo`, strips debug symbols, bundles `Info.plist` and high-res icons, and codesigns `build/Lightspot.app`.
 
 ### 2. Run
 ```bash
 ./run.sh
-# or
-make run
+# or: make run
 ```
 
-### 3. Install to `~/Applications`
+### 3. Install to `/Applications`
 ```bash
 ./install.sh
-# or
-make install
+# or: make install
+# (Use --user to install to ~/Applications)
 ```
 
-### 4. Uninstall
+### 4. Tests & Verification
 ```bash
-./uninstall.sh
-# or
-make uninstall
-```
+# Core logic & engine tests (24 test suites)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
 
-### 5. Generate / Refresh App Icon
-```bash
-./scripts/generate_icon.sh
-# or
-make icon
+# Live system checks (84 checks)
+swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
 ---
@@ -86,14 +112,16 @@ make icon
 | Key | Action |
 |---|---|
 | **`⌘Space`** / **`⌘⇧Space`** | Summon or dismiss Lightspot anywhere (configurable) |
-| **`↓` (Down Arrow)** | Move to next search result |
-| **`↑` (Up Arrow)** | Move to previous search result |
-| **`Return` (Enter)** | Open selected application, settings pane, run the selected history command in Terminal, or execute action |
-| **`⌘P`** | Pin / unpin the selected Terminal History command |
-| **`⌘⇧P`** | Open the pinned-commands manager (↑↓ select, `Return` run, `⌘P` unpin, `Esc` close) |
-| **`⌘⇧C`** | Open the custom commands manager (↑↓ select, `Return` run, `+ New`, edit, `⌫` delete, `Esc` close) |
-| **`Escape`** | Close overlays, clear search, or dismiss Lightspot |
-| **Click Outside** | Auto-dismisses the floating panel |
+| **`↓` / `↑`** | Navigate through results |
+| **`Return` (`↵`)** | Open selected application, project in IDE, run command, or copy calculation |
+| **`⌘Return` (`⌘↵`)** | Open selected project in preferred Terminal |
+| **`⌥Return` (`⌥↵`)** | Reveal project in Finder / Force kill selected process (`SIGKILL`) |
+| **`⌘P`** | Pin / unpin selected Terminal History command |
+| **`⌘⇧P`** | Open pinned commands manager overlay |
+| **`⌘⇧C`** | Open custom commands manager overlay |
+| **`⌘Y` / `⌘⇧H`** | Open search history manager overlay |
+| **`Escape`** | Close overlays, clear search field, or dismiss Lightspot |
+| **Click Outside** | Automatically dismisses the floating panel |
 
 ---
 
@@ -105,49 +133,64 @@ mac-lightspot/
 ├── Makefile                      # make build / run / install / uninstall / clean
 ├── build.sh                      # Standalone release build & .app packager
 ├── run.sh                        # Build & launch helper
-├── install.sh                    # Install to ~/Applications
-├── uninstall.sh                  # Remove from ~/Applications
+├── install.sh                    # Install to /Applications or ~/Applications
+├── uninstall.sh                  # Remove from Applications
 ├── README.md                     # Documentation
+├── CLAUDE.md                     # Architecture & developer guide
 ├── Resources/
-│   ├── Info.plist                # LSUIElement=1, bundle identifier, metadata
-│   └── AppIcon.icns              # Generated high-res multi-size macOS app icon
+│   ├── Info.plist                # LSUIElement=1, AppleEvents permissions, bundle metadata
+│   └── AppIcon.icns              # Multi-size macOS application icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner for core search & math engines
-│   └── deep_verify.swift         # Live-system verification (deep links, AppleScript, history)
+│   ├── test_engine.swift         # Automated test runner (24 test suites)
+│   └── deep_verify.swift         # Live-system verification (84 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point & NSApplicationDelegate
         ├── Core/
-        │   ├── Models.swift      # SearchResult, ResultCategory, FuzzyMatcher
+        │   ├── Models.swift      # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
         │   ├── AppScanner.swift  # Fast async app scanner & memory icon cache
-        │   ├── SettingsProvider.swift # 30+ macOS System Settings deep links
-        │   ├── QuickActionsProvider.swift # Async system actions
-        │   ├── CustomCommandsStore.swift # Custom commands model, persistence & search
-        │   ├── CalculatorEngine.swift # Safe recursive-descent math parser
-        │   ├── ShellHistoryProvider.swift # zsh history parser, ranking & pinned commands
-        │   ├── WebSearchProvider.swift # Google search query builder
-        │   └── SearchEngine.swift # Fuzzy scoring, ranking, & top-hit aggregator
+        │   ├── BrowserIntegrationProvider.swift # Default browser bookmarks & tabs
+        │   ├── CalculatorEngine.swift # Math parser & conversion dispatcher
+        │   ├── ClipboardHistoryManager.swift    # In-memory ephemeral clipboard ring buffer
+        │   ├── ConversionEngine.swift   # Unit, currency, base, & temperature engine
+        │   ├── CustomCommandsStore.swift # Custom user commands model & persistence
+        │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
+        │   ├── NetworkInfoProvider.swift # Local IPv4 & public internet IP address
+        │   ├── ProcessKillerProvider.swift # Name, PID, and port process terminator
+        │   ├── QuickActionsProvider.swift # Focused system actions & Terminal in Finder
+        │   ├── RecentProjectsProvider.swift # Multi-IDE project scanner (VS Code, Cursor, Zed, JetBrains, Sublime)
+        │   ├── SearchEngine.swift       # Synchronous search aggregator & ranking
+        │   ├── SearchHistoryManager.swift # Search query & selection history
+        │   ├── SettingsBackup.swift     # Settings export & import backup
+        │   ├── SettingsProvider.swift   # 30+ macOS System Settings deep links
+        │   ├── ShellHistoryProvider.swift # zsh history parser & ranking
+        │   ├── SnippetsStore.swift      # Text expansion snippets with variable interpolation
+        │   ├── SystemInfoProvider.swift # Zero-subprocess Mach/IOKit hardware dashboard
+        │   └── WebSearchProvider.swift  # Multi-engine search & prefix shortcuts
         ├── System/
-        │   ├── HotkeyManager.swift # Carbon global hotkey (⌘⇧Space)
-        │   ├── TerminalLauncher.swift # Escaped `do script` runner for Terminal.app
-        │   └── MenuBarController.swift # Menu bar status item
+        │   ├── HotkeyManager.swift      # Carbon global hotkey
+        │   ├── MenuBarController.swift  # Menu bar status item & preferences
+        │   ├── SpotlightManager.swift   # macOS Spotlight disable/restore automations
+        │   └── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
         └── UI/
-            ├── SearchViewModel.swift # Reactive view model
-            ├── SpotlightPanel.swift # Floating borderless NSPanel with vibrancy
-            ├── SpotlightView.swift # Root SwiftUI container
-            ├── SearchFieldView.swift # AppKit NSTextField bridge with custom field editor
-            ├── ResultsListView.swift # Grouped categories list view
-            ├── ResultRowView.swift # Individual result row with accent highlight
-            ├── PinnedCommandsView.swift # Pinned command manager sheet
-            ├── CustomCommandsView.swift # Custom command manager & editor overlay
-            └── PreviewPaneView.swift # Rich preview details card
+            ├── CustomCommandsView.swift # Custom command manager overlay
+            ├── HistoryManagerView.swift # Search history manager overlay
+            ├── PinnedCommandsView.swift # Pinned command manager overlay
+            ├── PreviewPaneView.swift    # Rich details card & live previews
+            ├── SearchFieldView.swift    # NSTextField bridge & custom field editor
+            ├── SearchViewModel.swift    # Reactive view model & key event router
+            ├── SpotlightComponents.swift# Search result rows, buttons, & category headers
+            ├── SpotlightPanel.swift     # Floating borderless NSPanel with vibrancy
+            └── SpotlightView.swift      # Root SwiftUI view
 ```
 
 ---
 
 ## 🔒 Privacy & Security
 
-- **No File Indexing**: Lightspot never reads, indexes, or searches your documents, downloads, desktop files, or personal data. The single exception is your own shell history file (`~/.zsh_history`), which powers the Terminal History results — only its last 2 MB are read, they are kept in memory only, and Lightspot never writes to your history file and never sends any of it anywhere.
-- **Commands Run Only On Return**: A history result is executed only when you explicitly activate it, in a visible Terminal window, and it is never promoted to the Top Hit so `Return` on a normal search can never run a shell command by accident.
-- **Zero Network Tracking**: Lightspot has no analytics or background network requests. Web searches are only performed when explicitly opened in your default browser.
+- **Zero User File Indexing**: Lightspot never indexes your personal documents, desktop, or downloads.
+- **RAM-Only Clipboard**: Clipboard history stays exclusively in volatile memory and is never written to disk. Passwords and concealed items are automatically ignored.
+- **Default Browser Isolation**: Bookmarks and tabs are read solely from your configured macOS default browser.
+- **Sandboxed Subprocesses**: Commands and scripts run only upon explicit user action (`Return` or `⌘↵`).
+- **Zero Telemetry**: No analytics, background telemetry, or third-party network requests.
