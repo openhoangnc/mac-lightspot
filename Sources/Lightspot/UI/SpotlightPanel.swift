@@ -12,6 +12,7 @@ final class SpotlightFieldEditor: NSTextView {
     var onNextTab: (@MainActor () -> Void)?
     var onPrevTab: (@MainActor () -> Void)?
     var onSubmit: (@MainActor () -> Void)?
+    var onSecondarySubmit: (@MainActor () -> Void)?
     var onCancel: (@MainActor () -> Void)?
     var onTogglePin: (@MainActor () -> Void)?
     var onManagePins: (@MainActor () -> Void)?
@@ -32,7 +33,12 @@ final class SpotlightFieldEditor: NSTextView {
         } else if selector == #selector(NSResponder.insertBacktab(_:)) {
             onPrevTab?()
         } else if selector == #selector(NSResponder.insertNewline(_:)) {
-            onSubmit?()
+            if let event = NSApp.currentEvent,
+               (event.modifierFlags.contains(.option) || event.modifierFlags.contains(.command)) {
+                onSecondarySubmit?()
+            } else {
+                onSubmit?()
+            }
         } else if selector == #selector(NSResponder.cancelOperation(_:)) {
             onCancel?()
         } else {
@@ -42,11 +48,19 @@ final class SpotlightFieldEditor: NSTextView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command {
+        if flags == .option {
+            if let chars = event.charactersIgnoringModifiers, (chars == "\r" || chars == "\n") {
+                onSecondarySubmit?()
+                return true
+            }
+        } else if flags == .command {
             guard let chars = event.charactersIgnoringModifiers?.lowercased() else {
                 return super.performKeyEquivalent(with: event)
             }
             switch chars {
+            case "\r", "\n":
+                onSecondarySubmit?()
+                return true
             case "a":
                 selectAll(nil)
                 return true
@@ -152,6 +166,7 @@ final class SpotlightPanel: NSPanel {
     var onNextTab: (() -> Void)?
     var onPrevTab: (() -> Void)?
     var onSubmit: (() -> Void)?
+    var onSecondarySubmit: (() -> Void)?
     var onCancel: (() -> Void)?
     var onTogglePin: (() -> Void)?
     var onManagePins: (() -> Void)?
@@ -208,6 +223,7 @@ final class SpotlightPanel: NSPanel {
             editor.onNextTab = { [weak self] in self?.onNextTab?() }
             editor.onPrevTab = { [weak self] in self?.onPrevTab?() }
             editor.onSubmit = { [weak self] in self?.onSubmit?() }
+            editor.onSecondarySubmit = { [weak self] in self?.onSecondarySubmit?() }
             editor.onCancel = { [weak self] in self?.onCancel?() }
             editor.onTogglePin = { [weak self] in self?.onTogglePin?() }
             editor.onManagePins = { [weak self] in self?.onManagePins?() }

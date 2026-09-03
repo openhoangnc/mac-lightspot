@@ -5,6 +5,7 @@ import AppKit
 enum ResultCategory: Int, CaseIterable, Sendable, Codable {
     case topHit = 0
     case applications = 1
+    case recentProjects = 8
     case systemSettings = 2
     case quickActions = 3
     case customCommands = 7
@@ -16,6 +17,7 @@ enum ResultCategory: Int, CaseIterable, Sendable, Codable {
         switch self {
         case .topHit: return "Top Hit"
         case .applications: return "Applications"
+        case .recentProjects: return "Recent Projects"
         case .systemSettings: return "System Settings"
         case .quickActions: return "Quick Actions"
         case .customCommands: return "Custom Commands"
@@ -41,6 +43,7 @@ enum SearchAction: Sendable, Codable {
     case openWebSearch(url: URL)
     case runInTerminal(command: String)
     case openURL(url: URL)
+    case openFolder(path: String)
 }
 
 // MARK: - Search Result

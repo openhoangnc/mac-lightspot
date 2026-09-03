@@ -248,6 +248,7 @@ struct SearchResultsView: View {
     let selectedIndex: Int
     let onSelect: (SearchResult) -> Void
     let onTogglePin: (SearchResult) -> Void
+    var onOpenTerminal: ((SearchResult) -> Void)? = nil
 
     private var flatResults: [SearchResult] {
         SearchEngine.flatResults(from: groupedResults)
@@ -276,7 +277,8 @@ struct SearchResultsView: View {
                                         result: item,
                                         isSelected: isSelected,
                                         onTap: { onSelect(item) },
-                                        onTogglePin: { onTogglePin(item) }
+                                        onTogglePin: { onTogglePin(item) },
+                                        onOpenTerminal: { onOpenTerminal?(item) }
                                     )
                                     .id(item.id)
                                 }
@@ -302,11 +304,17 @@ struct SearchResultRow: View {
     let isSelected: Bool
     let onTap: () -> Void
     var onTogglePin: (() -> Void)? = nil
+    var onOpenTerminal: (() -> Void)? = nil
 
     @State private var isHovered: Bool = false
 
     private var isPinnable: Bool {
         result.category == .shellHistory && onTogglePin != nil
+    }
+
+    private var isProject: Bool {
+        if case .openFolder = result.action { return true }
+        return false
     }
 
     var body: some View {
@@ -344,6 +352,23 @@ struct SearchResultRow: View {
 
                 Spacer()
 
+                // Terminal button (Recent Projects only)
+                if isProject && onOpenTerminal != nil {
+                    Button(action: { onOpenTerminal?() }) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .frame(width: 26, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.white.opacity(0.12))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in Terminal (⌥↵)")
+                    .opacity(isHovered || isSelected ? 1 : 0)
+                }
+
                 // Pin toggle (Terminal History only)
                 if isPinnable {
                     Button(action: { onTogglePin?() }) {
@@ -363,12 +388,38 @@ struct SearchResultRow: View {
 
                 // Selection hint
                 if isSelected {
-                    Image(systemName: "return")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.white.opacity(0.18)))
+                    if isProject {
+                        HStack(spacing: 5) {
+                            HStack(spacing: 3) {
+                                Image(systemName: "return")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("VS Code")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.white.opacity(0.18)))
+
+                            HStack(spacing: 3) {
+                                Text("⌥↵")
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text("Terminal")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                        }
+                    } else {
+                        Image(systemName: "return")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.white.opacity(0.18)))
+                    }
                 }
             }
             .padding(.horizontal, 12)

@@ -411,6 +411,9 @@ struct SpotlightView: View {
                                 if case .runInTerminal(let command) = result.action {
                                     viewModel.togglePin(for: command)
                                 }
+                            },
+                            onOpenTerminal: { result in
+                                viewModel.openProjectInTerminal(result)
                             }
                         )
                     } else if !viewModel.displayedApps.isEmpty {

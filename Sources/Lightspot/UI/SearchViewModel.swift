@@ -120,9 +120,19 @@ final class SearchViewModel: ObservableObject {
             if case .launchApp(let path) = sel.action {
                 return path
             }
+            if case .openFolder = sel.action {
+                let appPath = VSCodeProjectsProvider.vsCodeAppPath
+                if !appPath.isEmpty { return appPath }
+            }
         }
-        if let top = groupedResults[.topHit]?.first, case .launchApp(let path) = top.action {
-            return path
+        if let top = groupedResults[.topHit]?.first {
+            if case .launchApp(let path) = top.action {
+                return path
+            }
+            if case .openFolder = top.action {
+                let appPath = VSCodeProjectsProvider.vsCodeAppPath
+                if !appPath.isEmpty { return appPath }
+            }
         }
         if let firstApp = groupedResults[.applications]?.first, case .launchApp(let path) = firstApp.action {
             return path
@@ -140,6 +150,7 @@ final class SearchViewModel: ObservableObject {
         }
         switch item.action {
         case .launchApp, .openSettings, .openURL: return "Open"
+        case .openFolder: return "VS Code ↵ · Terminal ⌥↵"
         case .runInTerminal, .runQuickAction: return "Run"
         case .copyToClipboard: return "Copy"
         case .openWebSearch: return "Search"
@@ -390,8 +401,57 @@ final class SearchViewModel: ObservableObject {
                     TerminalLauncher.run(command)
                 case .openURL(let url):
                     NSWorkspace.shared.open(url)
+                case .openFolder(let path):
+                    Self.openFolderInVSCode(at: path)
                 }
             }
+        }
+    }
+
+    /// Primary folder opener: launches folder in Visual Studio Code
+    static func openFolderInVSCode(at path: String) {
+        let folderURL = URL(fileURLWithPath: path)
+        if let vsCodeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([folderURL], withApplicationAt: vsCodeURL, configuration: config)
+        } else if FileManager.default.fileExists(atPath: "/Applications/Visual Studio Code.app") {
+            let vsCodeURL = URL(fileURLWithPath: "/Applications/Visual Studio Code.app")
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([folderURL], withApplicationAt: vsCodeURL, configuration: config)
+        } else {
+            NSWorkspace.shared.open(folderURL)
+        }
+    }
+
+    /// Secondary action: triggered by Option+Return (⌥↵) or Command+Return (⌘↵)
+    func activateSecondary() {
+        guard let result = selectedSearchResult else { return }
+
+        // Record selection in SearchHistoryManager
+        SearchHistoryManager.shared.recordSelection(result: result, query: query)
+
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            switch result.action {
+            case .openFolder(let path):
+                TerminalLauncher.openFolder(at: path)
+            case .runInTerminal(let command):
+                TerminalLauncher.run(command)
+            default:
+                break
+            }
+        }
+    }
+
+    /// Dedicated action for clicking the Terminal button on a project row
+    func openProjectInTerminal(_ result: SearchResult) {
+        guard case .openFolder(let path) = result.action else { return }
+        SearchHistoryManager.shared.recordSelection(result: result, query: query)
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            TerminalLauncher.openFolder(at: path)
         }
     }
 
@@ -543,6 +603,8 @@ final class SearchViewModel: ObservableObject {
                 TerminalLauncher.run(command)
             case .openURL(let url):
                 NSWorkspace.shared.open(url)
+            case .openFolder(let path):
+                Self.openFolderInVSCode(at: path)
             }
         }
     }

@@ -169,6 +169,7 @@ struct TestRunner {
         testPinnedCommandsStore()
         testSearchRankingAndHistoryManager()
         testCustomCommandsStore()
+        testVSCodeProjectsProvider()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -550,5 +551,120 @@ struct TestRunner {
         assertEqual(store.count(), existing.count, "Pre-existing custom commands restored")
 
         print("✅ CustomCommandsStore passed all tests!\n")
+    }
+
+    // MARK: - Test 15: VS Code Projects Provider
+
+    static func testVSCodeProjectsProvider() {
+        print("Testing VSCodeProjectsProvider...")
+
+        // 1. Test URI parsing & percent decoding
+        assertEqual(
+            VSCodeProjectsProvider.parseURIPath("file:///Users/test/priv/my-app"),
+            "/Users/test/priv/my-app",
+            "parseURIPath parses standard file:// URI"
+        )
+        assertEqual(
+            VSCodeProjectsProvider.parseURIPath("file:///Users/test/priv/my%20app"),
+            "/Users/test/priv/my app",
+            "parseURIPath unquotes percent-encoded spaces"
+        )
+        assertEqual(
+            VSCodeProjectsProvider.parseURIPath("/Users/test/priv/direct-path"),
+            "/Users/test/priv/direct-path",
+            "parseURIPath accepts raw absolute path"
+        )
+
+        // 2. Test Noise Exclusion Heuristics
+        assertTrue(!VSCodeProjectsProvider.shouldIncludePath("/Users/test/priv/project/.git"), "Rejects .git directory")
+        assertTrue(!VSCodeProjectsProvider.shouldIncludePath("/Users/test/priv/project/.claude/worktrees/feat1"), "Rejects Claude worktree")
+        assertTrue(!VSCodeProjectsProvider.shouldIncludePath("/Users/test/Library/Application Support/Code/User/agent-sessions.code-workspace"), "Rejects internal Code workspace")
+        assertTrue(!VSCodeProjectsProvider.shouldIncludePath(NSHomeDirectory()), "Rejects home directory itself")
+        assertTrue(!VSCodeProjectsProvider.shouldIncludePath("/nonexistent_path_xyz_12345"), "Rejects non-existent path")
+
+        // 3. Test Tilde Shortening
+        let home = NSHomeDirectory()
+        assertEqual(
+            VSCodeProjectsProvider.tildeShortenedPath(for: "\(home)/priv/shopify-cpixel"),
+            "~/priv",
+            "Shortens home directory prefix to tilde parent"
+        )
+        assertEqual(
+            VSCodeProjectsProvider.tildeShortenedPath(for: "\(home)/Desktop"),
+            "~",
+            "Top-level home child has ~ display path"
+        )
+
+        // 4. Test VSCodeProject model initialization & tokens
+        let proj1 = VSCodeProject(
+            name: "shopify-cpixel",
+            path: "/Users/test/priv/shopify-cpixel",
+            displayPath: "~/priv",
+            recency: 200.0
+        )
+        let proj2 = VSCodeProject(
+            name: "mac-lightspot",
+            path: "/Users/test/priv/mac-lightspot",
+            displayPath: "~/priv",
+            recency: 100.0
+        )
+        let proj3 = VSCodeProject(
+            name: "cdm",
+            path: "/Users/test/priv/cleandevmac/cdm",
+            displayPath: "~/priv/cleandevmac",
+            recency: 50.0
+        )
+
+        assertEqual(proj1.nameTokens, ["shopify", "cpixel"], "Hyphenated name split into tokens")
+        assertEqual(proj1.initials, "sc", "Initials computed from tokens")
+        assertEqual(proj2.initials, "ml", "Initials for mac-lightspot are ml")
+        assertTrue(proj3.pathTokens.contains("cleandevmac"), "Path tokens extracted for cdm")
+
+        let mockProjects = [proj1, proj2, proj3]
+
+        // 5. Exact match
+        let exactRes = VSCodeProjectsProvider.search(SearchQuery("shopify-cpixel"), projects: mockProjects)
+        assertTrue(!exactRes.isEmpty, "Exact search finds project")
+        assertEqual(exactRes.first?.title, "shopify-cpixel", "Top match is shopify-cpixel")
+        assertEqual(exactRes.first?.category, .recentProjects, "Category is .recentProjects")
+        if case .openFolder(let path) = exactRes.first?.action {
+            assertEqual(path, "/Users/test/priv/shopify-cpixel", "Action is .openFolder with correct path")
+        } else {
+            print("❌ FAIL: Expected action .openFolder")
+            exit(1)
+        }
+
+        // 6. Word-boundary match on hyphenated segment
+        let wordRes = VSCodeProjectsProvider.search(SearchQuery("cpixel"), projects: mockProjects)
+        assertTrue(!wordRes.isEmpty, "Hyphenated token 'cpixel' matches")
+        assertEqual(wordRes.first?.title, "shopify-cpixel", "Top result is shopify-cpixel")
+
+        let lightspotRes = VSCodeProjectsProvider.search(SearchQuery("lightspot"), projects: mockProjects)
+        assertTrue(!lightspotRes.isEmpty, "Word boundary 'lightspot' matches mac-lightspot")
+        assertEqual(lightspotRes.first?.title, "mac-lightspot", "Top result is mac-lightspot")
+
+        // 7. Acronym initials match
+        let scRes = VSCodeProjectsProvider.search(SearchQuery("sc"), projects: mockProjects)
+        assertTrue(!scRes.isEmpty, "Initials 'sc' finds shopify-cpixel")
+        assertEqual(scRes.first?.title, "shopify-cpixel", "Matches by initials sc")
+
+        let mlRes = VSCodeProjectsProvider.search(SearchQuery("ml"), projects: mockProjects)
+        assertTrue(!mlRes.isEmpty, "Initials 'ml' finds mac-lightspot")
+        assertEqual(mlRes.first?.title, "mac-lightspot", "Matches by initials ml")
+
+        // 8. Path segment matching
+        let pathRes = VSCodeProjectsProvider.search(SearchQuery("cleandevmac"), projects: mockProjects)
+        assertTrue(!pathRes.isEmpty, "Path token 'cleandevmac' finds cdm")
+        assertEqual(pathRes.first?.title, "cdm", "Matches cdm via parent dir")
+
+        // 9. Generic browse keywords
+        let browseRes = VSCodeProjectsProvider.search(SearchQuery("proj"), projects: mockProjects)
+        assertEqual(browseRes.count, 3, "Browse keyword 'proj' returns all projects")
+
+        // 10. Subsequence / noise filter
+        let noiseRes = VSCodeProjectsProvider.search(SearchQuery("zzq"), projects: mockProjects)
+        assertTrue(noiseRes.isEmpty, "Unrelated query returns empty")
+
+        print("✅ VSCodeProjectsProvider passed all tests!\n")
     }
 }

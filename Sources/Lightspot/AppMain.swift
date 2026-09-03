@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Parse the zsh history file off the main thread
         ShellHistoryProvider.shared.startLoading()
 
+        // Discover and load recent VS Code projects off the main thread
+        VSCodeProjectsProvider.shared.startLoading()
+
         // Create the view model
         viewModel = SearchViewModel()
         viewModel.onHide = { [weak self] in
@@ -85,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         panel.onSubmit = { [weak self] in
             self?.viewModel.activateSelected()
+        }
+        panel.onSecondarySubmit = { [weak self] in
+            self?.viewModel.activateSecondary()
         }
         panel.onCancel = { [weak self] in
             self?.viewModel.handleCancel()
@@ -177,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showPanel() {
         AppScanner.shared.refreshIfNeeded()
         ShellHistoryProvider.shared.refreshIfNeeded()
+        VSCodeProjectsProvider.shared.refreshIfNeeded()
         refreshSystemState()
         viewModel.reset()
 

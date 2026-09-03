@@ -43,6 +43,9 @@ final class SearchEngine: @unchecked Sendable {
         // Custom Commands
         allResults.append(contentsOf: CustomCommandsStore.shared.search(query))
 
+        // VS Code Recent Projects
+        allResults.append(contentsOf: VSCodeProjectsProvider.shared.search(query))
+
         // Shell (zsh) history
         allResults.append(contentsOf: ShellHistoryProvider.shared.search(query))
 

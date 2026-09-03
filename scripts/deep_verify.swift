@@ -261,6 +261,32 @@ struct DeepVerifier {
         store.reset(to: existingCommands)
         check("Cleaned up test custom command", store.entries().allSatisfy { $0.id != testCmd.id })
 
+        // ----------------------------------------------------
+        // SECTION 10: VS Code Recent Projects Live System Verification
+        // ----------------------------------------------------
+        print("\n--- 10. Testing VS Code Recent Projects Provider ---")
+        if VSCodeProjectsProvider.isVSCodeInstalled {
+            print("VS Code detected at: \(VSCodeProjectsProvider.vsCodeAppPath)")
+            let loadedProjects = VSCodeProjectsProvider.loadRecentProjects()
+            print("Discovered recent VS Code projects: \(loadedProjects.count)")
+            check("Discovered >= 1 recent VS Code project", !loadedProjects.isEmpty)
+            check("All project paths exist on disk", loadedProjects.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+            check("All project paths are clean (no .git suffix)", loadedProjects.allSatisfy { !$0.path.hasSuffix(".git") })
+            check("All project displayPaths are tilde-formatted", loadedProjects.allSatisfy { $0.displayPath.hasPrefix("~") || !$0.path.hasPrefix(NSHomeDirectory()) })
+
+            if let firstProj = loadedProjects.first {
+                let projSearch = VSCodeProjectsProvider.search(SearchQuery(firstProj.name), projects: loadedProjects)
+                check("Search by exact project name finds project", projSearch.contains { $0.title == firstProj.name })
+                check("Project result action is .openFolder", projSearch.allSatisfy {
+                    if case .openFolder = $0.action { return true }
+                    return false
+                })
+                check("Project result category is .recentProjects", projSearch.allSatisfy { $0.category == .recentProjects })
+            }
+        } else {
+            print("     ⚠️ VS Code is not installed on this system — skipping live discovery checks")
+        }
+
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")
         print("======================================================")

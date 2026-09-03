@@ -70,4 +70,27 @@ enum TerminalLauncher {
             }
         }
     }
+
+    /// Opens Terminal.app with working directory set to `path`.
+    ///
+    /// First attempts native LaunchServices folder launch via NSWorkspace. If
+    /// that fails, falls back to AppleScript `cd "<escapedPath>"`.
+    static func openFolder(at path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let folderURL = URL(fileURLWithPath: trimmed)
+        if let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([folderURL], withApplicationAt: terminalURL, configuration: config) { _, error in
+                if error != nil {
+                    // Fallback to AppleScript cd
+                    run("cd \"\(trimmed)\"")
+                }
+            }
+        } else {
+            run("cd \"\(trimmed)\"")
+        }
+    }
 }
