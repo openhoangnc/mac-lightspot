@@ -317,6 +317,7 @@ struct SearchResultRow: View {
 
     private var isProject: Bool {
         if case .openFolder = result.action { return true }
+        if case .openProject = result.action { return true }
         return false
     }
 

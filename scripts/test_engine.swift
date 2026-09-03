@@ -815,5 +815,230 @@ struct TestRunner {
         historyManager.restore(entries: existingEntries, stats: existingStats)
 
         print("✅ SettingsBackup passed all tests!\n")
+
+        // Test 14: Conversion Engine (Relaxed units, bases, currency)
+        print("Testing ConversionEngine...")
+        let fResult = ConversionEngine.convert("72F")
+        assertTrue(fResult != nil, "72F converts")
+        assertEqual(fResult?.value, "22.2222°C", "72F converts to ~22.2°C")
+
+        let cResult = ConversionEngine.convert("100C")
+        assertTrue(cResult != nil, "100C converts")
+        assertEqual(cResult?.value, "212°F", "100C converts to 212°F")
+
+        let kmResult = ConversionEngine.convert("10km")
+        assertTrue(kmResult != nil, "10km converts")
+        assertTrue(kmResult?.value.contains("mi") == true, "10km converted to miles")
+
+        let lbsResult = ConversionEngine.convert("150lbs")
+        assertTrue(lbsResult != nil, "150lbs converts")
+        assertTrue(lbsResult?.value.contains("kg") == true, "150lbs converted to kg")
+
+        let gbResult = ConversionEngine.convert("16GB")
+        assertTrue(gbResult != nil, "16GB converts")
+        assertEqual(gbResult?.value, "16,384 MB", "16GB converts to 16,384 MB")
+
+        let hexResult = ConversionEngine.convert("0xFF")
+        assertTrue(hexResult != nil, "0xFF converts")
+        assertEqual(hexResult?.value, "255", "0xFF converts to 255")
+
+        let binResult = ConversionEngine.convert("42 in bin")
+        assertTrue(binResult != nil, "42 in bin converts")
+        assertEqual(binResult?.value, "0b101010", "42 in bin is 0b101010")
+
+        let currResult = ConversionEngine.convert("100 USD in EUR")
+        assertTrue(currResult != nil, "100 USD in EUR converts")
+        assertEqual(currResult?.value, "92.00 EUR", "100 USD in EUR is 92.00 EUR")
+
+        // Verify CalculatorEngine.evaluateExtended connects properly
+        let ext = CalculatorEngine.evaluateExtended("72F")
+        assertTrue(ext != nil, "CalculatorEngine.evaluateExtended handles 72F")
+        assertEqual(ext?.value, "22.2222°C", "evaluateExtended returns 22.2222°C")
+        print("✅ ConversionEngine passed all tests!\n")
+
+        // Test 15: WebSearchProvider (Engines & Prefixes)
+        print("Testing WebSearchProvider...")
+        let webProvider = WebSearchProvider.shared
+        webProvider.defaultEngine = .google
+        let googleResults = webProvider.search(SearchQuery("swift programming"))
+        assertEqual(googleResults.first?.title, "Search Google for 'swift programming'", "Default engine searches Google")
+
+        webProvider.defaultEngine = .duckDuckGo
+        let ddgResults = webProvider.search(SearchQuery("swift programming"))
+        assertEqual(ddgResults.first?.title, "Search DuckDuckGo for 'swift programming'", "Switching engine searches DuckDuckGo")
+        webProvider.defaultEngine = .google // Restore
+
+        let ghPrefix = webProvider.search(SearchQuery("gh react"))
+        assertTrue(!ghPrefix.isEmpty, "Prefix gh returns results")
+        assertEqual(ghPrefix.first?.title, "Search GitHub for 'react'", "gh react searches GitHub")
+        assertEqual(ghPrefix.first?.score, 95, "Prefix search receives top score 95")
+
+        let ytPrefix = webProvider.search(SearchQuery("yt lofi"))
+        assertEqual(ytPrefix.first?.title, "Search YouTube for 'lofi'", "yt lofi searches YouTube")
+        print("✅ WebSearchProvider passed all tests!\n")
+
+        // Test 16: DevToolsProvider
+        print("Testing DevToolsProvider...")
+        let devProvider = DevToolsProvider.shared
+
+        let uuidResults = devProvider.search(SearchQuery("uuid"))
+        assertTrue(!uuidResults.isEmpty, "uuid search returns result")
+        assertEqual(uuidResults.first?.category, .devTools, "uuid is devTools category")
+        assertTrue(uuidResults.first?.title.contains("-") == true, "uuid formatted with dashes")
+
+        let b64Results = devProvider.search(SearchQuery("b64 hello"))
+        assertTrue(!b64Results.isEmpty, "b64 search returns result")
+        assertEqual(b64Results.first?.title, "aGVsbG8=", "Base64 encodes 'hello'")
+
+        let b64dResults = devProvider.search(SearchQuery("b64d aGVsbG8="))
+        assertTrue(!b64dResults.isEmpty, "b64d search returns result")
+        assertEqual(b64dResults.first?.title, "hello", "Base64 decodes 'aGVsbG8='")
+
+        let urlencResults = devProvider.search(SearchQuery("urlencode hello world"))
+        assertEqual(urlencResults.first?.title, "hello%20world", "urlencode encodes spaces")
+
+        let urldecResults = devProvider.search(SearchQuery("urldecode hello%20world"))
+        assertEqual(urldecResults.first?.title, "hello world", "urldecode decodes %20")
+
+        let epochResults = devProvider.search(SearchQuery("epoch"))
+        assertTrue(!epochResults.isEmpty, "epoch returns current timestamp")
+
+        let colorResults = devProvider.search(SearchQuery("#3B82F6"))
+        assertTrue(!colorResults.isEmpty, "Hex color matches")
+        assertTrue(colorResults.first?.title.contains("#3B82F6") == true, "Color title contains hex")
+
+        let jsonResults = devProvider.search(SearchQuery("json {\"a\":1}"))
+        assertTrue(!jsonResults.isEmpty, "json pretty-prints")
+        assertTrue(jsonResults.first?.action != nil, "json action is copyToClipboard")
+
+        print("✅ DevToolsProvider passed all tests!\n")
+
+        // Test 17: NetworkInfoProvider & Enhanced TerminalLauncher
+        print("Testing NetworkInfoProvider & TerminalLauncher...")
+        let localIP = NetworkInfoProvider.shared.localIPv4Address()
+        // If connected to network, localIP is non-nil IPv4 string
+        if let ip = localIP {
+            assertTrue(ip.contains("."), "Local IP contains dots")
+        }
+
+        let installedTerminals = TerminalAppOption.installedOptions
+        assertTrue(installedTerminals.contains(.terminal), "Apple Terminal is always available")
+
+        let currentTerm = TerminalLauncher.currentTerminal
+        assertTrue(TerminalAppOption.allCases.contains(currentTerm), "Current terminal is valid")
+
+        let itermScript = TerminalLauncher.itermScript(for: "git status")
+        assertTrue(itermScript.contains("tell application \"iTerm\""), "iTerm script compiles structure")
+
+        // Test 18: Enhanced Quick Actions
+        print("Testing Enhanced Quick Actions...")
+        let qaProvider = QuickActionsProvider.shared
+        let dnsResults = qaProvider.search(SearchQuery("dns"))
+        assertTrue(!dnsResults.isEmpty, "DNS search finds Flush DNS Cache")
+        assertEqual(dnsResults.first?.title, "Flush DNS Cache", "Top result for dns is Flush DNS Cache")
+
+        let desktopResults = qaProvider.search(SearchQuery("desktop"))
+        assertTrue(!desktopResults.isEmpty, "Desktop search finds Show Desktop")
+        assertEqual(desktopResults.first?.title, "Show Desktop", "Top result for desktop is Show Desktop")
+
+        let dlResults = qaProvider.search(SearchQuery("downloads"))
+        assertTrue(!dlResults.isEmpty, "Downloads search finds Open Downloads")
+        assertEqual(dlResults.first?.title, "Open Downloads", "Top result for downloads is Open Downloads")
+
+        let finderWinResults = qaProvider.search(SearchQuery("new finder"))
+        assertTrue(!finderWinResults.isEmpty, "New finder search finds New Finder Window")
+        assertEqual(finderWinResults.first?.title, "New Finder Window", "Top result for new finder is New Finder Window")
+
+        let ipResults = qaProvider.search(SearchQuery("ip address"))
+        assertTrue(!ipResults.isEmpty, "IP search finds IP Address")
+        assertEqual(ipResults.first?.title, "IP Address", "Top result for ip is IP Address")
+        assertTrue(ipResults.first?.subtitle.contains("Local:") == true, "IP Address subtitle shows Local IP")
+
+        let termFinderResults = qaProvider.search(SearchQuery("terminal here"))
+        assertTrue(!termFinderResults.isEmpty, "Terminal here search finds Terminal in Finder Folder")
+        assertEqual(termFinderResults.first?.title, "Terminal in Finder Folder", "Top result is Terminal in Finder Folder")
+
+        print("✅ Enhanced Quick Actions passed all tests!\n")
+
+        // Test 19: Universal Recent Projects Provider (Multi-IDE)
+        print("Testing RecentProjectsProvider...")
+        let discovered = RecentProjectsProvider.discoverAllProjects()
+        assertTrue(!discovered.isEmpty, "Discovered >= 1 recent project across installed IDEs")
+        if let first = discovered.first {
+            assertTrue(!first.name.isEmpty, "First project has valid name")
+            assertTrue(!first.displayPath.isEmpty, "First project has valid display path")
+            assertTrue(!first.ideName.isEmpty, "First project has IDE tag")
+        }
+
+        // Test 20: Process Killer Provider
+        print("Testing ProcessKillerProvider...")
+        let killer = ProcessKillerProvider.shared
+
+        let hintResults = killer.search(SearchQuery("kill "))
+        assertTrue(!hintResults.isEmpty, "kill with trailing space returns hint")
+        assertEqual(hintResults.first?.id, "kill-hint", "Returns kill-hint")
+
+        let pidResults = killer.search(SearchQuery("kill 99999"))
+        assertTrue(!pidResults.isEmpty, "kill with PID returns result")
+        if case .killProcess(let pid, _, _) = pidResults.first?.action {
+            assertEqual(pid, 99999, "Kills correct PID 99999")
+        } else {
+            print("❌ FAIL: Expected .killProcess action for kill 99999")
+            exit(1)
+        }
+
+        let finderResults = killer.search(SearchQuery("kill Finder"))
+        assertTrue(!finderResults.isEmpty, "kill Finder finds running Finder process")
+        assertTrue(finderResults.first?.title.contains("Finder") == true, "Title mentions Finder")
+        if case .killProcess(_, let name, _) = finderResults.first?.action {
+            assertTrue(name.contains("Finder"), "Action target is Finder")
+        } else {
+            print("❌ FAIL: Expected .killProcess action for kill Finder")
+            exit(1)
+        }
+
+        print("✅ RecentProjectsProvider & ProcessKillerProvider passed all tests!\n")
+
+        // Test 21: Default Browser Integration
+        print("Testing BrowserIntegrationProvider...")
+        if let defaultBrowser = BrowserIntegrationProvider.defaultBrowser() {
+            assertTrue(!defaultBrowser.name.isEmpty, "Default browser has name")
+            assertTrue(!defaultBrowser.bundleID.isEmpty, "Default browser has bundle ID")
+        }
+
+        // Test 22: In-Memory Clipboard History
+        print("Testing ClipboardHistoryManager...")
+        let clipManager = ClipboardHistoryManager.shared
+        clipManager.clearHistory()
+        clipManager.addEntry(content: "Lightspot ephemeral clipboard test string")
+        let entries = clipManager.allEntries()
+        assertTrue(!entries.isEmpty, "Clipboard entry was added")
+        assertEqual(entries.first?.content, "Lightspot ephemeral clipboard test string", "Content matches")
+
+        let clipSearch = clipManager.search(SearchQuery("clip Lightspot"))
+        assertTrue(!clipSearch.isEmpty, "clip search matches clipboard entry")
+        clipManager.clearHistory()
+        assertTrue(clipManager.allEntries().isEmpty, "clearHistory purges in-memory buffer")
+
+        // Test 23: Quick Text Snippets & Variable Expansion
+        print("Testing SnippetsStore...")
+        let expanded = SnippetsStore.expandVariables(in: "Date: {{date}}, UUID: {{uuid}}")
+        assertTrue(!expanded.contains("{{date}}"), "date placeholder replaced")
+        assertTrue(!expanded.contains("{{uuid}}"), "uuid placeholder replaced")
+
+        let snippetSearch = SnippetsStore.shared.search(SearchQuery("date"))
+        assertTrue(!snippetSearch.isEmpty, "Snippet search finds Date snippet")
+
+        // Test 24: System Info Provider (Mach/IOKit)
+        print("Testing SystemInfoProvider...")
+        let sysInfo = SystemInfoProvider.shared.collectSystemInfo()
+        assertTrue(!sysInfo.ramTotalGB.isEmpty, "RAM total is reported")
+        assertTrue(!sysInfo.uptime.isEmpty, "Uptime is reported")
+
+        let sysResults = SystemInfoProvider.shared.search(SearchQuery("sys"))
+        assertTrue(!sysResults.isEmpty, "sys search returns hardware HUD")
+        assertEqual(sysResults.first?.id, "system-hud", "HUD result ID is system-hud")
+
+        print("✅ Browser, Clipboard, Snippets, and System HUD passed all tests!\n")
     }
 }

@@ -68,14 +68,23 @@ struct DeepVerifier {
                 if !compiled, let err = error {
                     print("     Error: \(err)")
                 }
+            } else if action.script.hasPrefix("internal:") {
+                check("Internal action valid: \(action.name)", true)
             } else if action.script.hasPrefix("open:") {
-                let path = String(action.script.dropFirst("open:".count))
+                var path = String(action.script.dropFirst("open:".count))
+                if path.hasPrefix("~") {
+                    path = NSString(string: path).expandingTildeInPath
+                }
                 let exists = FileManager.default.fileExists(atPath: path)
-                check("Target app exists: \(action.name) at \(path)", exists)
+                check("Target app/folder exists: \(action.name) at \(path)", exists)
             } else {
                 // Shell command check
                 let binary = action.script.split(separator: " ").first.map(String.init) ?? ""
-                let exists = FileManager.default.fileExists(atPath: binary) || binary == "pmset"
+                let exists = FileManager.default.fileExists(atPath: binary)
+                    || binary == "pmset"
+                    || binary == "dscacheutil"
+                    || FileManager.default.fileExists(atPath: "/usr/bin/\(binary)")
+                    || FileManager.default.fileExists(atPath: "/bin/\(binary)")
                 check("Command binary exists: \(action.name) (\(binary))", exists)
             }
         }

@@ -17,9 +17,33 @@ public final class CalculatorEngine: Sendable {
 
     private init() {}
 
-    /// Evaluates a string input as a mathematical expression.
+    /// Evaluates input as either a relaxed unit/currency/base conversion OR a mathematical expression.
+    /// Returns (value: formattedResult, subtitle: detailedExplanation) if valid, or nil otherwise.
+    public static func evaluateExtended(_ input: String) -> (value: String, subtitle: String)? {
+        let clean = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.isEmpty { return nil }
+
+        // 1. Check unit, currency, or number base conversion first
+        if let conversion = ConversionEngine.convert(clean) {
+            return (conversion.value, conversion.subtitle)
+        }
+
+        // 2. Fall back to standard arithmetic
+        if let mathResult = evaluateMath(clean) {
+            return (mathResult, clean)
+        }
+
+        return nil
+    }
+
+    /// Evaluates a string input as a mathematical expression or relaxed conversion.
     /// Returns a formatted result string if valid, or `nil` if the input is not a math expression or is malformed.
     public static func evaluate(_ input: String) -> String? {
+        evaluateExtended(input)?.value
+    }
+
+    /// Evaluates a string input as a pure mathematical expression.
+    public static func evaluateMath(_ input: String) -> String? {
         var clean = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
 

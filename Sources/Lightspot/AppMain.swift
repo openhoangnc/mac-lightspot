@@ -35,8 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Parse the zsh history file off the main thread
         ShellHistoryProvider.shared.startLoading()
 
-        // Discover and load recent VS Code projects off the main thread
-        VSCodeProjectsProvider.shared.startLoading()
+        // Discover and load recent projects (VS Code, Cursor, Zed, JetBrains, Sublime) off the main thread
+        RecentProjectsProvider.shared.startLoading()
+
+        // Start in-memory ephemeral clipboard history monitoring
+        ClipboardHistoryManager.shared.startMonitoring()
 
         // Create the view model
         viewModel = SearchViewModel()
@@ -191,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showPanel() {
         AppScanner.shared.refreshIfNeeded()
         ShellHistoryProvider.shared.refreshIfNeeded()
-        VSCodeProjectsProvider.shared.refreshIfNeeded()
+        RecentProjectsProvider.shared.refreshIfNeeded()
         refreshSystemState()
         viewModel.reset()
 

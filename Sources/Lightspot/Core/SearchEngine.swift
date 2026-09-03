@@ -40,25 +40,43 @@ final class SearchEngine: @unchecked Sendable {
         // Quick Actions
         allResults.append(contentsOf: QuickActionsProvider.shared.search(query))
 
+        // Process Killer (kill <query>)
+        allResults.append(contentsOf: ProcessKillerProvider.shared.search(query))
+
         // Custom Commands
         allResults.append(contentsOf: CustomCommandsStore.shared.search(query))
 
-        // VS Code Recent Projects
-        allResults.append(contentsOf: VSCodeProjectsProvider.shared.search(query))
+        // Recent Projects (VS Code, Cursor, Zed, JetBrains, Sublime Text)
+        allResults.append(contentsOf: RecentProjectsProvider.shared.search(query))
 
         // Shell (zsh) history
         allResults.append(contentsOf: ShellHistoryProvider.shared.search(query))
 
-        // Calculator
-        if let calcResult = CalculatorEngine.evaluate(query.trimmed) {
+        // Developer Tools
+        allResults.append(contentsOf: DevToolsProvider.shared.search(query))
+
+        // System Hardware HUD (sys, battery, ram, cpu)
+        allResults.append(contentsOf: SystemInfoProvider.shared.search(query))
+
+        // Default Browser Bookmarks & Open Tabs
+        allResults.append(contentsOf: BrowserIntegrationProvider.shared.search(query))
+
+        // In-Memory Clipboard History
+        allResults.append(contentsOf: ClipboardHistoryManager.shared.search(query))
+
+        // Quick Text Snippets
+        allResults.append(contentsOf: SnippetsStore.shared.search(query))
+
+        // Calculator & Conversions
+        if let calc = CalculatorEngine.evaluateExtended(query.trimmed) {
             allResults.append(SearchResult(
                 id: "calc-\(query.trimmed)",
-                title: calcResult,
-                subtitle: query.trimmed,
+                title: calc.value,
+                subtitle: calc.subtitle,
                 iconType: .systemSymbol(name: "equal.circle.fill"),
                 category: .calculator,
                 score: 90,
-                action: .copyToClipboard(calcResult)
+                action: .copyToClipboard(calc.value)
             ))
         }
 
@@ -67,7 +85,7 @@ final class SearchEngine: @unchecked Sendable {
 
         // Apply search matching ranking boost: same keyword + recent selected + selected times
         let rankedResults: [SearchResult] = allResults.map { result in
-            guard result.category != .webSearch && result.category != .calculator else {
+            guard result.category != .webSearch && result.category != .calculator && result.category != .devTools else {
                 return result
             }
             let boost = SearchHistoryManager.shared.rankingBoost(for: result.id, query: query)
@@ -81,13 +99,13 @@ final class SearchEngine: @unchecked Sendable {
         var grouped: [ResultCategory: [SearchResult]] = [:]
         grouped.reserveCapacity(ResultCategory.allCases.count)
 
-        // Find the top hit (highest score across all non-web/non-calc categories).
-        // General unpinned shell history is excluded on purpose to avoid accidental
-        // Return execution of fuzzy commands from ~/.zsh_history. However, explicitly
-        // PINNED commands or commands previously SELECTED by the user for this query are
-        // intentional user choices and can be promoted to Top Hit.
+        // Find the top hit. Non-web/non-calc categories are eligible, plus explicit web prefixes
+        // (like 'gh react' or 'yt swift') which represent intentional prefix shortcuts.
         let topHitCandidates = rankedResults.filter { result in
-            guard result.category != .webSearch && result.category != .calculator else {
+            if result.category == .webSearch {
+                return result.id.hasPrefix("web-prefix-")
+            }
+            guard result.category != .calculator else {
                 return false
             }
             if result.category == .shellHistory {

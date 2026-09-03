@@ -75,6 +75,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         shortcutParentItem.submenu = shortcutMenu
         menu.addItem(shortcutParentItem)
 
+        // Search Engine submenu
+        let searchEngineMenu = NSMenu()
+        let currentEngine = WebSearchProvider.shared.defaultEngine
+        for option in SearchEngineOption.allCases {
+            let item = NSMenuItem(title: option.displayName, action: #selector(selectSearchEngineAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option
+            item.state = (option == currentEngine) ? .on : .off
+            searchEngineMenu.addItem(item)
+        }
+
+        let searchEngineParentItem = NSMenuItem(title: "Search Engine", action: nil, keyEquivalent: "")
+        searchEngineParentItem.submenu = searchEngineMenu
+        menu.addItem(searchEngineParentItem)
+
+        // Terminal App submenu
+        let terminalMenu = NSMenu()
+        let currentTerminal = TerminalLauncher.currentTerminal
+        for option in TerminalAppOption.installedOptions {
+            let item = NSMenuItem(title: option.displayName, action: #selector(selectTerminalAppAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option
+            item.state = (option == currentTerminal) ? .on : .off
+            terminalMenu.addItem(item)
+        }
+
+        let terminalParentItem = NSMenuItem(title: "Terminal App", action: nil, keyEquivalent: "")
+        terminalParentItem.submenu = terminalMenu
+        menu.addItem(terminalParentItem)
+
         // System Spotlight Management submenu
         let spotlightMenu = NSMenu()
         let isShortcutOn = SpotlightManager.isShortcutEnabled()
@@ -176,6 +206,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         importItem.target = self
         menu.addItem(importItem)
 
+        let clearClipItem = NSMenuItem(title: "Clear Clipboard History", action: #selector(clearClipboardAction), keyEquivalent: "")
+        clearClipItem.target = self
+        menu.addItem(clearClipItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let aboutItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
@@ -249,6 +283,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         if option == .commandSpace && SpotlightManager.isShortcutEnabled() {
             promptSpotlightDisablingGuide()
         }
+    }
+
+    @objc private func selectSearchEngineAction(_ sender: NSMenuItem) {
+        guard let option = sender.representedObject as? SearchEngineOption else { return }
+        WebSearchProvider.shared.defaultEngine = option
+        rebuildMenu()
+    }
+
+    @objc private func selectTerminalAppAction(_ sender: NSMenuItem) {
+        guard let option = sender.representedObject as? TerminalAppOption else { return }
+        TerminalLauncher.currentTerminal = option
+        rebuildMenu()
+    }
+
+    @objc private func clearClipboardAction() {
+        ClipboardHistoryManager.shared.clearHistory()
     }
 
     @objc private func toggleShortcutAction() {

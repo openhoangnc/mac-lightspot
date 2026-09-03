@@ -150,7 +150,8 @@ final class SearchViewModel: ObservableObject {
         }
         switch item.action {
         case .launchApp, .openSettings, .openURL: return "Open"
-        case .openFolder: return "VS Code ↵ · Terminal ⌥↵ · Finder ⌘↵"
+        case .openFolder, .openProject: return "Open ↵ · Terminal ⌥↵ · Finder ⌘↵"
+        case .killProcess(_, _, let force): return force ? "Force Kill" : "Terminate"
         case .runInTerminal, .runQuickAction: return "Run"
         case .copyToClipboard: return "Copy"
         case .openWebSearch: return "Search"
@@ -403,8 +404,29 @@ final class SearchViewModel: ObservableObject {
                     NSWorkspace.shared.open(url)
                 case .openFolder(let path):
                     Self.openFolderInVSCode(at: path)
+                case .openProject(let path, let appBundleID):
+                    Self.openProject(at: path, bundleIdentifier: appBundleID)
+                case .killProcess(let pid, _, let force):
+                    ProcessKillerProvider.terminateProcess(pid: pid, force: force)
                 }
             }
+        }
+    }
+
+    /// Primary project opener: launches project in respective or default IDE
+    static func openProject(at path: String, bundleIdentifier: String?) {
+        let folderURL = URL(fileURLWithPath: path)
+        if let bundleID = bundleIdentifier,
+           let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([folderURL], withApplicationAt: appURL, configuration: config)
+        } else if let vsCodeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open([folderURL], withApplicationAt: vsCodeURL, configuration: config)
+        } else {
+            NSWorkspace.shared.open(folderURL)
         }
     }
 
@@ -435,10 +457,12 @@ final class SearchViewModel: ObservableObject {
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             switch result.action {
-            case .openFolder(let path):
+            case .openFolder(let path), .openProject(let path, _):
                 TerminalLauncher.openFolder(at: path)
             case .runInTerminal(let command):
                 TerminalLauncher.run(command)
+            case .killProcess(let pid, _, _):
+                ProcessKillerProvider.terminateProcess(pid: pid, force: true)
             default:
                 break
             }
@@ -447,7 +471,14 @@ final class SearchViewModel: ObservableObject {
 
     /// Dedicated action for clicking the Terminal button on a project row
     func openProjectInTerminal(_ result: SearchResult) {
-        guard case .openFolder(let path) = result.action else { return }
+        let targetPath: String?
+        switch result.action {
+        case .openFolder(let path), .openProject(let path, _):
+            targetPath = path
+        default:
+            targetPath = nil
+        }
+        guard let path = targetPath else { return }
         SearchHistoryManager.shared.recordSelection(result: result, query: query)
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -465,7 +496,7 @@ final class SearchViewModel: ObservableObject {
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             switch result.action {
-            case .openFolder(let path):
+            case .openFolder(let path), .openProject(let path, _):
                 Self.openFolderInFinder(at: path)
             case .launchApp(let path):
                 NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
@@ -477,7 +508,14 @@ final class SearchViewModel: ObservableObject {
 
     /// Dedicated action for clicking the Finder button on a project row
     func openProjectInFinder(_ result: SearchResult) {
-        guard case .openFolder(let path) = result.action else { return }
+        let targetPath: String?
+        switch result.action {
+        case .openFolder(let path), .openProject(let path, _):
+            targetPath = path
+        default:
+            targetPath = nil
+        }
+        guard let path = targetPath else { return }
         SearchHistoryManager.shared.recordSelection(result: result, query: query)
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -647,6 +685,10 @@ final class SearchViewModel: ObservableObject {
                 NSWorkspace.shared.open(url)
             case .openFolder(let path):
                 Self.openFolderInVSCode(at: path)
+            case .openProject(let path, let appBundleID):
+                Self.openProject(at: path, bundleIdentifier: appBundleID)
+            case .killProcess(let pid, _, let force):
+                ProcessKillerProvider.terminateProcess(pid: pid, force: force)
             }
         }
     }

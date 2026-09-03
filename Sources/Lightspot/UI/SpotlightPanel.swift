@@ -20,6 +20,36 @@ final class SpotlightFieldEditor: NSTextView {
     var onManageHistory: (@MainActor () -> Void)?
     var onManageCustomCommands: (@MainActor () -> Void)?
 
+    override func keyDown(with event: NSEvent) {
+        let isReturn = event.keyCode == 36 || event.keyCode == 76
+        if isReturn {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.contains(.option) {
+                onSecondarySubmit?()
+                return
+            } else if flags.contains(.command) {
+                onOpenInFinder?()
+                return
+            } else if flags.isEmpty || flags == .capsLock {
+                onSubmit?()
+                return
+            }
+        }
+        super.keyDown(with: event)
+    }
+
+    override func insertNewlineIgnoringFieldEditor(_ sender: Any?) {
+        onSecondarySubmit?()
+    }
+
+    override func insertLineBreak(_ sender: Any?) {
+        onSecondarySubmit?()
+    }
+
+    override func insertParagraphSeparator(_ sender: Any?) {
+        onSecondarySubmit?()
+    }
+
     override func doCommand(by selector: Selector) {
         if selector == #selector(NSResponder.moveUp(_:)) {
             onMoveUp?()
@@ -33,12 +63,16 @@ final class SpotlightFieldEditor: NSTextView {
             onNextTab?()
         } else if selector == #selector(NSResponder.insertBacktab(_:)) {
             onPrevTab?()
-        } else if selector == #selector(NSResponder.insertNewline(_:)) {
+        } else if selector == #selector(NSResponder.insertNewline(_:)) ||
+                   selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) ||
+                   selector == #selector(NSResponder.insertLineBreak(_:)) ||
+                   selector == #selector(NSResponder.insertParagraphSeparator(_:)) {
             if let event = NSApp.currentEvent {
-                if event.modifierFlags.contains(.command) {
-                    onOpenInFinder?()
-                } else if event.modifierFlags.contains(.option) {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if flags.contains(.option) {
                     onSecondarySubmit?()
+                } else if flags.contains(.command) {
+                    onOpenInFinder?()
                 } else {
                     onSubmit?()
                 }
@@ -335,11 +369,22 @@ final class SpotlightPanel: NSPanel {
             self?.hidePanel()
         }
 
-        // Local monitor: handle escape key
+        // Local monitor: handle escape key and option/command return
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 { // Escape key
                 self?.onCancel?()
                 return nil
+            }
+            let isReturn = event.keyCode == 36 || event.keyCode == 76
+            if isReturn {
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if flags.contains(.option) {
+                    self?.onSecondarySubmit?()
+                    return nil
+                } else if flags.contains(.command) {
+                    self?.onOpenInFinder?()
+                    return nil
+                }
             }
             return event
         }

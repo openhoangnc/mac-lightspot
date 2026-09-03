@@ -10,6 +10,10 @@ enum ResultCategory: Int, CaseIterable, Sendable, Codable {
     case quickActions = 3
     case customCommands = 7
     case shellHistory = 4
+    case devTools = 9
+    case browser = 10
+    case clipboard = 11
+    case snippets = 12
     case calculator = 5
     case webSearch = 6
 
@@ -22,6 +26,10 @@ enum ResultCategory: Int, CaseIterable, Sendable, Codable {
         case .quickActions: return "Quick Actions"
         case .customCommands: return "Custom Commands"
         case .shellHistory: return "Terminal History"
+        case .devTools: return "Developer Tools"
+        case .browser: return "Browser Bookmarks & Tabs"
+        case .clipboard: return "Clipboard History"
+        case .snippets: return "Text Snippets"
         case .calculator: return "Calculator"
         case .webSearch: return "Web Search"
         }
@@ -44,6 +52,8 @@ enum SearchAction: Sendable, Codable {
     case runInTerminal(command: String)
     case openURL(url: URL)
     case openFolder(path: String)
+    case openProject(path: String, appBundleID: String?)
+    case killProcess(pid: Int32, name: String, force: Bool)
 }
 
 // MARK: - Search Result

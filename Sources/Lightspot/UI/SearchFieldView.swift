@@ -79,9 +79,24 @@ struct SearchFieldView: NSViewRepresentable {
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
-            let currentText = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+            var currentText = (field.currentEditor() as? NSTextView)?.string ?? field.stringValue
+            if currentText.contains("\n") || currentText.contains("\r") {
+                currentText = currentText.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
+                field.stringValue = currentText
+                (field.currentEditor() as? NSTextView)?.string = currentText
+            }
             text = currentText
             onTextChange(currentText)
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) ||
+               commandSelector == #selector(NSResponder.insertLineBreak(_:)) ||
+               commandSelector == #selector(NSResponder.insertParagraphSeparator(_:)) {
+                // Prevent inserting newline into the single-line search field
+                return true
+            }
+            return false
         }
 
         @objc func onAction(_ sender: NSTextField) {
