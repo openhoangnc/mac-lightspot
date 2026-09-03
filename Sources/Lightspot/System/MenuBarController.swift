@@ -168,6 +168,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let exportItem = NSMenuItem(title: "Export Settings...", action: #selector(exportSettingsAction), keyEquivalent: "")
+        exportItem.target = self
+        menu.addItem(exportItem)
+
+        let importItem = NSMenuItem(title: "Import Settings...", action: #selector(importSettingsAction), keyEquivalent: "")
+        importItem.target = self
+        menu.addItem(importItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let aboutItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
@@ -220,6 +230,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func manageHistoryAction() {
         onManageHistory?()
+    }
+
+    @objc private func exportSettingsAction() {
+        SettingsBackupController.shared.exportSettings()
+    }
+
+    @objc private func importSettingsAction() {
+        SettingsBackupController.shared.importSettings()
     }
 
     @objc private func selectHotkeyAction(_ sender: NSMenuItem) {
@@ -313,7 +331,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "Disable System Spotlight")
         alert.addButton(withTitle: "Open Keyboard Settings")
         alert.addButton(withTitle: "Cancel")
+        alert.window.level = .floating
+        alert.window.center()
+        alert.window.orderFrontRegardless()
 
+        NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
             SpotlightManager.setShortcut(enabled: false)
@@ -324,15 +346,25 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     private func showAlert(title: String, message: String) {
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
+        alert.window.level = .floating
+        alert.window.center()
+        alert.window.orderFrontRegardless()
         alert.runModal()
     }
 
-    @objc private func aboutAction() {
+    @objc func aboutAction() {
+        showAbout()
+    }
+
+    func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+
         let currentOption = hotkeyManager?.currentOption.shortLabel ?? "⌘Space"
         let shortcutStatus = SpotlightManager.isShortcutEnabled() ? "Active" : "Disabled"
         let indexingStatus = SpotlightManager.isIndexingEnabled() ? "Active" : "Disabled"
@@ -353,6 +385,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
+        alert.window.level = .floating
+        alert.window.center()
+        alert.window.orderFrontRegardless()
         alert.runModal()
     }
 

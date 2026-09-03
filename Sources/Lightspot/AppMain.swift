@@ -153,6 +153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.hotkeyManager = hotkeyManager
         viewModel.menuBarController = menuBarController
 
+        // Inject dependencies into settings backup controller
+        SettingsBackupController.shared.hotkeyManager = hotkeyManager
+        SettingsBackupController.shared.menuBarController = menuBarController
+        SettingsBackupController.shared.viewModel = viewModel
+
         // Prime the cached system-state snapshots off the main thread. Menus read
         // the cache; probing live would block the UI (see SpotlightManager).
         refreshSystemState()
@@ -243,7 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // App Menu
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Lightspot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let aboutMenuItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
+        aboutMenuItem.target = self
+        appMenu.addItem(aboutMenuItem)
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Lightspot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
@@ -264,5 +271,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(editMenuItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func aboutAction() {
+        menuBarController?.showAbout()
     }
 }

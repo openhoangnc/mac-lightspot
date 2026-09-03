@@ -170,6 +170,7 @@ struct TestRunner {
         testSearchRankingAndHistoryManager()
         testCustomCommandsStore()
         testVSCodeProjectsProvider()
+        testSettingsBackup()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -666,5 +667,153 @@ struct TestRunner {
         assertTrue(noiseRes.isEmpty, "Unrelated query returns empty")
 
         print("✅ VSCodeProjectsProvider passed all tests!\n")
+    }
+
+    // MARK: - Test 16: Settings Backup (Export / Import)
+
+    static func testSettingsBackup() {
+        print("Testing SettingsBackup...")
+
+        // 1. Model creation & roundtrip JSON serialization
+        let originalDate = Date(timeIntervalSince1970: 1700000000)
+        let cmd1 = CustomCommand(
+            name: "Hacker News",
+            type: .url,
+            target: "https://news.ycombinator.com",
+            keywords: ["hn", "tech"]
+        )
+        let cmd2 = CustomCommand(
+            name: "Docker Containers",
+            type: .terminal,
+            target: "docker ps",
+            keywords: ["docker", "containers"]
+        )
+
+        let historyEntry = SearchHistoryEntry(
+            itemId: "app-com.apple.Safari",
+            query: "safari",
+            title: "Safari",
+            subtitle: "Application",
+            category: .applications,
+            iconType: .systemSymbol(name: "safari"),
+            action: .launchApp(path: "/Applications/Safari.app"),
+            selectedAt: originalDate,
+            selectionCount: 3
+        )
+        let usageRecord = ItemUsageRecord(
+            totalCount: 3,
+            lastSelected: originalDate,
+            keywords: ["safari": KeywordUsage(count: 3, lastSelected: originalDate)]
+        )
+
+        let originalBackup = LightspotSettingsBackup(
+            version: 1,
+            app: "com.lightspot.app",
+            exportedAt: originalDate,
+            preferences: LightspotPreferencesBackup(
+                hotkeyOption: "commandSpace",
+                autoStartEnabled: true,
+                hideMenuBarIcon: false
+            ),
+            customCommands: [cmd1, cmd2],
+            pinnedCommands: ["git status", "make build"],
+            searchHistory: SearchHistoryBackupData(
+                entries: [historyEntry],
+                itemStats: ["app-com.apple.Safari": usageRecord]
+            ),
+            recentAppBundleIDs: ["com.apple.Safari", "com.apple.Terminal"]
+        )
+
+        // 2. Encode to JSON Data
+        guard let encodedData = try? originalBackup.encode() else {
+            print("❌ FAIL: Failed to encode LightspotSettingsBackup to JSON")
+            exit(1)
+        }
+        assertTrue(encodedData.count > 50, "Encoded JSON has reasonable length")
+
+        guard let jsonString = String(data: encodedData, encoding: .utf8) else {
+            print("❌ FAIL: Encoded data is not valid UTF-8 string")
+            exit(1)
+        }
+        assertTrue(jsonString.contains("\"version\" : 1"), "JSON contains version")
+        assertTrue(jsonString.contains("\"app\" : \"com.lightspot.app\""), "JSON contains appIdentifier")
+        assertTrue(jsonString.contains("\"Hacker News\""), "JSON contains custom commands")
+        assertTrue(jsonString.contains("\"git status\""), "JSON contains pinned commands")
+        assertTrue(jsonString.contains("\"commandSpace\""), "JSON contains hotkeyOption")
+
+        // 3. Decode back and assert equality
+        guard let decodedBackup = try? LightspotSettingsBackup.decode(from: encodedData) else {
+            print("❌ FAIL: Failed to decode LightspotSettingsBackup from JSON")
+            exit(1)
+        }
+        assertEqual(decodedBackup.version, 1, "Decoded version matches")
+        assertEqual(decodedBackup.app, "com.lightspot.app", "Decoded app identifier matches")
+        assertEqual(decodedBackup.preferences.hotkeyOption, "commandSpace", "Decoded hotkey matches")
+        assertEqual(decodedBackup.preferences.autoStartEnabled, true, "Decoded autoStart matches")
+        assertEqual(decodedBackup.preferences.hideMenuBarIcon, false, "Decoded hideMenuBarIcon matches")
+        assertEqual(decodedBackup.customCommands.count, 2, "Decoded custom commands count matches")
+        assertEqual(decodedBackup.customCommands[0].name, "Hacker News", "First custom command name matches")
+        assertEqual(decodedBackup.pinnedCommands, ["git status", "make build"], "Decoded pinned commands match")
+        assertEqual(decodedBackup.searchHistory?.entries.count, 1, "Decoded search history entries count matches")
+        assertEqual(decodedBackup.recentAppBundleIDs, ["com.apple.Safari", "com.apple.Terminal"], "Decoded recent apps match")
+
+        // 4. Schema version rejection
+        let futureVersionJSON = jsonString.replacingOccurrences(of: "\"version\" : 1", with: "\"version\" : 999")
+        let futureData = futureVersionJSON.data(using: .utf8)!
+        do {
+            _ = try LightspotSettingsBackup.decode(from: futureData)
+            print("❌ FAIL: Future version 999 should have been rejected")
+            exit(1)
+        } catch let error as SettingsBackupError {
+            assertEqual(error, .unsupportedVersion(999), "Throws unsupportedVersion for schema 999")
+        } catch {
+            print("❌ FAIL: Unexpected error type: \(error)")
+            exit(1)
+        }
+
+        // 5. Invalid app identifier rejection
+        let alienAppJSON = jsonString.replacingOccurrences(of: "\"app\" : \"com.lightspot.app\"", with: "\"app\" : \"com.other.app\"")
+        let alienData = alienAppJSON.data(using: .utf8)!
+        do {
+            _ = try LightspotSettingsBackup.decode(from: alienData)
+            print("❌ FAIL: Alien app identifier should have been rejected")
+            exit(1)
+        } catch let error as SettingsBackupError {
+            assertEqual(error, .invalidAppIdentifier("com.other.app"), "Throws invalidAppIdentifier for other apps")
+        } catch {
+            print("❌ FAIL: Unexpected error type: \(error)")
+            exit(1)
+        }
+
+        // 6. Corrupted JSON rejection
+        let corruptedData = "this is not json at all!".data(using: .utf8)!
+        do {
+            _ = try LightspotSettingsBackup.decode(from: corruptedData)
+            print("❌ FAIL: Corrupted data should have thrown error")
+            exit(1)
+        } catch is SettingsBackupError {
+            // Success
+        } catch {
+            print("❌ FAIL: Expected SettingsBackupError for corrupted data")
+            exit(1)
+        }
+
+        // 7. PinnedCommandsStore reset(to:) verification
+        let pinsStore = PinnedCommandsStore.shared
+        let originalPins = pinsStore.commands()
+        pinsStore.reset(to: ["echo test1", "echo test2", "echo test3"])
+        assertEqual(pinsStore.commands(), ["echo test1", "echo test2", "echo test3"], "PinnedCommandsStore.reset replaces pins")
+        pinsStore.reset(to: originalPins)
+        assertEqual(pinsStore.commands(), originalPins, "PinnedCommandsStore restores original pins")
+
+        // 8. SearchHistoryManager restore(entries:stats:) verification
+        let historyManager = SearchHistoryManager.shared
+        let (existingEntries, existingStats) = historyManager.currentHistoryData()
+        historyManager.restore(entries: [historyEntry], stats: ["app-com.apple.Safari": usageRecord])
+        assertEqual(historyManager.entries().count, 1, "SearchHistoryManager restores history entries")
+        assertEqual(historyManager.itemRecord(for: "app-com.apple.Safari")?.totalCount, 3, "SearchHistoryManager restores item stats")
+        historyManager.restore(entries: existingEntries, stats: existingStats)
+
+        print("✅ SettingsBackup passed all tests!\n")
     }
 }

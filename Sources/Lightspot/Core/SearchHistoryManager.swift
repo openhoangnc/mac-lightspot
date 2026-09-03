@@ -3,7 +3,7 @@ import AppKit
 
 // MARK: - History & Ranking Models
 
-struct KeywordUsage: Codable, Sendable {
+struct KeywordUsage: Codable, Sendable, Equatable {
     var count: Int
     var lastSelected: Date
 
@@ -13,7 +13,7 @@ struct KeywordUsage: Codable, Sendable {
     }
 }
 
-struct ItemUsageRecord: Codable, Sendable {
+struct ItemUsageRecord: Codable, Sendable, Equatable {
     var totalCount: Int
     var lastSelected: Date
     var keywords: [String: KeywordUsage]
@@ -109,6 +109,13 @@ final class SearchHistoryManager: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return cachedEntries
+    }
+
+    /// Returns snapshot of both history entries and ranking stats for backup export.
+    func currentHistoryData() -> (entries: [SearchHistoryEntry], itemStats: [String: ItemUsageRecord]) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (cachedEntries, cachedItemStats)
     }
 
     /// Retrieve item usage stats for ranking inspection.
@@ -296,6 +303,18 @@ final class SearchHistoryManager: @unchecked Sendable {
     /// Reset in-memory and persistent state (useful for tests).
     func reset() {
         clearHistory()
+    }
+
+    /// Restore history entries and ranking statistics from a backup.
+    func restore(entries: [SearchHistoryEntry], stats: [String: ItemUsageRecord]) {
+        lock.lock()
+        cachedEntries = Array(entries.prefix(Self.maxEntries))
+        cachedItemStats = stats
+        let snapshotEntries = cachedEntries
+        let snapshotStats = cachedItemStats
+        lock.unlock()
+
+        persist(entries: snapshotEntries, stats: snapshotStats)
     }
 
     // MARK: - Helpers & Persistence

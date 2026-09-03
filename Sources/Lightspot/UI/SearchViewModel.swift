@@ -892,9 +892,36 @@ final class SearchViewModel: ObservableObject {
 
     func showAbout() {
         onHide?()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            NSApp.orderFrontStandardAboutPanel(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.menuBarController?.showAbout()
         }
+    }
+
+    func exportSettings() {
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            SettingsBackupController.shared.exportSettings()
+        }
+    }
+
+    func importSettings() {
+        onHide?()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            SettingsBackupController.shared.importSettings()
+        }
+    }
+
+    func reloadAfterSettingsImport() {
+        pinnedCommands = PinnedCommandsStore.shared.commands()
+        pinSelectedIndex = 0
+        customCommands = CustomCommandsStore.shared.entries()
+        customCommandSelectedIndex = 0
+        historyEntries = SearchHistoryManager.shared.entries()
+        historySelectedIndex = 0
+        _cachedRecentApps = []
+        _cachedCategorySections = []
+        _cachedAllApps = []
+        objectWillChange.send()
     }
 
     func quitApp() {

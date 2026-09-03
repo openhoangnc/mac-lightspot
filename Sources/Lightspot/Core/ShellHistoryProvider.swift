@@ -148,6 +148,20 @@ final class PinnedCommandsStore: @unchecked Sendable {
         persist(snapshot)
     }
 
+    /// Replaces the pinned commands with the given list and persists them.
+    func reset(to commands: [String]) {
+        lock.lock()
+        cached = commands
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(Self.maxPinned)
+            .map { ShellCommand(command: $0) }
+        let snapshot = cached
+        lock.unlock()
+
+        persist(snapshot)
+    }
+
     private func persist(_ entries: [ShellCommand]) {
         UserDefaults.standard.set(entries.map { $0.command }, forKey: defaultsKey)
     }

@@ -76,6 +76,16 @@ final class RecentAppsManager {
         cachedRecentApps = nil
     }
 
+    /// Restore recent apps from backup
+    func restore(bundleIDs: [String]) {
+        let recents = bundleIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let clamped = Array(recents.prefix(maxStoredCount))
+        UserDefaults.standard.set(clamped, forKey: defaultsKey)
+        cachedRecentApps = nil
+    }
+
     private func storedBundleIDs() -> [String] {
         UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
     }

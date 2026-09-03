@@ -284,6 +284,16 @@ struct SpotlightView: View {
 
                     Divider()
 
+                    Button("Export Settings...") {
+                        viewModel.exportSettings()
+                    }
+
+                    Button("Import Settings...") {
+                        viewModel.importSettings()
+                    }
+
+                    Divider()
+
                     Button("Clear Search (Esc)") {
                         viewModel.clearSearch()
                     }
