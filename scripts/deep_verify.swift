@@ -265,8 +265,23 @@ struct DeepVerifier {
         let asCompiled = NSAppleScript(source: testCmd.target)?.compileAndReturnError(&asError) ?? false
         check("AppleScript compiles for test custom command", asCompiled)
 
+        // Live test prefix command
+        let prefixTestCmd = CustomCommand(
+            name: "Live Prefix Test",
+            type: .url,
+            target: "https://example.com/search?q={query}",
+            keywords: ["lptest"],
+            prefix: "lcheck",
+            iconSource: .runner
+        )
+        store.add(prefixTestCmd)
+        let prefixSearch = SearchEngine.shared.searchImmediate(SearchQuery("lcheck myparam"))
+        check("Prefix command 'lcheck myparam' captures query as Top Hit", prefixSearch[.topHit]?.first?.title == "Live Prefix Test for 'myparam'")
+        check("Runner icon resolves to valid icon", prefixTestCmd.runnerAppPath != nil)
+
         // Clean up
         store.delete(id: testCmd.id)
+        store.delete(id: prefixTestCmd.id)
         store.reset(to: existingCommands)
         check("Cleaned up test custom command", store.entries().allSatisfy { $0.id != testCmd.id })
 

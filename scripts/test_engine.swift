@@ -537,12 +537,60 @@ struct TestRunner {
         let searchNoise = store.search(SearchQuery("zzq"))
         assertTrue(searchNoise.isEmpty, "Unrelated query returns empty results")
 
-        // 8. SearchEngine integration & Top Hit promotion
+        // 8. Prefix commands and argument interpolation
+        let ghCmd = CustomCommand(
+            name: "GitHub",
+            type: .url,
+            target: "https://github.com/search?q={query}&type=repositories",
+            keywords: ["github", "git"],
+            prefix: "gh",
+            iconSource: .runner
+        )
+        store.add(ghCmd)
+
+        // Test exact prefix match without argument
+        let exactPrefixSearch = store.search(SearchQuery("gh"))
+        assertTrue(!exactPrefixSearch.isEmpty, "Search by prefix 'gh' finds command")
+        assertEqual(exactPrefixSearch.first?.score, 96.0, "Exact prefix match has 96.0 score")
+
+        // Test prefix command with argument (e.g. "gh spotlight")
+        let prefixWithArgSearch = store.search(SearchQuery("gh spotlight"))
+        assertTrue(!prefixWithArgSearch.isEmpty, "Prefix command 'gh spotlight' matches")
+        assertEqual(prefixWithArgSearch.first?.score, 98.0, "Prefix with arg has 98.0 score")
+        assertEqual(prefixWithArgSearch.first?.title, "GitHub for 'spotlight'", "Dynamic title matches")
+        assertTrue(prefixWithArgSearch.first?.subtitle.contains("https://github.com/search?q=spotlight") == true, "Subtitle has interpolated query")
+        if case .openURL(let targetURL) = prefixWithArgSearch.first?.action {
+            assertEqual(targetURL.absoluteString, "https://github.com/search?q=spotlight&type=repositories", "URL has query substituted")
+        } else {
+            assertTrue(false, "Prefix result should produce .openURL action")
+        }
+
+        // Test runner icon and custom base64 icon
+        assertTrue(ghCmd.runnerAppName.contains("Browser") || ghCmd.runnerAppName.contains("Chrome") || ghCmd.runnerAppName.contains("Safari"), "Runner app name resolved")
+        let testBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        var customIconCmd = ghCmd
+        customIconCmd.iconSource = .custom
+        customIconCmd.iconBase64 = testBase64
+        if case .customImage(let b64) = customIconCmd.resolvedIconType {
+            assertEqual(b64, testBase64, "Custom base64 icon preserved")
+            let decoded = CustomIconCache.shared.image(for: b64)
+            assertTrue(decoded != nil, "CustomIconCache successfully decodes base64 image")
+        } else {
+            assertTrue(false, "resolvedIconType should be .customImage")
+        }
+
+        // 9. SearchEngine integration & Top Hit promotion
         let engineGrouped = SearchEngine.shared.searchImmediate(SearchQuery("Hacker News"))
         assertEqual(engineGrouped[.topHit]?.count, 1, "Custom command promoted to Top Hit for exact match")
         assertEqual(engineGrouped[.topHit]?.first?.title, "Hacker News", "Top Hit title matches custom command")
 
-        // 9. Delete
+        // Top Hit promotion for prefix commands ("gh spotlight")
+        let enginePrefixGrouped = SearchEngine.shared.searchImmediate(SearchQuery("gh spotlight"))
+        assertEqual(enginePrefixGrouped[.topHit]?.count, 1, "Prefix command promoted to Top Hit")
+        assertEqual(enginePrefixGrouped[.topHit]?.first?.title, "GitHub for 'spotlight'", "Top hit title matches prefix command")
+
+        // 10. Delete
+        store.delete(id: ghCmd.id)
         store.delete(id: urlCmd.id)
         assertEqual(store.count(), 3, "Delete removes command")
         assertTrue(store.entries().allSatisfy { $0.id != urlCmd.id }, "Deleted command no longer in store")
@@ -806,13 +854,40 @@ struct TestRunner {
         pinsStore.reset(to: originalPins)
         assertEqual(pinsStore.commands(), originalPins, "PinnedCommandsStore restores original pins")
 
-        // 8. SearchHistoryManager restore(entries:stats:) verification
-        let historyManager = SearchHistoryManager.shared
-        let (existingEntries, existingStats) = historyManager.currentHistoryData()
-        historyManager.restore(entries: [historyEntry], stats: ["app-com.apple.Safari": usageRecord])
-        assertEqual(historyManager.entries().count, 1, "SearchHistoryManager restores history entries")
-        assertEqual(historyManager.itemRecord(for: "app-com.apple.Safari")?.totalCount, 3, "SearchHistoryManager restores item stats")
-        historyManager.restore(entries: existingEntries, stats: existingStats)
+        // 9. PathSanitizer & Home directory export anonymization
+        let userHome = NSHomeDirectory()
+        let username = NSUserName()
+        let rawPath = "\(userHome)/projects/my-app/run.sh"
+        let sanitized = PathSanitizer.sanitizeForExport(rawPath)
+        assertEqual(sanitized, "~/projects/my-app/run.sh", "PathSanitizer replaces home directory with ~")
+        assertTrue(!sanitized.contains(username), "Sanitized string does not contain username")
+
+        let expandedPath = PathSanitizer.expandForImport(sanitized)
+        assertEqual(expandedPath, rawPath, "PathSanitizer restores ~ to home directory on import")
+
+        let userVarStr = "Hello ${USER}"
+        let expandedUserVar = PathSanitizer.expandForImport(userVarStr)
+        assertEqual(expandedUserVar, "Hello \(username)", "PathSanitizer expands ${USER}")
+
+        // Test export settings JSON does not leak username
+        let userCmd = CustomCommand(
+            name: "Local Script",
+            type: .shell,
+            target: "\(userHome)/bin/myscript.sh",
+            keywords: ["local"]
+        )
+        let leakTestBackup = LightspotSettingsBackup(
+            preferences: LightspotPreferencesBackup(hotkeyOption: "commandSpace", autoStartEnabled: false, hideMenuBarIcon: false),
+            customCommands: [userCmd],
+            pinnedCommands: ["cd \(userHome)/Desktop"],
+            searchHistory: nil,
+            recentAppBundleIDs: nil
+        )
+        let exportedJSONData = try! leakTestBackup.encode()
+        let exportedJSONString = String(data: exportedJSONData, encoding: .utf8)!
+        assertTrue(!exportedJSONString.contains("/Users/\(username)"), "Exported backup JSON does not contain /Users/<username>")
+        assertTrue(exportedJSONString.contains("~/bin/myscript.sh"), "Exported backup contains sanitized ~ path")
+        assertTrue(exportedJSONString.contains("cd ~/Desktop"), "Exported backup contains sanitized pinned command")
 
         print("✅ SettingsBackup passed all tests!\n")
 

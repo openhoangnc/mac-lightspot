@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Custom Commands Manager View
 
@@ -84,6 +85,33 @@ struct CustomCommandsView: View {
 
             Spacer()
 
+            // Presets Dropdown Menu
+            Menu {
+                ForEach(CustomCommandsStore.presets) { preset in
+                    Button(action: {
+                        onSave(preset.command)
+                    }) {
+                        Text("\(preset.name) (\(preset.prefix)) · \(preset.type.displayName)")
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10.5, weight: .semibold))
+                    Text("Presets")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .help("Add common prefix commands from presets (Google, GitHub, YouTube, etc.)")
+
             Button(action: {
                 editingCommand = CustomCommand(name: "", type: .url, target: "", keywords: [])
                 isEditing = true
@@ -163,30 +191,52 @@ struct CustomCommandsView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.white.opacity(0.6))
 
-            Text("Add commands to open websites, launch Terminal scripts, or run AppleScript.")
+            Text("Add commands to open websites, launch Terminal scripts, or run AppleScript with prefix shortcuts like 'g' or 'gh'.")
                 .font(.system(size: 11.5))
                 .foregroundColor(.white.opacity(0.4))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
 
-            Button(action: {
-                editingCommand = CustomCommand(name: "", type: .url, target: "", keywords: [])
-                isEditing = true
-            }) {
-                HStack(spacing: 5) {
-                    Image(systemName: "plus.circle.fill")
-                    Text("Add Command")
+            HStack(spacing: 10) {
+                Button(action: {
+                    editingCommand = CustomCommand(name: "", type: .url, target: "", keywords: [])
+                    isEditing = true
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus.circle.fill")
+                        Text("Add Command")
+                    }
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.18))
+                    )
                 }
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundColor(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.18))
-                )
+                .buttonStyle(.plain)
+
+                Button(action: {
+                    for preset in CustomCommandsStore.presets.prefix(3) {
+                        onSave(preset.command)
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles")
+                        Text("Load Default Presets")
+                    }
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.10))
+                    )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             .padding(.top, 4)
 
             Spacer()
@@ -200,6 +250,9 @@ struct CustomCommandsView: View {
             hint(key: "⏎", label: "Run")
             hint(key: "Esc", label: "Close")
             Spacer()
+            Text("Tip: type '<prefix> <query>' in Spotlight to search directly")
+                .font(.system(size: 10.5))
+                .foregroundColor(.white.opacity(0.35))
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 11)
@@ -240,6 +293,53 @@ struct CustomCommandsView: View {
     }
 }
 
+// MARK: - Custom Command Icon View
+
+struct CustomCommandIconView: View {
+    let iconType: ResultIconType
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            switch iconType {
+            case .app(let path):
+                LazyAppIconView(path: path, size: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            case .customImage(let base64):
+                if let img = CustomIconCache.shared.image(for: base64) {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: size, height: size)
+                        .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+                } else {
+                    fallbackSymbol
+                }
+            case .systemSymbol(let name):
+                Image(systemName: name)
+                    .font(.system(size: size * 0.46, weight: .medium))
+                    .foregroundColor(.white.opacity(0.85))
+                    .frame(width: size, height: size)
+                    .background(
+                        Circle().fill(Color.white.opacity(0.12))
+                    )
+            }
+        }
+        .frame(width: size, height: size)
+        .id(iconType)
+    }
+
+    private var fallbackSymbol: some View {
+        Image(systemName: "command.square.fill")
+            .font(.system(size: size * 0.46, weight: .medium))
+            .foregroundColor(.white.opacity(0.85))
+            .frame(width: size, height: size)
+            .background(
+                Circle().fill(Color.white.opacity(0.12))
+            )
+    }
+}
+
 // MARK: - Custom Command Row
 
 struct CustomCommandRow: View {
@@ -264,14 +364,8 @@ struct CustomCommandRow: View {
                 .foregroundColor(.white.opacity(0.35))
                 .frame(width: 18, alignment: .trailing)
 
-            // Type Icon
-            Image(systemName: command.type.sfSymbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.white.opacity(0.85))
-                .frame(width: 26, height: 26)
-                .background(
-                    Circle().fill(Color.white.opacity(0.12))
-                )
+            // Resolved Icon (Runner App, Custom Base64, or Symbol)
+            CustomCommandIconView(iconType: command.resolvedIconType, size: 26)
 
             // Content
             VStack(alignment: .leading, spacing: 2) {
@@ -289,6 +383,21 @@ struct CustomCommandRow: View {
                         .background(
                             Capsule().fill(Color.white.opacity(0.10))
                         )
+
+                    // Prefix Badge (e.g. "gh", "g")
+                    if let prefix = command.prefix, !prefix.isEmpty {
+                        Text(prefix)
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.95))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(
+                                Capsule().fill(Color.cyan.opacity(0.18))
+                            )
+                            .overlay(
+                                Capsule().stroke(Color.cyan.opacity(0.4), lineWidth: 0.6)
+                            )
+                    }
                 }
 
                 Text(command.target)
@@ -353,6 +462,9 @@ struct CustomCommandEditorView: View {
     @State private var type: CustomCommandType
     @State private var target: String
     @State private var keywords: String
+    @State private var prefix: String
+    @State private var iconSource: CustomCommandIconSource
+    @State private var iconBase64: String?
 
     init(command: CustomCommand, onSave: @escaping (CustomCommand) -> Void, onCancel: @escaping () -> Void) {
         self.command = command
@@ -362,11 +474,27 @@ struct CustomCommandEditorView: View {
         _type = State(initialValue: command.type)
         _target = State(initialValue: command.target)
         _keywords = State(initialValue: command.keywords.joined(separator: ", "))
+        _prefix = State(initialValue: command.prefix ?? "")
+        _iconSource = State(initialValue: command.effectiveIconSource)
+        _iconBase64 = State(initialValue: command.iconBase64)
     }
 
     private var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var previewCommand: CustomCommand {
+        CustomCommand(
+            id: command.id,
+            name: name.isEmpty ? "Preview" : name,
+            type: type,
+            target: target,
+            keywords: [],
+            prefix: prefix,
+            iconSource: iconSource,
+            iconBase64: iconBase64
+        )
     }
 
     var body: some View {
@@ -382,6 +510,32 @@ struct CustomCommandEditorView: View {
                     .foregroundColor(.white)
 
                 Spacer()
+
+                // Fill from Presets Menu
+                Menu {
+                    ForEach(CustomCommandsStore.presets) { preset in
+                        Button(action: {
+                            applyPreset(preset)
+                        }) {
+                            Text("\(preset.name) (\(preset.prefix))")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 10))
+                        Text("Fill from Preset")
+                            .font(.system(size: 11.5))
+                    }
+                    .foregroundColor(.white.opacity(0.8))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.white.opacity(0.12))
+                    )
+                }
+                .menuStyle(.borderlessButton)
 
                 Button(action: onCancel) {
                     Image(systemName: "xmark.circle.fill")
@@ -432,6 +586,106 @@ struct CustomCommandEditorView: View {
                         }
                     }
 
+                    // Icon Configuration Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Icon")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(.white.opacity(0.6))
+
+                            Spacer()
+
+                            if iconSource == .custom && iconBase64 != nil {
+                                Text("Custom file saved as Base64")
+                                    .font(.system(size: 10.5))
+                                    .foregroundColor(.cyan.opacity(0.8))
+                            }
+                        }
+
+                        HStack(spacing: 12) {
+                            // Current icon preview
+                            CustomCommandIconView(iconType: previewCommand.resolvedIconType, size: 34)
+                                .padding(4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+
+                            // Icon mode options
+                            HStack(spacing: 6) {
+                                // 1. Runner Option
+                                Button(action: { iconSource = .runner }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "app.fill")
+                                            .font(.system(size: 10.5))
+                                        Text("Runner (\(previewCommand.runnerAppName))")
+                                            .font(.system(size: 11.5, weight: iconSource == .runner ? .semibold : .regular))
+                                    }
+                                    .foregroundColor(iconSource == .runner ? .white : .white.opacity(0.65))
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(iconSource == .runner ? Color.white.opacity(0.20) : Color.white.opacity(0.06))
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .help("Use default icon from the runner app (\(previewCommand.runnerAppName))")
+
+                                // 2. Custom File Option
+                                Button(action: chooseIconFile) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: iconSource == .custom ? "checkmark.circle.fill" : "photo")
+                                            .font(.system(size: 10.5))
+                                        Text(iconSource == .custom ? "Change File..." : "Choose File...")
+                                            .font(.system(size: 11.5, weight: iconSource == .custom ? .semibold : .regular))
+                                    }
+                                    .foregroundColor(iconSource == .custom ? .white : .white.opacity(0.65))
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(iconSource == .custom ? Color.white.opacity(0.20) : Color.white.opacity(0.06))
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .help("Select image file, app bundle, or icns — saved as Base64 in config")
+
+                                // 3. Symbol Option
+                                Button(action: { iconSource = .symbol }) {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: type.sfSymbol)
+                                            .font(.system(size: 10.5))
+                                        Text("Symbol")
+                                            .font(.system(size: 11.5, weight: iconSource == .symbol ? .semibold : .regular))
+                                    }
+                                    .foregroundColor(iconSource == .symbol ? .white : .white.opacity(0.65))
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(iconSource == .symbol ? Color.white.opacity(0.20) : Color.white.opacity(0.06))
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .help("Use standard SF symbol for this command type")
+                            }
+
+                            if iconBase64 != nil {
+                                Button(action: {
+                                    iconBase64 = nil
+                                    iconSource = .runner
+                                }) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white.opacity(0.5))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Clear custom uploaded icon")
+                            }
+                        }
+                    }
+
                     // Name Field
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Name")
@@ -441,6 +695,34 @@ struct CustomCommandEditorView: View {
                         TextField("e.g. Open GitHub", text: $name)
                             .textFieldStyle(.plain)
                             .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.white.opacity(0.08))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
+                            )
+                    }
+
+                    // Prefix Field
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Prefix Shortcut (Optional)")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundColor(.white.opacity(0.6))
+                            Spacer()
+                            Text(prefixHelperText)
+                                .font(.system(size: 10.5))
+                                .foregroundColor(.cyan.opacity(0.8))
+                        }
+
+                        TextField("e.g. gh, g, yt, npm", text: $prefix)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12.5, design: .monospaced))
                             .foregroundColor(.white)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
@@ -480,6 +762,10 @@ struct CustomCommandEditorView: View {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
                             )
+
+                        Text("Tip: Use {query} or %s for arguments, e.g. https://github.com/search?q={query}")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.white.opacity(0.38))
                     }
 
                     // Keywords Field
@@ -563,10 +849,55 @@ struct CustomCommandEditorView: View {
     private var targetHint: String {
         switch type {
         case .url: return "Opens in default browser"
-        case .terminal: return "Runs in Terminal.app window"
+        case .terminal: return "Runs in Terminal window"
         case .appleScript: return "Runs via osascript"
         case .shell: return "Runs in background (/bin/zsh)"
         }
+    }
+
+    private var prefixHelperText: String {
+        let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty {
+            return "Type '<prefix> <query>' in search"
+        }
+        return "Type '\(p) <query>' in search to run"
+    }
+
+    private func chooseIconFile() {
+        NSApp.activate(ignoringOtherApps: true)
+        let openPanel = NSOpenPanel()
+        openPanel.title = "Select Command Icon"
+        openPanel.prompt = "Select"
+        openPanel.canChooseFiles = true
+        openPanel.canChooseDirectories = false
+        openPanel.allowsMultipleSelection = false
+        openPanel.allowedContentTypes = [
+            .image,
+            .application,
+            .bundle,
+            .png,
+            .jpeg,
+            .icns,
+            .tiff
+        ]
+
+        let response = openPanel.runModal()
+        guard response == .OK, let url = openPanel.url else { return }
+
+        if let base64 = CustomIconCache.encodeImageFileToBase64(at: url, maxDimension: 128) {
+            self.iconBase64 = base64
+            self.iconSource = .custom
+        }
+    }
+
+    private func applyPreset(_ preset: CustomCommandPreset) {
+        self.name = preset.name
+        self.type = preset.type
+        self.target = preset.target
+        self.prefix = preset.prefix
+        self.keywords = preset.keywords.joined(separator: ", ")
+        self.iconSource = .runner
+        self.iconBase64 = nil
     }
 
     private func saveAction() {
@@ -576,12 +907,17 @@ struct CustomCommandEditorView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
+        let trimmedPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+
         let updated = CustomCommand(
             id: command.id,
             name: name,
             type: type,
             target: target,
-            keywords: parsedKeywords
+            keywords: parsedKeywords,
+            prefix: trimmedPrefix.isEmpty ? nil : trimmedPrefix,
+            iconSource: iconSource,
+            iconBase64: iconBase64
         )
         onSave(updated)
     }

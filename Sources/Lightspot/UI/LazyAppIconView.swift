@@ -10,11 +10,12 @@ struct LazyAppIconView: View {
     init(path: String, size: CGFloat) {
         self.path = path
         self.size = size
-        // Instant synchronous fast path if already present in memory cache
+        // Instant synchronous fast path from cache or workspace icon
         if let cached = AppIconCache.shared.cachedIcon(forPath: path, size: Int(size)) {
             _icon = State(initialValue: cached)
         } else {
-            _icon = State(initialValue: nil)
+            let loaded = AppIconCache.shared.icon(forPath: path, size: Int(size))
+            _icon = State(initialValue: loaded)
         }
     }
 
@@ -30,22 +31,9 @@ struct LazyAppIconView: View {
             }
         }
         .frame(width: size, height: size)
-        .onAppear {
-            loadIcon()
-        }
-        .onChange(of: path) { _ in
-            loadIcon()
-        }
-    }
-
-    private func loadIcon() {
-        if let cached = AppIconCache.shared.cachedIcon(forPath: path, size: Int(size)) {
-            self.icon = cached
-            return
-        }
-
-        AppIconCache.shared.loadIconAsync(forPath: path, size: Int(size)) { loaded in
-            self.icon = loaded
+        .id("\(path)_\(Int(size))")
+        .onChange(of: path) { newPath in
+            self.icon = AppIconCache.shared.icon(forPath: newPath, size: Int(size))
         }
     }
 }

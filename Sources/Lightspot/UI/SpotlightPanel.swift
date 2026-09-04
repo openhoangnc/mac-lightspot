@@ -366,6 +366,7 @@ final class SpotlightPanel: NSPanel {
     private func installMonitors() {
         // Global monitor: clicks outside the panel
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            if NSApp.modalWindow != nil { return }
             self?.hidePanel()
         }
 

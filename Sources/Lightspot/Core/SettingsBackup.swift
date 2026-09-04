@@ -1,5 +1,71 @@
 import Foundation
 
+// MARK: - Path Sanitizer
+
+public enum PathSanitizer {
+    /// Replaces occurrences of the user's home directory (/Users/username) with ~ or ${USER}
+    public static func sanitizeForExport(_ string: String) -> String {
+        let home = NSHomeDirectory()
+        let username = NSUserName()
+        var result = string
+
+        if !home.isEmpty && result.contains(home) {
+            result = result.replacingOccurrences(of: home, with: "~")
+        }
+
+        let userDir = "/Users/\(username)"
+        if !username.isEmpty && result.contains(userDir) {
+            result = result.replacingOccurrences(of: userDir, with: "~")
+        }
+
+        return result
+    }
+
+    /// Restores ~ or ${USER} to current user's paths when importing
+    public static func expandForImport(_ string: String) -> String {
+        var result = string
+        let home = NSHomeDirectory()
+        let username = NSUserName()
+
+        if result.contains("${USER}") {
+            result = result.replacingOccurrences(of: "${USER}", with: username)
+        }
+        if result.contains("$USER") {
+            result = result.replacingOccurrences(of: "$USER", with: username)
+        }
+        if result == "~" {
+            return home
+        }
+        if result.hasPrefix("~/") {
+            result = home + String(result.dropFirst(1))
+        } else if result.contains("~/") {
+            result = result.replacingOccurrences(of: "~/", with: "\(home)/")
+        }
+        return result
+    }
+}
+
+// MARK: - SearchAction Sanitization Extension
+
+extension SearchAction {
+    func sanitizedForExport() -> SearchAction {
+        switch self {
+        case .launchApp(let path):
+            return .launchApp(path: PathSanitizer.sanitizeForExport(path))
+        case .openFolder(let path):
+            return .openFolder(path: PathSanitizer.sanitizeForExport(path))
+        case .openProject(let path, let bundleID):
+            return .openProject(path: PathSanitizer.sanitizeForExport(path), appBundleID: bundleID)
+        case .runInTerminal(let command):
+            return .runInTerminal(command: PathSanitizer.sanitizeForExport(command))
+        case .runQuickAction(let script, let usesOsascript):
+            return .runQuickAction(script: PathSanitizer.sanitizeForExport(script), usesOsascript: usesOsascript)
+        default:
+            return self
+        }
+    }
+}
+
 // MARK: - Settings Backup Models
 
 struct LightspotSettingsBackup: Codable, Sendable, Equatable {
@@ -45,11 +111,64 @@ struct LightspotSettingsBackup: Codable, Sendable, Equatable {
         self.recentAppBundleIDs = recentAppBundleIDs
     }
 
+    /// Creates a sanitized copy where home directories are replaced with ~ or ${USER}
+    func sanitizedForExport() -> LightspotSettingsBackup {
+        let sanitizedCommands = customCommands.map { cmd in
+            var c = cmd
+            c.target = PathSanitizer.sanitizeForExport(c.target)
+            return c
+        }
+
+        let sanitizedPinned = pinnedCommands.map {
+            PathSanitizer.sanitizeForExport($0)
+        }
+
+        var sanitizedHistory = searchHistory
+        if let history = sanitizedHistory {
+            let entries = history.entries.map { entry in
+                SearchHistoryEntry(
+                    id: entry.id,
+                    itemId: entry.itemId,
+                    query: entry.query,
+                    title: PathSanitizer.sanitizeForExport(entry.title),
+                    subtitle: PathSanitizer.sanitizeForExport(entry.subtitle),
+                    category: entry.category,
+                    iconType: entry.iconType,
+                    action: entry.action.sanitizedForExport(),
+                    selectedAt: entry.selectedAt,
+                    selectionCount: entry.selectionCount
+                )
+            }
+            sanitizedHistory = SearchHistoryBackupData(entries: entries, itemStats: history.itemStats)
+        }
+
+        return LightspotSettingsBackup(
+            version: version,
+            app: app,
+            exportedAt: exportedAt,
+            preferences: preferences,
+            customCommands: sanitizedCommands,
+            pinnedCommands: sanitizedPinned,
+            searchHistory: sanitizedHistory,
+            recentAppBundleIDs: recentAppBundleIDs
+        )
+    }
+
     func encode() throws -> Data {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(self)
+        let sanitized = self.sanitizedForExport()
+        let data = try encoder.encode(sanitized)
+
+        // As an additional safeguard, ensure no raw /Users/<username> remains in the encoded UTF-8 JSON
+        if let jsonString = String(data: data, encoding: .utf8) {
+            let cleanString = PathSanitizer.sanitizeForExport(jsonString)
+            if let cleanData = cleanString.data(using: .utf8) {
+                return cleanData
+            }
+        }
+        return data
     }
 
     static func decode(from data: Data) throws -> LightspotSettingsBackup {

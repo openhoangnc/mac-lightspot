@@ -415,7 +415,8 @@ final class SearchViewModel: ObservableObject {
 
     /// Primary project opener: launches project in respective or default IDE
     static func openProject(at path: String, bundleIdentifier: String?) {
-        let folderURL = URL(fileURLWithPath: path)
+        let expanded = (path as NSString).expandingTildeInPath
+        let folderURL = URL(fileURLWithPath: expanded)
         if let bundleID = bundleIdentifier,
            let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let config = NSWorkspace.OpenConfiguration()
@@ -432,7 +433,8 @@ final class SearchViewModel: ObservableObject {
 
     /// Primary folder opener: launches folder in Visual Studio Code
     static func openFolderInVSCode(at path: String) {
-        let folderURL = URL(fileURLWithPath: path)
+        let expanded = (path as NSString).expandingTildeInPath
+        let folderURL = URL(fileURLWithPath: expanded)
         if let vsCodeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
             let config = NSWorkspace.OpenConfiguration()
             config.activates = true
@@ -727,17 +729,18 @@ final class SearchViewModel: ObservableObject {
         isCustomCommandManagerPresented = false
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let target = command.interpolatedTarget(with: "")
             switch command.type {
             case .url:
-                if let url = command.normalizedURL {
+                if case .openURL(let url) = command.searchAction(with: nil) {
                     NSWorkspace.shared.open(url)
                 }
             case .terminal:
-                TerminalLauncher.run(command.target)
+                TerminalLauncher.run(target)
             case .appleScript:
-                QuickActionsProvider.execute(script: command.target, usesOsascript: true)
+                QuickActionsProvider.execute(script: target, usesOsascript: true)
             case .shell:
-                QuickActionsProvider.execute(script: command.target, usesOsascript: false)
+                QuickActionsProvider.execute(script: target, usesOsascript: false)
             }
         }
     }

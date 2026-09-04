@@ -59,6 +59,7 @@ public enum BrowserHistoryDays: Int, CaseIterable, Identifiable, Sendable, Codab
 enum ResultIconType: Sendable, Hashable, Codable {
     case app(path: String)
     case systemSymbol(name: String)
+    case customImage(base64: String)
 }
 
 enum SearchAction: Sendable, Codable {

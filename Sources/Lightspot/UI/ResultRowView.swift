@@ -19,6 +19,21 @@ struct ResultRowView: View {
                         .frame(width: 22, height: 22)
                         .foregroundColor(isSelected ? .white : .primary)
                         .frame(width: 28, height: 28) // Fixed container size
+                case .customImage(let base64):
+                    if let img = CustomIconCache.shared.image(for: base64) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 28, height: 28)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    } else {
+                        Image(systemName: "command.square.fill")
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 22, height: 22)
+                            .foregroundColor(isSelected ? .white : .primary)
+                            .frame(width: 28, height: 28)
+                    }
                 }
             }
 

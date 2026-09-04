@@ -337,6 +337,22 @@ struct SearchResultRow: View {
                         .background(
                             Circle().fill(Color.white.opacity(0.1))
                         )
+                case .customImage(let base64):
+                    if let img = CustomIconCache.shared.image(for: base64) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    } else {
+                        Image(systemName: "command.square.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.8))
+                            .frame(width: 32, height: 32)
+                            .background(
+                                Circle().fill(Color.white.opacity(0.1))
+                            )
+                    }
                 }
 
                 // Texts

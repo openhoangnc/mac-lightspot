@@ -43,6 +43,21 @@ struct PreviewPaneView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 64, height: 64)
                         .foregroundColor(.accentColor)
+                case .customImage(let base64):
+                    if let img = CustomIconCache.shared.image(for: base64) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 96, height: 96)
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                            .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                    } else {
+                        Image(systemName: "command.square.fill")
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 64, height: 64)
+                            .foregroundColor(.accentColor)
+                    }
                 }
             }
 
