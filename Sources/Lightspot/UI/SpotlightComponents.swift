@@ -471,3 +471,52 @@ struct SearchResultRow: View {
         .onHover { isHovered = $0 }
     }
 }
+
+// MARK: - Ellipsis Menu Button (Shared NSMenu Popup)
+
+final class AppKitMenuButton: NSButton {
+    var menuProvider: (() -> NSMenu?)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setup()
+    }
+
+    private func setup() {
+        bezelStyle = .regularSquare
+        isBordered = false
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        contentTintColor = NSColor.white.withAlphaComponent(0.75)
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More Options")?.withSymbolConfiguration(config)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let menu = menuProvider?() else { return }
+        contentTintColor = .white
+        let yPos = isFlipped ? bounds.maxY + 4 : bounds.minY
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: yPos), in: self)
+        contentTintColor = NSColor.white.withAlphaComponent(0.75)
+    }
+}
+
+struct EllipsisMenuButton: NSViewRepresentable {
+    let menuProvider: () -> NSMenu?
+
+    func makeNSView(context: Context) -> AppKitMenuButton {
+        let button = AppKitMenuButton()
+        button.menuProvider = menuProvider
+        return button
+    }
+
+    func updateNSView(_ nsView: AppKitMenuButton, context: Context) {
+        nsView.menuProvider = menuProvider
+    }
+}
+

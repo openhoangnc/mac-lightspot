@@ -150,6 +150,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.viewModel.showHistoryManager()
         }
+        menuBarController.onEnsurePanelVisible = { [weak self] in
+            guard let self = self else { return false }
+            if !self.panel.isVisible {
+                self.showPanel()
+            }
+            return true
+        }
         menuBarController.setup(hotkeyManager: hotkeyManager)
 
         // Inject dependencies into view model

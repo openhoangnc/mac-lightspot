@@ -9,6 +9,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onManageCustomCommands: (() -> Void)?
     var onManagePins: (() -> Void)?
     var onManageHistory: (() -> Void)?
+    var onEnsurePanelVisible: (() -> Bool)?
 
     /// The status menu reads SpotlightManager's cached snapshot, which is refreshed
     /// off the main thread. Kick a refresh as the menu opens so it self-corrects if
@@ -39,30 +40,64 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     func rebuildMenu() {
-        guard let hotkeyManager = hotkeyManager else { return }
+        guard let menu = buildMenu() else { return }
+        menu.delegate = self
+        statusItem?.menu = menu
+        viewModel?.objectWillChange.send()
+    }
+
+    func buildMenu() -> NSMenu? {
+        guard let hotkeyManager = hotkeyManager else { return nil }
         let currentOption = hotkeyManager.currentOption
 
         let menu = NSMenu()
 
+        // 1. Show Lightspot
         let showItem = NSMenuItem(title: "Show Lightspot (\(currentOption.shortLabel))", action: #selector(showAction), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
 
-        let customCommandsItem = NSMenuItem(title: "Custom Commands...", action: #selector(manageCustomCommandsAction), keyEquivalent: "")
-        customCommandsItem.target = self
-        menu.addItem(customCommandsItem)
+        // 2. Category Navigation
+        let nextCatItem = NSMenuItem(title: "Next Category (Tab)", action: #selector(nextCategoryAction), keyEquivalent: "")
+        nextCatItem.target = self
+        menu.addItem(nextCatItem)
 
-        let pinnedItem = NSMenuItem(title: "Pinned Commands...", action: #selector(managePinsAction), keyEquivalent: "")
-        pinnedItem.target = self
-        menu.addItem(pinnedItem)
-
-        let historyItem = NSMenuItem(title: "Search History...", action: #selector(manageHistoryAction), keyEquivalent: "")
-        historyItem.target = self
-        menu.addItem(historyItem)
+        let prevCatItem = NSMenuItem(title: "Previous Category (⇧Tab)", action: #selector(prevCategoryAction), keyEquivalent: "")
+        prevCatItem.target = self
+        menu.addItem(prevCatItem)
 
         menu.addItem(NSMenuItem.separator())
 
-        // Shortcut submenu
+        // 3. Custom Commands
+        let customCommandsItem = NSMenuItem(title: "Custom Commands... (⌘⇧C)", action: #selector(manageCustomCommandsAction), keyEquivalent: "")
+        customCommandsItem.target = self
+        menu.addItem(customCommandsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 4. Pinned Commands
+        let pinnedItem = NSMenuItem(title: "Pinned Commands... (⌘⇧P)", action: #selector(managePinsAction), keyEquivalent: "")
+        pinnedItem.target = self
+        menu.addItem(pinnedItem)
+
+        let pinToggleItem = NSMenuItem(title: "Pin / Unpin Selected Command (⌘P)", action: #selector(togglePinAction), keyEquivalent: "")
+        pinToggleItem.target = self
+        menu.addItem(pinToggleItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 5. Search History
+        let historyItem = NSMenuItem(title: "Search History... (⌘⇧H)", action: #selector(manageHistoryAction), keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
+
+        let clearHistoryItem = NSMenuItem(title: "Clear Search History", action: #selector(clearHistoryAction), keyEquivalent: "")
+        clearHistoryItem.target = self
+        menu.addItem(clearHistoryItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 6. Shortcut submenu
         let shortcutMenu = NSMenu()
         for option in HotkeyOption.allCases {
             let item = NSMenuItem(title: option.displayName, action: #selector(selectHotkeyAction(_:)), keyEquivalent: "")
@@ -72,11 +107,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             shortcutMenu.addItem(item)
         }
 
-        let shortcutParentItem = NSMenuItem(title: "Shortcut", action: nil, keyEquivalent: "")
+        let shortcutParentItem = NSMenuItem(title: "Shortcut (\(currentOption.shortLabel))", action: nil, keyEquivalent: "")
         shortcutParentItem.submenu = shortcutMenu
         menu.addItem(shortcutParentItem)
 
-        // Search Engine submenu
+        // 7. Search Engine submenu
         let searchEngineMenu = NSMenu()
         let currentEngine = WebSearchProvider.shared.defaultEngine
         for option in SearchEngineOption.allCases {
@@ -91,7 +126,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         searchEngineParentItem.submenu = searchEngineMenu
         menu.addItem(searchEngineParentItem)
 
-        // Terminal App submenu
+        // 8. Browser History submenu
+        let browserHistoryMenu = NSMenu()
+        let currentHistoryLimit = BrowserIntegrationProvider.shared.historyLimitDays
+        for option in BrowserHistoryDays.allCases {
+            let item = NSMenuItem(title: option.displayName, action: #selector(selectBrowserHistoryAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option
+            item.state = (option == currentHistoryLimit) ? .on : .off
+            browserHistoryMenu.addItem(item)
+        }
+
+        let browserHistoryParentItem = NSMenuItem(title: "Browser History", action: nil, keyEquivalent: "")
+        browserHistoryParentItem.submenu = browserHistoryMenu
+        menu.addItem(browserHistoryParentItem)
+
+        // 9. Terminal App submenu
         let terminalMenu = NSMenu()
         let currentTerminal = TerminalLauncher.currentTerminal
         for option in TerminalAppOption.installedOptions {
@@ -106,7 +156,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         terminalParentItem.submenu = terminalMenu
         menu.addItem(terminalParentItem)
 
-        // System Spotlight Management submenu
+        // 10. System Spotlight Management submenu
         let spotlightMenu = NSMenu()
         let isShortcutOn = SpotlightManager.isShortcutEnabled()
         let isServiceDisabled = SpotlightManager.isServiceDisabled()
@@ -177,7 +227,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         spotlightParentItem.submenu = spotlightMenu
         menu.addItem(spotlightParentItem)
 
-        // Auto-start / Launch at Login toggle
+        // 11. Auto-start / Launch at Login toggle
         let isAutoStartOn = AutoStartManager.isEnabled
         let autoStartItem = NSMenuItem(
             title: "Launch at Login",
@@ -188,7 +238,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         autoStartItem.state = isAutoStartOn ? .on : .off
         menu.addItem(autoStartItem)
 
-        // Hide Menu Bar Icon toggle
+        // 12. Hide Menu Bar Icon toggle
         let hideIconItem = NSMenuItem(
             title: isMenuBarIconHidden ? "Show Menu Bar Icon" : "Hide Menu Bar Icon",
             action: #selector(toggleHideMenuBarIconAction),
@@ -199,33 +249,46 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // 13. Export Settings...
         let exportItem = NSMenuItem(title: "Export Settings...", action: #selector(exportSettingsAction), keyEquivalent: "")
         exportItem.target = self
         menu.addItem(exportItem)
 
+        // 14. Import Settings...
         let importItem = NSMenuItem(title: "Import Settings...", action: #selector(importSettingsAction), keyEquivalent: "")
         importItem.target = self
         menu.addItem(importItem)
 
+        // 15. Clear Clipboard History
         let clearClipItem = NSMenuItem(title: "Clear Clipboard History", action: #selector(clearClipboardAction), keyEquivalent: "")
         clearClipItem.target = self
         menu.addItem(clearClipItem)
 
         menu.addItem(NSMenuItem.separator())
 
+        // 16. Clear Search
+        let clearSearchItem = NSMenuItem(title: "Clear Search (Esc)", action: #selector(clearSearchAction), keyEquivalent: "")
+        clearSearchItem.target = self
+        menu.addItem(clearSearchItem)
+
+        // 17. About Lightspot
         let aboutItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
 
+        // 18. Close Lightspot
+        let closeItem = NSMenuItem(title: "Close Lightspot", action: #selector(closeAction), keyEquivalent: "")
+        closeItem.target = self
+        menu.addItem(closeItem)
+
         menu.addItem(NSMenuItem.separator())
 
+        // 19. Quit Lightspot
         let quitItem = NSMenuItem(title: "Quit Lightspot", action: #selector(quitAction), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
-        menu.delegate = self
-        statusItem?.menu = menu
-        viewModel?.objectWillChange.send()
+        return menu
     }
 
     private let hideIconDefaultsKey = "lightspot_hide_menubar_icon"
@@ -254,6 +317,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func showAction() {
         onShowToggle?()
+    }
+
+    @objc private func closeAction() {
+        viewModel?.onHide?()
+    }
+
+    @objc private func nextCategoryAction() {
+        if onEnsurePanelVisible?() != true {
+            onShowToggle?()
+        }
+        viewModel?.nextCategory()
+    }
+
+    @objc private func prevCategoryAction() {
+        if onEnsurePanelVisible?() != true {
+            onShowToggle?()
+        }
+        viewModel?.previousCategory()
+    }
+
+    @objc private func togglePinAction() {
+        viewModel?.togglePinForSelection()
+    }
+
+    @objc private func clearHistoryAction() {
+        viewModel?.clearAllHistory()
+    }
+
+    @objc private func clearSearchAction() {
+        viewModel?.clearSearch()
     }
 
     @objc private func manageCustomCommandsAction() {
@@ -290,6 +383,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func selectSearchEngineAction(_ sender: NSMenuItem) {
         guard let option = sender.representedObject as? SearchEngineOption else { return }
         WebSearchProvider.shared.defaultEngine = option
+        rebuildMenu()
+    }
+
+    @objc private func selectBrowserHistoryAction(_ sender: NSMenuItem) {
+        guard let option = sender.representedObject as? BrowserHistoryDays else { return }
+        BrowserIntegrationProvider.shared.historyLimitDays = option
         rebuildMenu()
     }
 

@@ -10,6 +10,7 @@ final class SearchEngine: @unchecked Sendable {
     /// The history is the one open-ended category, so it gets a taller cap than the
     /// curated ones — four rows is not enough to find a command among near-misses.
     private let maxShellHistoryResults = 6
+    private let maxBrowserResults = 6
 
     private init() {}
 
@@ -58,7 +59,7 @@ final class SearchEngine: @unchecked Sendable {
         // System Hardware HUD (sys, battery, ram, cpu)
         allResults.append(contentsOf: SystemInfoProvider.shared.search(query))
 
-        // Default Browser Bookmarks & Open Tabs
+        // Default Browser Bookmarks, History & Open Tabs
         allResults.append(contentsOf: BrowserIntegrationProvider.shared.search(query))
 
         // In-Memory Clipboard History
@@ -100,10 +101,10 @@ final class SearchEngine: @unchecked Sendable {
         grouped.reserveCapacity(ResultCategory.allCases.count)
 
         // Find the top hit. Non-web/non-calc categories are eligible, plus explicit web prefixes
-        // (like 'gh react' or 'yt swift') which represent intentional prefix shortcuts.
+        // (like 'gh react' or 'yt swift') and direct URLs (like 'facebook.com' or 'localhost:3000').
         let topHitCandidates = rankedResults.filter { result in
             if result.category == .webSearch {
-                return result.id.hasPrefix("web-prefix-")
+                return result.id.hasPrefix("web-prefix-") || result.id.hasPrefix("web-url-")
             }
             guard result.category != .calculator else {
                 return false
@@ -132,7 +133,14 @@ final class SearchEngine: @unchecked Sendable {
 
         // Group remaining by their original category (excluding the item already promoted to Top Hit)
         for category in ResultCategory.allCases where category != .topHit {
-            let cap = category == .shellHistory ? maxShellHistoryResults : maxResultsPerCategory
+            let cap: Int
+            if category == .shellHistory {
+                cap = maxShellHistoryResults
+            } else if category == .browser {
+                cap = maxBrowserResults
+            } else {
+                cap = maxResultsPerCategory
+            }
             let categoryResults = rankedResults
                 .filter { $0.category == category && $0.id != topHitOriginalID }
                 .sorted { $0.score > $1.score }

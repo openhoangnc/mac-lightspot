@@ -875,6 +875,55 @@ struct TestRunner {
 
         let ytPrefix = webProvider.search(SearchQuery("yt lofi"))
         assertEqual(ytPrefix.first?.title, "Search YouTube for 'lofi'", "yt lofi searches YouTube")
+
+        // URL Auto-Detection Tests
+        assertEqual(WebSearchProvider.detectURL("facebook.com")?.absoluteString, "https://facebook.com", "Detects facebook.com as https://facebook.com")
+        assertEqual(WebSearchProvider.detectURL("https://facebook.com")?.absoluteString, "https://facebook.com", "Preserves https://facebook.com")
+        assertEqual(WebSearchProvider.detectURL("http://localhost:3000")?.absoluteString, "http://localhost:3000", "Preserves http://localhost:3000")
+        assertEqual(WebSearchProvider.detectURL("localhost:8080")?.absoluteString, "http://localhost:8080", "Detects localhost:8080 as http://localhost:8080")
+        assertEqual(WebSearchProvider.detectURL("127.0.0.1:5000")?.absoluteString, "http://127.0.0.1:5000", "Detects 127.0.0.1:5000")
+        assertEqual(WebSearchProvider.detectURL("192.168.1.1")?.absoluteString, "http://192.168.1.1", "Detects IPv4 192.168.1.1")
+        assertEqual(WebSearchProvider.detectURL("github.com/torvalds/linux")?.absoluteString, "https://github.com/torvalds/linux", "Detects github path")
+        assertEqual(WebSearchProvider.detectURL("my-app.dev")?.absoluteString, "https://my-app.dev", "Detects .dev modern TLD")
+        assertEqual(WebSearchProvider.detectURL("test.io")?.absoluteString, "https://test.io", "Detects .io modern TLD")
+        assertEqual(WebSearchProvider.detectURL("vietnamnet.vn")?.absoluteString, "https://vietnamnet.vn", "Detects ccTLD .vn")
+
+        // Negative URL cases (should be nil)
+        assertEqual(WebSearchProvider.detectURL("facebook login"), nil, "Query with spaces is not a URL")
+        assertEqual(WebSearchProvider.detectURL("2+2"), nil, "Math query is not a URL")
+        assertEqual(WebSearchProvider.detectURL("v1.2.3"), nil, "Version string is not a URL")
+        assertEqual(WebSearchProvider.detectURL("file.txt"), nil, "File extension is not a URL")
+        assertEqual(WebSearchProvider.detectURL("hello"), nil, "Single word is not a URL")
+
+        // WebSearchProvider search with URL query
+        let urlSearchResults = webProvider.search(SearchQuery("facebook.com"))
+        assertTrue(!urlSearchResults.isEmpty, "URL query returns results")
+        assertEqual(urlSearchResults.first?.id, "web-url-facebook.com", "Primary result is direct URL")
+        assertEqual(urlSearchResults.first?.title, "Open facebook.com", "Primary title opens direct URL")
+        assertEqual(urlSearchResults.first?.subtitle, "https://facebook.com", "Primary subtitle is full URL")
+        assertEqual(urlSearchResults.first?.score, 95, "Direct URL receives top score 95")
+        if case .openURL(let u) = urlSearchResults.first?.action {
+            assertEqual(u.absoluteString, "https://facebook.com", "Action is openURL")
+        } else {
+            print("❌ FAIL: Expected .openURL action for direct URL search")
+            exit(1)
+        }
+        assertTrue(urlSearchResults.count >= 2, "Fallback search is included below URL")
+        assertEqual(urlSearchResults[1].id, "web-facebook.com", "Second result is fallback search")
+        assertEqual(urlSearchResults[1].score, 25, "Fallback search receives low score 25")
+
+        // SearchEngine Top Hit promotion for direct URLs
+        let engineGrouped = SearchEngine.shared.searchImmediate(SearchQuery("facebook.com"))
+        let topHits = engineGrouped[.topHit] ?? []
+        assertTrue(!topHits.isEmpty, "facebook.com is promoted to Top Hit")
+        assertEqual(topHits.first?.title, "Open facebook.com", "Top Hit title is direct URL")
+        if case .openURL(let u) = topHits.first?.action {
+            assertEqual(u.absoluteString, "https://facebook.com", "Top Hit action is openURL")
+        } else {
+            print("❌ FAIL: Expected .openURL action for Top Hit")
+            exit(1)
+        }
+
         print("✅ WebSearchProvider passed all tests!\n")
 
         // Test 16: DevToolsProvider
@@ -1015,6 +1064,30 @@ struct TestRunner {
         assertEqual(formattedURL2, "apple.com", "Strips trailing slash for root URL")
         let formattedURL3 = BrowserIntegrationProvider.formatDisplayURL("https://github.com/pulls?q=is%3Apr")
         assertEqual(formattedURL3, "github.com/pulls?q=is%3Apr", "Preserves query parameters")
+
+        // Browser History Option & ItemType Tests
+        assertEqual(BrowserHistoryDays.threeDays.rawValue, 3, "3 days rawValue")
+        assertEqual(BrowserHistoryDays.sevenDays.rawValue, 7, "7 days rawValue")
+        assertEqual(BrowserHistoryDays.disabled.rawValue, 0, "0 days rawValue")
+
+        let browserProvider = BrowserIntegrationProvider.shared
+        let originalLimit = browserProvider.historyLimitDays
+        browserProvider.historyLimitDays = .threeDays
+        assertEqual(browserProvider.historyLimitDays, .threeDays, "Sets 3 days limit")
+        browserProvider.historyLimitDays = .sevenDays
+        assertEqual(browserProvider.historyLimitDays, .sevenDays, "Sets 7 days limit")
+        browserProvider.historyLimitDays = originalLimit // Restore
+
+        // BrowserItem with .history
+        let testHistoryItem = BrowserItem(
+            title: "Test History Page",
+            urlString: "https://example.com/test",
+            itemType: .history,
+            browserName: "Google Chrome",
+            browserAppPath: "/Applications/Google Chrome.app"
+        )
+        assertEqual(testHistoryItem.itemType, .history, "ItemType is history")
+        assertEqual(testHistoryItem.displayURL, "example.com/test", "Formatted display URL")
 
         // Test 22: In-Memory Clipboard History
         print("Testing ClipboardHistoryManager...")

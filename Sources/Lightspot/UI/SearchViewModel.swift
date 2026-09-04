@@ -890,6 +890,17 @@ final class SearchViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: - Browser History
+    var currentBrowserHistoryDays: BrowserHistoryDays {
+        BrowserIntegrationProvider.shared.historyLimitDays
+    }
+
+    func setBrowserHistoryDays(_ option: BrowserHistoryDays) {
+        BrowserIntegrationProvider.shared.historyLimitDays = option
+        menuBarController?.rebuildMenu()
+        objectWillChange.send()
+    }
+
     // MARK: - Terminal App
     var currentTerminalApp: TerminalAppOption {
         TerminalLauncher.currentTerminal

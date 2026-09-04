@@ -21,6 +21,8 @@ final class SettingsBackupController {
         let (historyEntries, historyStats) = SearchHistoryManager.shared.currentHistoryData()
         let recents = UserDefaults.standard.stringArray(forKey: "lightspot_recent_app_bundle_ids") ?? []
 
+        let historyDays = BrowserIntegrationProvider.shared.historyLimitDays.rawValue
+
         return LightspotSettingsBackup(
             version: LightspotSettingsBackup.currentVersion,
             app: LightspotSettingsBackup.appIdentifier,
@@ -28,7 +30,8 @@ final class SettingsBackupController {
             preferences: LightspotPreferencesBackup(
                 hotkeyOption: hotkey,
                 autoStartEnabled: autoStart,
-                hideMenuBarIcon: hideIcon
+                hideMenuBarIcon: hideIcon,
+                browserHistoryDays: historyDays
             ),
             customCommands: customCommands,
             pinnedCommands: pinnedCommands,
@@ -175,7 +178,13 @@ final class SettingsBackupController {
         // 7. Menu Bar Icon Visibility
         menuBarController?.isMenuBarIconHidden = backup.preferences.hideMenuBarIcon
 
-        // 8. Rebuild UI & View Model
+        // 8. Browser History Option
+        if let days = backup.preferences.browserHistoryDays,
+           let option = BrowserHistoryDays(rawValue: days) {
+            BrowserIntegrationProvider.shared.historyLimitDays = option
+        }
+
+        // 9. Rebuild UI & View Model
         menuBarController?.rebuildMenu()
         viewModel?.reloadAfterSettingsImport()
     }

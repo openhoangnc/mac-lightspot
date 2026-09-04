@@ -27,11 +27,29 @@ enum ResultCategory: Int, CaseIterable, Sendable, Codable {
         case .customCommands: return "Custom Commands"
         case .shellHistory: return "Terminal History"
         case .devTools: return "Developer Tools"
-        case .browser: return "Browser Bookmarks & Tabs"
+        case .browser: return "Browser History & Bookmarks"
         case .clipboard: return "Clipboard History"
         case .snippets: return "Text Snippets"
         case .calculator: return "Calculator"
         case .webSearch: return "Web Search"
+        }
+    }
+}
+
+// MARK: - Browser History Option
+
+public enum BrowserHistoryDays: Int, CaseIterable, Identifiable, Sendable, Codable {
+    case disabled = 0
+    case threeDays = 3
+    case sevenDays = 7
+
+    public var id: Int { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .disabled: return "Disabled"
+        case .threeDays: return "Last 3 Days"
+        case .sevenDays: return "Last 7 Days"
         }
     }
 }

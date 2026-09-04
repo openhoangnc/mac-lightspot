@@ -76,11 +76,13 @@ struct LightspotPreferencesBackup: Codable, Sendable, Equatable {
     var hotkeyOption: String
     var autoStartEnabled: Bool
     var hideMenuBarIcon: Bool
+    var browserHistoryDays: Int?
 
-    init(hotkeyOption: String, autoStartEnabled: Bool, hideMenuBarIcon: Bool) {
+    init(hotkeyOption: String, autoStartEnabled: Bool, hideMenuBarIcon: Bool, browserHistoryDays: Int? = nil) {
         self.hotkeyOption = hotkeyOption
         self.autoStartEnabled = autoStartEnabled
         self.hideMenuBarIcon = hideMenuBarIcon
+        self.browserHistoryDays = browserHistoryDays
     }
 }
 

@@ -102,7 +102,80 @@ public final class WebSearchProvider: @unchecked Sendable {
         }
     }
 
-    private init() {}
+    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+    private static let nonDomainExtensions: Set<String> = [
+        "txt", "pdf", "png", "jpg", "jpeg", "gif", "svg", "webp", "zip", "tar", "gz", "rar", "7z",
+        "dmg", "iso", "mp3", "mp4", "mov", "wav", "flac", "json", "xml", "csv", "tsv", "yaml", "yml",
+        "md", "swift", "py", "rs", "go", "c", "cpp", "h", "js", "ts", "jsx", "tsx", "html", "css",
+        "java", "kt", "rb", "php", "sh", "bat", "exe", "bin", "dylib", "lock", "log"
+    ]
+
+    private static let modernTLDs: Set<String> = [
+        "dev", "app", "io", "ai", "co", "me", "tech", "site", "online", "xyz", "cloud",
+        "design", "studio", "live", "store", "shop", "blog", "space", "guru", "agency",
+        "run", "page", "wiki", "life", "world", "zone", "cc", "tv", "gg", "fm", "is", "to", "ly"
+    ]
+
+    private static let ipv4Pattern = "^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)\\.){3}(25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)(:\\d+)?(/.*)?$"
+
+    public static func detectURL(_ text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.contains(where: { $0.isWhitespace || $0.isNewline }) {
+            return nil
+        }
+
+        let lower = trimmed.lowercased()
+
+        // 1. Explicit scheme
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            if let url = URL(string: trimmed), let host = url.host, !host.isEmpty {
+                return url
+            }
+            return nil
+        }
+
+        // 2. Localhost
+        if lower == "localhost" || lower.hasPrefix("localhost:") || lower.hasPrefix("localhost/") {
+            return URL(string: "http://\(trimmed)")
+        }
+
+        // 3. IPv4 address
+        if trimmed.range(of: ipv4Pattern, options: .regularExpression) != nil {
+            return URL(string: "http://\(trimmed)")
+        }
+
+        // 4. Domain with TLD
+        guard trimmed.contains(".") else { return nil }
+
+        let hostPart = trimmed.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        let hostWithoutPort = String(hostPart.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)[0])
+        let labels = hostWithoutPort.split(separator: ".")
+        guard labels.count >= 2 else { return nil }
+
+        let isAllNumbers = labels.allSatisfy { Int($0) != nil }
+        if isAllNumbers { return nil }
+
+        guard let lastLabel = labels.last else { return nil }
+        let tld = String(lastLabel).lowercased()
+        guard tld.count >= 2, tld.allSatisfy({ $0.isLetter }) else { return nil }
+        if nonDomainExtensions.contains(tld) { return nil }
+
+        let testString = "https://\(trimmed)"
+        var isValid = false
+        if let detector = linkDetector {
+            let matches = detector.matches(in: testString, options: [], range: NSRange(location: 0, length: testString.utf16.count))
+            if matches.contains(where: { $0.range.location == 0 && $0.range.length == testString.utf16.count }) {
+                isValid = true
+            }
+        }
+
+        if !isValid && modernTLDs.contains(tld) {
+            isValid = true
+        }
+
+        return isValid ? URL(string: testString) : nil
+    }
 
     func search(_ query: SearchQuery) -> [SearchResult] {
         if query.isEmpty { return [] }
@@ -114,12 +187,44 @@ public final class WebSearchProvider: @unchecked Sendable {
             return [prefixResult]
         }
 
-        // Generic fallback search with configured default engine
         let engine = defaultEngine
-        guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: String(format: engine.urlTemplate, encoded)) else {
-            return []
+        let searchURL: URL? = {
+            guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+            return URL(string: String(format: engine.urlTemplate, encoded))
+        }()
+
+        // Check for auto-detected direct URL (e.g. "facebook.com", "localhost:3000", "https://...")
+        if let detectedURL = Self.detectURL(trimmed) {
+            var results: [SearchResult] = [
+                SearchResult(
+                    id: "web-url-\(trimmed)",
+                    title: "Open \(trimmed)",
+                    subtitle: detectedURL.absoluteString,
+                    iconType: .systemSymbol(name: "globe"),
+                    category: .webSearch,
+                    score: 95,
+                    action: .openURL(url: detectedURL)
+                )
+            ]
+
+            // Include fallback search option if applicable
+            let hasExplicitScheme = trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://")
+            if !hasExplicitScheme, let searchURL {
+                results.append(SearchResult(
+                    id: "web-\(trimmed)",
+                    title: "Search \(engine.displayName) for '\(trimmed)'",
+                    subtitle: engine.domain,
+                    iconType: .systemSymbol(name: "globe"),
+                    category: .webSearch,
+                    score: 25,
+                    action: .openWebSearch(url: searchURL)
+                ))
+            }
+            return results
         }
+
+        // Generic fallback search with configured default engine
+        guard let searchURL else { return [] }
 
         return [SearchResult(
             id: "web-\(trimmed)",
@@ -128,7 +233,7 @@ public final class WebSearchProvider: @unchecked Sendable {
             iconType: .systemSymbol(name: "globe"),
             category: .webSearch,
             score: 30,
-            action: .openWebSearch(url: url)
+            action: .openWebSearch(url: searchURL)
         )]
     }
 

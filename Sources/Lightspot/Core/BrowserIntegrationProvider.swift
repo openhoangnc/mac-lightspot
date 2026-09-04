@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SQLite3
 
 // MARK: - Browser Item Model
 
@@ -7,6 +8,7 @@ public struct BrowserItem: Sendable, Hashable {
     public enum ItemType: String, Sendable {
         case bookmark = "Bookmark"
         case openTab = "Open Tab"
+        case history = "History"
     }
 
     public let title: String
@@ -71,21 +73,48 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     private var lastTabsQuery: Date = .distantPast
     private var isRefreshingTabs = false
 
+    private let historyDefaultsKey = "lightspot_browser_history_days"
+    private var cachedHistory: [BrowserItem] = []
+    private var historySignature: String = ""
+    private var isRefreshingHistory = false
+    private var lastHistoryCheck: Date = .distantPast
+    private let historyCheckInterval: TimeInterval = 10.0
+
     /// NSAppleScript is not thread-safe, so every tab query is serialized here.
     /// It must never run on the main thread: querying Chrome/Safari for open tabs
     /// measures ~300 ms, and search() runs on every keystroke.
     private let tabsQueue = DispatchQueue(label: "com.lightspot.browser.tabs", qos: .utility)
     private let bookmarksQueue = DispatchQueue(label: "com.lightspot.browser.bookmarks", qos: .utility)
+    private let historyQueue = DispatchQueue(label: "com.lightspot.browser.history", qos: .utility)
     private let tabsStaleInterval: TimeInterval = 5.0
     private let bookmarksCheckInterval: TimeInterval = 2.0
     private var lastBookmarksCheck: Date = .distantPast
 
+    public var historyLimitDays: BrowserHistoryDays {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            let val = UserDefaults.standard.object(forKey: historyDefaultsKey) as? Int ?? BrowserHistoryDays.sevenDays.rawValue
+            return BrowserHistoryDays(rawValue: val) ?? .sevenDays
+        }
+        set {
+            lock.lock()
+            UserDefaults.standard.set(newValue.rawValue, forKey: historyDefaultsKey)
+            cachedHistory = []
+            historySignature = ""
+            lastHistoryCheck = .distantPast
+            lock.unlock()
+            refreshHistoryIfNeeded(force: true)
+        }
+    }
+
     private init() {}
 
-    /// Primes both caches without blocking. Call when the panel is shown so the
+    /// Primes all caches without blocking. Call when the panel is shown so the
     /// first keystroke already has data to match against.
     public func warmUp() {
         refreshBookmarksIfNeeded()
+        refreshHistoryIfNeeded()
         _ = cachedTabsRefreshingIfStale()
     }
 
@@ -134,17 +163,41 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     func search(_ query: SearchQuery) -> [SearchResult] {
         guard query.trimmed.count >= 2 else { return [] }
 
-        // Both calls return immediately; all real work happens off the keystroke
+        // All calls return immediately; all real work happens off the keystroke
         // path. Nothing here may block — search() runs on every keystroke.
         refreshBookmarksIfNeeded()
+        refreshHistoryIfNeeded()
         let tabs = cachedTabsRefreshingIfStale()
 
         lock.lock()
         let bookmarks = cachedBookmarks
+        let history = cachedHistory
         lock.unlock()
 
-        var allItems = tabs
-        allItems.append(contentsOf: bookmarks)
+        var seenURLs = Set<String>()
+        var allItems: [BrowserItem] = []
+        allItems.reserveCapacity(tabs.count + bookmarks.count + history.count)
+
+        // 1. Open tabs have highest priority
+        for tab in tabs {
+            if seenURLs.insert(tab.urlString).inserted {
+                allItems.append(tab)
+            }
+        }
+
+        // 2. Bookmarks have next priority
+        for bm in bookmarks {
+            if seenURLs.insert(bm.urlString).inserted {
+                allItems.append(bm)
+            }
+        }
+
+        // 3. History has standard priority
+        for h in history {
+            if seenURLs.insert(h.urlString).inserted {
+                allItems.append(h)
+            }
+        }
 
         guard !allItems.isEmpty else { return [] }
 
@@ -189,8 +242,16 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
             }
 
             if let s = score, s >= acceptThreshold {
-                // Boost open tabs vs bookmarks
-                let finalScore = item.itemType == .openTab ? min(s + 5.0, 99.0) : s
+                // Boost open tabs vs bookmarks vs history
+                let finalScore: Double
+                switch item.itemType {
+                case .openTab:
+                    finalScore = min(s + 5.0, 99.0)
+                case .bookmark:
+                    finalScore = s
+                case .history:
+                    finalScore = max(s - 2.0, acceptThreshold)
+                }
                 matches.append((item, finalScore))
             }
         }
@@ -570,5 +631,233 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
         }
 
         finish(results)
+    }
+
+    // MARK: - Browser History Parsing (Default Browser Only)
+
+    public func refreshHistoryIfNeeded(force: Bool = false) {
+        guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return }
+        let limit = historyLimitDays
+        guard limit != .disabled else {
+            lock.lock()
+            if !cachedHistory.isEmpty { cachedHistory = [] }
+            lock.unlock()
+            return
+        }
+
+        lock.lock()
+        let tooSoon = !force && Date().timeIntervalSince(lastHistoryCheck) < historyCheckInterval
+        if tooSoon || isRefreshingHistory {
+            lock.unlock()
+            return
+        }
+        isRefreshingHistory = true
+        lastHistoryCheck = Date()
+        let knownSignature = historySignature
+        lock.unlock()
+
+        historyQueue.async { [weak self] in
+            guard let self = self else { return }
+            defer {
+                self.lock.lock()
+                self.isRefreshingHistory = false
+                self.lock.unlock()
+            }
+
+            let signature = Self.historySignature(bundleID: bundleID)
+            if !force, let signature, signature == knownSignature { return }
+
+            let loaded = Self.loadDefaultBrowserHistory(name: name, bundleID: bundleID, appPath: appPath, days: limit.rawValue)
+            self.lock.lock()
+            self.cachedHistory = loaded
+            if let signature { self.historySignature = signature }
+            self.lock.unlock()
+        }
+    }
+
+    private static func historyFilePath(bundleID: String) -> String? {
+        let home = NSHomeDirectory()
+        let fm = FileManager.default
+        switch bundleID {
+        case "com.google.Chrome":
+            let p1 = "\(home)/Library/Application Support/Google/Chrome/Default/History"
+            if fm.fileExists(atPath: p1) { return p1 }
+            let p2 = "\(home)/Library/Application Support/Google/Chrome/Profile 1/History"
+            if fm.fileExists(atPath: p2) { return p2 }
+            return p1
+        case "com.brave.Browser":
+            let p1 = "\(home)/Library/Application Support/BraveSoftware/Brave-Browser/Default/History"
+            if fm.fileExists(atPath: p1) { return p1 }
+            return p1
+        case "com.microsoft.edgemac":
+            let p1 = "\(home)/Library/Application Support/Microsoft Edge/Default/History"
+            if fm.fileExists(atPath: p1) { return p1 }
+            return p1
+        case "company.thebrowser.Browser":
+            let p1 = "\(home)/Library/Application Support/Arc/User Data/Default/History"
+            if fm.fileExists(atPath: p1) { return p1 }
+            return p1
+        case "com.apple.Safari", "com.apple.SafariTechnologyPreview":
+            let p1 = "\(home)/Library/Safari/History.db"
+            if fm.fileExists(atPath: p1) { return p1 }
+            return p1
+        case "org.mozilla.firefox":
+            let dir = "\(home)/Library/Application Support/Firefox/Profiles"
+            if let profiles = try? fm.contentsOfDirectory(atPath: dir) {
+                for prof in profiles {
+                    let path = "\(dir)/\(prof)/places.sqlite"
+                    if fm.fileExists(atPath: path) { return path }
+                }
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private static func historySignature(bundleID: String) -> String? {
+        guard let path = historyFilePath(bundleID: bundleID),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
+            return nil
+        }
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        return "\(mtime)-\(size)"
+    }
+
+    public static func loadDefaultBrowserHistory(name: String, bundleID: String, appPath: String, days: Int) -> [BrowserItem] {
+        guard days > 0 else { return [] }
+        guard let path = historyFilePath(bundleID: bundleID) else { return [] }
+
+        switch bundleID {
+        case "com.google.Chrome", "com.brave.Browser", "com.microsoft.edgemac", "company.thebrowser.Browser":
+            return parseChromiumHistory(filePath: path, browserName: name, appPath: appPath, days: days)
+        case "com.apple.Safari", "com.apple.SafariTechnologyPreview":
+            return parseSafariHistory(filePath: path, browserName: name, appPath: appPath, days: days)
+        case "org.mozilla.firefox":
+            return parseFirefoxHistory(filePath: path, browserName: name, appPath: appPath, days: days)
+        default:
+            return []
+        }
+    }
+
+    private static func parseChromiumHistory(filePath: String, browserName: String, appPath: String, days: Int) -> [BrowserItem] {
+        let uri = "file:\(filePath)?mode=ro&immutable=1"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_close(db) }
+
+        // Chrome microseconds epoch: Jan 1 1601 UTC
+        let cutoffUnix = Date().timeIntervalSince1970 - Double(days * 86400)
+        let cutoffChrome = Int64((cutoffUnix * 1_000_000.0) + 11644473600000000.0)
+
+        let query = "SELECT title, url FROM urls WHERE hidden = 0 AND last_visit_time >= ? ORDER BY last_visit_time DESC LIMIT 1500"
+        var stmt: OpaquePointer?
+        var items: [BrowserItem] = []
+        if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int64(stmt, 1, cutoffChrome)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let urlStr = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                if !urlStr.isEmpty &&
+                   !urlStr.hasPrefix("chrome://") &&
+                   !urlStr.hasPrefix("chrome-extension://") &&
+                   !urlStr.hasPrefix("edge://") &&
+                   !urlStr.hasPrefix("about:") &&
+                   !urlStr.hasPrefix("blob:") {
+                    items.append(BrowserItem(
+                        title: title.isEmpty ? formatDisplayURL(urlStr) : title,
+                        urlString: urlStr,
+                        itemType: .history,
+                        browserName: browserName,
+                        browserAppPath: appPath
+                    ))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+        return items
+    }
+
+    private static func parseSafariHistory(filePath: String, browserName: String, appPath: String, days: Int) -> [BrowserItem] {
+        let uri = "file:\(filePath)?mode=ro&immutable=1"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_close(db) }
+
+        // Safari epoch: seconds since Jan 1 2001 (Cocoa reference date)
+        let cutoffDate = Date().addingTimeInterval(-Double(days * 86400))
+        let cutoffSafari = cutoffDate.timeIntervalSinceReferenceDate
+
+        let query = """
+        SELECT history_items.url, history_visits.title
+        FROM history_items
+        JOIN history_visits ON history_items.id = history_visits.history_item
+        WHERE history_visits.visit_time >= ?
+        ORDER BY history_visits.visit_time DESC
+        LIMIT 1500
+        """
+        var stmt: OpaquePointer?
+        var items: [BrowserItem] = []
+        var seen = Set<String>()
+        if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_double(stmt, 1, cutoffSafari)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let urlStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let title = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                if !urlStr.isEmpty && !urlStr.hasPrefix("about:") && !urlStr.hasPrefix("blob:") {
+                    if seen.insert(urlStr).inserted {
+                        items.append(BrowserItem(
+                            title: title.isEmpty ? formatDisplayURL(urlStr) : title,
+                            urlString: urlStr,
+                            itemType: .history,
+                            browserName: browserName,
+                            browserAppPath: appPath
+                        ))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+        return items
+    }
+
+    private static func parseFirefoxHistory(filePath: String, browserName: String, appPath: String, days: Int) -> [BrowserItem] {
+        let uri = "file:\(filePath)?mode=ro&immutable=1"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
+            return []
+        }
+        defer { sqlite3_close(db) }
+
+        // Firefox epoch: microseconds since Jan 1 1970
+        let cutoffUnix = Date().timeIntervalSince1970 - Double(days * 86400)
+        let cutoffFirefox = Int64(cutoffUnix * 1_000_000.0)
+
+        let query = "SELECT url, title FROM moz_places WHERE hidden = 0 AND last_visit_date >= ? ORDER BY last_visit_date DESC LIMIT 1500"
+        var stmt: OpaquePointer?
+        var items: [BrowserItem] = []
+        if sqlite3_prepare_v2(db, query, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int64(stmt, 1, cutoffFirefox)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let urlStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let title = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                if !urlStr.isEmpty && !urlStr.hasPrefix("about:") && !urlStr.hasPrefix("moz-extension://") {
+                    items.append(BrowserItem(
+                        title: title.isEmpty ? formatDisplayURL(urlStr) : title,
+                        urlString: urlStr,
+                        itemType: .history,
+                        browserName: browserName,
+                        browserAppPath: appPath
+                    ))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+        return items
     }
 }
