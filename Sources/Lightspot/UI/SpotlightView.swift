@@ -234,6 +234,36 @@ struct SpotlightView: View {
                         }
                     }
 
+                    // Search Engine Submenu
+                    Menu("Search Engine") {
+                        ForEach(SearchEngineOption.allCases) { option in
+                            Button(action: { viewModel.setSearchEngine(option) }) {
+                                HStack {
+                                    Text(option.displayName)
+                                    if option == viewModel.currentSearchEngine {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Terminal App Submenu
+                    Menu("Terminal App") {
+                        ForEach(viewModel.installedTerminalOptions) { option in
+                            Button(action: { viewModel.setTerminalApp(option) }) {
+                                HStack {
+                                    Text(option.displayName)
+                                    if option == viewModel.currentTerminalApp {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // System Spotlight Submenu
                     Menu("System Spotlight") {
                         Button(viewModel.isSpotlightShortcutEnabled ? "Disable Spotlight Shortcut (⌘Space)" : "Enable Spotlight Shortcut (⌘Space)") {
@@ -246,7 +276,10 @@ struct SpotlightView: View {
                             viewModel.toggleSpotlightIndexing()
                         }
                         Divider()
-                        Button("Disable Everything...") {
+                        Button(viewModel.spotlightStatusSummary) {}
+                            .disabled(true)
+                        Divider()
+                        Button("Disable Everything (Shortcut + Process + Indexing)...") {
                             viewModel.disableAllSpotlight()
                         }
                         Button("Restore Default Spotlight...") {
@@ -272,14 +305,8 @@ struct SpotlightView: View {
                     }
 
                     // Hide / Show Menu Bar Icon Toggle
-                    Button(action: { viewModel.toggleMenuBarIcon() }) {
-                        HStack {
-                            Text(viewModel.isMenuBarIconHidden ? "Show Menu Bar Icon" : "Hide Menu Bar Icon")
-                            if !viewModel.isMenuBarIconHidden {
-                                Spacer()
-                                Image(systemName: "checkmark")
-                            }
-                        }
+                    Button(viewModel.isMenuBarIconHidden ? "Show Menu Bar Icon" : "Hide Menu Bar Icon") {
+                        viewModel.toggleMenuBarIcon()
                     }
 
                     Divider()
@@ -290,6 +317,10 @@ struct SpotlightView: View {
 
                     Button("Import Settings...") {
                         viewModel.importSettings()
+                    }
+
+                    Button("Clear Clipboard History") {
+                        viewModel.clearClipboardHistory()
                     }
 
                     Divider()

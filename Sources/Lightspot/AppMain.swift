@@ -155,6 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Inject dependencies into view model
         viewModel.hotkeyManager = hotkeyManager
         viewModel.menuBarController = menuBarController
+        menuBarController.viewModel = viewModel
 
         // Inject dependencies into settings backup controller
         SettingsBackupController.shared.hotkeyManager = hotkeyManager

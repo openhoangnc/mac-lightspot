@@ -4,6 +4,7 @@ import AppKit
 final class MenuBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private weak var hotkeyManager: HotkeyManager?
+    weak var viewModel: SearchViewModel?
     var onShowToggle: (() -> Void)?
     var onManageCustomCommands: (() -> Void)?
     var onManagePins: (() -> Void)?
@@ -224,6 +225,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.delegate = self
         statusItem?.menu = menu
+        viewModel?.objectWillChange.send()
     }
 
     private let hideIconDefaultsKey = "lightspot_hide_menubar_icon"

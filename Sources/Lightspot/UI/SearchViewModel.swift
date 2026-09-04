@@ -878,6 +878,37 @@ final class SearchViewModel: ObservableObject {
         menuBarController?.rebuildMenu()
         objectWillChange.send()
     }
+
+    // MARK: - Search Engine
+    var currentSearchEngine: SearchEngineOption {
+        WebSearchProvider.shared.defaultEngine
+    }
+
+    func setSearchEngine(_ option: SearchEngineOption) {
+        WebSearchProvider.shared.defaultEngine = option
+        menuBarController?.rebuildMenu()
+        objectWillChange.send()
+    }
+
+    // MARK: - Terminal App
+    var currentTerminalApp: TerminalAppOption {
+        TerminalLauncher.currentTerminal
+    }
+
+    var installedTerminalOptions: [TerminalAppOption] {
+        TerminalAppOption.installedOptions
+    }
+
+    func setTerminalApp(_ option: TerminalAppOption) {
+        TerminalLauncher.currentTerminal = option
+        menuBarController?.rebuildMenu()
+        objectWillChange.send()
+    }
+
+    // MARK: - Clipboard History
+    func clearClipboardHistory() {
+        ClipboardHistoryManager.shared.clearHistory()
+    }
     
     var isMenuBarIconHidden: Bool { menuBarController?.isMenuBarIconHidden ?? false }
     func toggleMenuBarIcon() {
@@ -917,16 +948,27 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
+    var spotlightStatusSummary: String {
+        let isShortcutOn = isSpotlightShortcutEnabled
+        let isServiceDisabled = isSpotlightServiceDisabled
+        let isIndexingOn = isSpotlightIndexingEnabled
+        return "Status: Shortcut " + (isShortcutOn ? "ON" : "OFF") +
+               ", Process " + (isServiceDisabled ? "OFF" : "ON") +
+               ", Indexing " + (isIndexingOn ? "ON" : "OFF")
+    }
+
     func disableAllSpotlight() {
-        SpotlightManager.disableAll(includeIndexing: false)
-        menuBarController?.rebuildMenu()
-        objectWillChange.send()
+        SpotlightManager.disableAll(includeIndexing: true) { [weak self] _ in
+            self?.menuBarController?.rebuildMenu()
+            self?.objectWillChange.send()
+        }
     }
 
     func enableAllSpotlight() {
-        SpotlightManager.enableAll(includeIndexing: false)
-        menuBarController?.rebuildMenu()
-        objectWillChange.send()
+        SpotlightManager.enableAll(includeIndexing: true) { [weak self] _ in
+            self?.menuBarController?.rebuildMenu()
+            self?.objectWillChange.send()
+        }
     }
 
     func openKeyboardSettings() {
