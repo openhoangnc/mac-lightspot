@@ -183,7 +183,7 @@ final class QuickActionsProvider: Sendable {
                     subtitle = "Local: \(local) · Public: \(pub) · Press ↵ to copy"
                     actionPayload = .copyToClipboard(pub != "Fetching..." ? "\(local) (Local) · \(pub) (Public)" : local)
                 } else if action.name == "Terminal in Finder Folder" {
-                    guard let folder = TerminalLauncher.activeFinderFolderPath(), !folder.isEmpty else {
+                    guard let folder = TerminalLauncher.cachedFinderFolderPath(), !folder.isEmpty else {
                         continue
                     }
                     let termName = TerminalLauncher.currentTerminal.displayName

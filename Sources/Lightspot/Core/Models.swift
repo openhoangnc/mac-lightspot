@@ -238,15 +238,21 @@ struct SearchQuery: Sendable {
 
 enum FuzzyMatcher {
     /// Zero-allocation scoring against pre-computed target tokens
-    static func score(query: SearchQuery, targetLower: String, targetTokens: [String], targetInitials: String? = nil) -> Double? {
+    /// `minimumScore` lets a caller that will discard anything below a threshold skip
+    /// the tiers that cannot reach it. This matters for the subsequence tier, whose
+    /// scan is O(target) and runs for every *non*-matching candidate: a provider with
+    /// a 55 cutoff would pay for it on every item and then throw the result away.
+    static func score(query: SearchQuery, targetLower: String, targetTokens: [String], targetInitials: String? = nil, minimumScore: Double = 0) -> Double? {
         let q = query.lowercased
         if q.isEmpty { return nil }
         
         // Exact match
         if targetLower == q { return 100 }
+        if minimumScore > 95 { return nil }
         
         // Prefix match
         if targetLower.hasPrefix(q) { return 95 }
+        if minimumScore > 85 { return nil }
         
         // Word-boundary prefix match (e.g. "act" matches "Activity Monitor")
         for word in targetTokens {
@@ -254,16 +260,19 @@ enum FuzzyMatcher {
                 return 85
             }
         }
+        if minimumScore > 80 { return nil }
         
         // Initials match
         if let initials = targetInitials, initials.hasPrefix(q) {
             return 80
         }
+        if minimumScore > 65 { return nil }
         
         // Fast direct substring contains match (avoids expensive locale collation)
         if targetLower.contains(q) {
             return 65
         }
+        if minimumScore > 40 { return nil }
         
         // Fuzzy subsequence match
         var qIdx = q.startIndex

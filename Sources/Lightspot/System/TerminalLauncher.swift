@@ -276,12 +276,46 @@ public enum TerminalLauncher {
     // MARK: - Finder Integration
 
     nonisolated(unsafe) private static var cachedFinderPath: (path: String?, timestamp: Date) = (nil, .distantPast)
+    nonisolated(unsafe) private static var isRefreshingFinderPath = false
     private static let finderPathLock = NSLock()
+    /// NSAppleScript is not thread-safe, so Finder queries are serialized here.
+    private static let finderQueue = DispatchQueue(label: "com.lightspot.finderpath", qos: .utility)
+    private static let finderPathStaleInterval: TimeInterval = 1.0
+
+    /// Non-blocking variant for the search path: returns the last known folder right
+    /// away and refreshes in the background when stale.
+    ///
+    /// `activeFinderFolderPath()` asks Finder over AppleScript and, if that fails,
+    /// spawns `osascript` and waits — up to ~260 ms. QuickActionsProvider.search()
+    /// runs on every keystroke, so it must never call the blocking form.
+    public static func cachedFinderFolderPath() -> String? {
+        finderPathLock.lock()
+        let cached = cachedFinderPath.path
+        let isStale = Date().timeIntervalSince(cachedFinderPath.timestamp) >= finderPathStaleInterval
+        let shouldRefresh = isStale && !isRefreshingFinderPath
+        if shouldRefresh {
+            isRefreshingFinderPath = true
+            // Claim the slot now so a burst of keystrokes queues only one query.
+            cachedFinderPath.timestamp = Date()
+        }
+        finderPathLock.unlock()
+
+        if shouldRefresh {
+            finderQueue.async {
+                _ = activeFinderFolderPath(forceRefresh: true)
+                finderPathLock.lock()
+                isRefreshingFinderPath = false
+                finderPathLock.unlock()
+            }
+        }
+        return cached
+    }
 
     /// Queries the frontmost Finder window or selected subfolder and returns its POSIX path.
+    /// Blocking — only call this when acting on the result, never from search.
     public static func activeFinderFolderPath(forceRefresh: Bool = false) -> String? {
         finderPathLock.lock()
-        if !forceRefresh && Date().timeIntervalSince(cachedFinderPath.timestamp) < 1.0 {
+        if !forceRefresh && Date().timeIntervalSince(cachedFinderPath.timestamp) < finderPathStaleInterval {
             let cached = cachedFinderPath.path
             finderPathLock.unlock()
             return cached

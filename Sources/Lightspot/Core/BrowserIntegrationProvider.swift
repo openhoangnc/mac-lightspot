@@ -66,10 +66,28 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedBookmarks: [BrowserItem] = []
     private var bookmarksSignature: String = ""
+    private var isRefreshingBookmarks = false
     private var cachedTabs: [BrowserItem] = []
     private var lastTabsQuery: Date = .distantPast
+    private var isRefreshingTabs = false
+
+    /// NSAppleScript is not thread-safe, so every tab query is serialized here.
+    /// It must never run on the main thread: querying Chrome/Safari for open tabs
+    /// measures ~300 ms, and search() runs on every keystroke.
+    private let tabsQueue = DispatchQueue(label: "com.lightspot.browser.tabs", qos: .utility)
+    private let bookmarksQueue = DispatchQueue(label: "com.lightspot.browser.bookmarks", qos: .utility)
+    private let tabsStaleInterval: TimeInterval = 5.0
+    private let bookmarksCheckInterval: TimeInterval = 2.0
+    private var lastBookmarksCheck: Date = .distantPast
 
     private init() {}
+
+    /// Primes both caches without blocking. Call when the panel is shown so the
+    /// first keystroke already has data to match against.
+    public func warmUp() {
+        refreshBookmarksIfNeeded()
+        _ = cachedTabsRefreshingIfStale()
+    }
 
     // MARK: - URL Formatting
 
@@ -116,11 +134,10 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     func search(_ query: SearchQuery) -> [SearchResult] {
         guard query.trimmed.count >= 2 else { return [] }
 
-        // Refresh bookmarks in background if mtime changed
+        // Both calls return immediately; all real work happens off the keystroke
+        // path. Nothing here may block — search() runs on every keystroke.
         refreshBookmarksIfNeeded()
-
-        // Get open tabs if default browser is currently running
-        let tabs = getOpenTabsIfRunning()
+        let tabs = cachedTabsRefreshingIfStale()
 
         lock.lock()
         let bookmarks = cachedBookmarks
@@ -134,18 +151,25 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
         var matches: [(item: BrowserItem, score: Double)] = []
         matches.reserveCapacity(allItems.count)
 
+        // Anything under `acceptThreshold` is discarded below, so tell the matcher not
+        // to bother with tiers that cannot survive the weighting applied to each field.
+        let acceptThreshold = 55.0
+        let hostFloor = acceptThreshold / 0.9
+        let pathFloor = acceptThreshold / 0.85
+
         for item in allItems {
             // Match against title
             var score = FuzzyMatcher.score(
                 query: query,
                 targetLower: item.lowercaseTitle,
                 targetTokens: item.titleTokens,
-                targetInitials: nil
+                targetInitials: nil,
+                minimumScore: acceptThreshold
             )
 
             // Or match against host domain (e.g. "github", "twitter")
             if score == nil && !item.host.isEmpty {
-                if let hScore = FuzzyMatcher.score(query: query, targetLower: item.host, targetTokens: [], targetInitials: nil) {
+                if let hScore = FuzzyMatcher.score(query: query, targetLower: item.host, targetTokens: [], targetInitials: nil, minimumScore: hostFloor) {
                     score = hScore * 0.9
                 }
             }
@@ -153,7 +177,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
             // Or match against path tokens in the detail URL (e.g. "stores", "apps")
             if score == nil {
                 for token in item.pathTokens {
-                    if let pScore = FuzzyMatcher.score(query: query, targetLower: token, targetTokens: [], targetInitials: nil) {
+                    if let pScore = FuzzyMatcher.score(query: query, targetLower: token, targetTokens: [], targetInitials: nil, minimumScore: pathFloor) {
                         let weighted = pScore * 0.85
                         if let current = score {
                             score = max(current, weighted)
@@ -164,7 +188,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
                 }
             }
 
-            if let s = score, s >= 55 {
+            if let s = score, s >= acceptThreshold {
                 // Boost open tabs vs bookmarks
                 let finalScore = item.itemType == .openTab ? min(s + 5.0, 99.0) : s
                 matches.append((item, finalScore))
@@ -192,16 +216,66 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
 
     // MARK: - Bookmarks Parsing (Default Browser Only)
 
+    /// Re-parses bookmarks only when the source file actually changed. This used to
+    /// dispatch a full parse on every keystroke (~12 ms of CPU for 337 bookmarks),
+    /// piling up one background parse per character typed.
     public func refreshBookmarksIfNeeded() {
         guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return }
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        lock.lock()
+        let tooSoon = Date().timeIntervalSince(lastBookmarksCheck) < bookmarksCheckInterval
+        if tooSoon || isRefreshingBookmarks {
+            lock.unlock()
+            return
+        }
+        isRefreshingBookmarks = true
+        lastBookmarksCheck = Date()
+        let knownSignature = bookmarksSignature
+        lock.unlock()
+
+        bookmarksQueue.async { [weak self] in
             guard let self = self else { return }
+            defer {
+                self.lock.lock()
+                self.isRefreshingBookmarks = false
+                self.lock.unlock()
+            }
+
+            // Skip the parse entirely when the file has not changed.
+            let signature = Self.bookmarksSignature(bundleID: bundleID)
+            if let signature, signature == knownSignature { return }
+
             let loaded = Self.loadDefaultBrowserBookmarks(name: name, bundleID: bundleID, appPath: appPath)
             self.lock.lock()
             self.cachedBookmarks = loaded
+            if let signature { self.bookmarksSignature = signature }
             self.lock.unlock()
         }
+    }
+
+    /// mtime+size of the bookmark source, or nil when the location is not a single
+    /// known file (Firefox rotates backup files), in which case we always re-parse.
+    private static func bookmarksSignature(bundleID: String) -> String? {
+        let home = NSHomeDirectory()
+        let path: String
+        switch bundleID {
+        case "com.google.Chrome":
+            path = "\(home)/Library/Application Support/Google/Chrome/Default/Bookmarks"
+        case "com.brave.Browser":
+            path = "\(home)/Library/Application Support/BraveSoftware/Brave-Browser/Default/Bookmarks"
+        case "com.microsoft.edgemac":
+            path = "\(home)/Library/Application Support/Microsoft Edge/Default/Bookmarks"
+        case "company.thebrowser.Browser":
+            path = "\(home)/Library/Application Support/Arc/StorableSidebar.json"
+        case "com.apple.Safari", "com.apple.SafariTechnologyPreview":
+            path = "\(home)/Library/Safari/Bookmarks.plist"
+        default:
+            return nil
+        }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+        return "\(mtime)-\(size)"
     }
 
     public static func loadDefaultBrowserBookmarks(name: String, bundleID: String, appPath: String) -> [BrowserItem] {
@@ -404,27 +478,42 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
 
     // MARK: - Open Tabs Query (AppleScript, Throttled to 5s, Running Check)
 
-    private func getOpenTabsIfRunning() -> [BrowserItem] {
+    /// Returns the cached tabs immediately and kicks a background refresh when they
+    /// are stale. Previously this ran the AppleScript inline, so roughly one
+    /// keystroke in every five seconds of typing blocked for ~300 ms.
+    private func cachedTabsRefreshingIfStale() -> [BrowserItem] {
         lock.lock()
-        let isStale = Date().timeIntervalSince(lastTabsQuery) > 5.0
-        if !isStale {
-            let current = cachedTabs
-            lock.unlock()
-            return current
+        let current = cachedTabs
+        let isStale = Date().timeIntervalSince(lastTabsQuery) > tabsStaleInterval
+        let shouldRefresh = isStale && !isRefreshingTabs
+        if shouldRefresh {
+            isRefreshingTabs = true
+            // Claim the slot now so a burst of keystrokes queues only one query.
+            lastTabsQuery = Date()
         }
         lock.unlock()
 
-        guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return [] }
+        if shouldRefresh {
+            tabsQueue.async { [weak self] in self?.refreshTabsNow() }
+        }
+        return current
+    }
+
+    /// Blocking AppleScript tab query. Only ever called on `tabsQueue`.
+    private func refreshTabsNow() {
+        func finish(_ items: [BrowserItem]) {
+            lock.lock()
+            cachedTabs = items
+            lastTabsQuery = Date()
+            isRefreshingTabs = false
+            lock.unlock()
+        }
+
+        guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return finish([]) }
 
         // Only query if the browser is currently running!
         let isRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
-        guard isRunning else {
-            lock.lock()
-            cachedTabs = []
-            lastTabsQuery = Date()
-            lock.unlock()
-            return []
-        }
+        guard isRunning else { return finish([]) }
 
         // AppleScript based on browser family
         let scriptSource: String
@@ -480,11 +569,6 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
             }
         }
 
-        lock.lock()
-        cachedTabs = results
-        lastTabsQuery = Date()
-        lock.unlock()
-
-        return results
+        finish(results)
     }
 }

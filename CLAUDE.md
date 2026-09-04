@@ -96,6 +96,29 @@ Scoring tiers: exact 100, prefix 95, word-boundary prefix 85, initials 80, subst
 
 ### Key Invariants & Safety Rules
 
+0. **Nothing on the keystroke path may block** (violated three times so far, always felt
+   as "typing is slow"):
+   `SearchEngine.performSearch` fans out to every provider synchronously on the main
+   thread on **every keystroke**, and SwiftUI re-evaluates `Menu` content on **every**
+   body pass. So a provider's `search()`, and any property a view body reads, must be
+   a pure in-memory lookup. Never call from there:
+   - `NSAppleScript` / `osascript` (Finder folder ~260 ms, Chrome tabs ~300-465 ms)
+   - `Process` + `waitUntilExit` (`launchctl`/`mdutil` ~66 ms, `lsof` ~55 ms)
+   - file parsing (337 Chrome bookmarks ~12 ms)
+   - `SMAppService.mainApp.status` (~3 ms XPC)
+
+   The established pattern: keep a cached snapshot, return it immediately, and refresh
+   on a background queue behind a staleness check *and* an in-flight flag (so a burst
+   of keystrokes queues one refresh, not one per character). `NSAppleScript` is not
+   thread-safe — give each such refresh its own serial queue. Verified safe: a
+   background `NSAppleScript` does not stall the main run loop. Where a blocking call
+   is still legitimate (acting on a result, e.g. `TerminalLauncher`
+   `activeFinderFolderPath` at launch time), keep it as a separate method from the
+   non-blocking one the search path uses (`cachedFinderFolderPath`).
+
+   Known remaining exception: `ProcessKillerProvider.findProcessesOnPort` shells out to
+   `lsof` (~55 ms) inline, but only for `kill <port>` queries.
+
 1. **Subprocess Pipe Deadlock Prevention**:
    When using `Process` with a `Pipe` on macOS (e.g. `ps`, `lsof`, `sqlite3`, or `osascript`), **always** read data via `pipe.fileHandleForReading.readDataToEndOfFile()` **before** calling `process.waitUntilExit()`. Connecting standardError to `FileHandle.nullDevice` prevents pipe buffer overflow deadlocks.
 2. **Swift 6 Concurrency & Page Size**:
