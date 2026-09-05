@@ -545,12 +545,14 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         let indexingStatus = SpotlightManager.isIndexingEnabled() ? "Active" : "Disabled"
         let processStatus = SpotlightManager.isServiceDisabled() ? "Disabled" : "Active"
 
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+
         let alert = NSAlert()
         alert.messageText = "Lightspot"
         alert.informativeText = """
         A lightweight Spotlight replacement for macOS.
 
-        Version: 1.0.0
+        Version: \(appVersion)
         Hotkey: \(currentOption)
 
         macOS Spotlight Status:
