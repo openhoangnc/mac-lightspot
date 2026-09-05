@@ -179,7 +179,7 @@ struct SpotlightView: View {
 
                 // More Options (...) Button
                 EllipsisMenuButton {
-                    viewModel.menuBarController?.buildMenu()
+                    viewModel.menuBarController?.buildMenu(isForModal: true)
                 }
                 .frame(width: 24, height: 24)
             }

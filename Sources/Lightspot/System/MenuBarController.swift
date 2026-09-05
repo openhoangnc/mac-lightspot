@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-final class MenuBarController: NSObject, NSMenuDelegate {
+final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private var statusItem: NSStatusItem?
     private weak var hotkeyManager: HotkeyManager?
     weak var viewModel: SearchViewModel?
@@ -10,6 +10,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onManagePins: (() -> Void)?
     var onManageHistory: (() -> Void)?
     var onEnsurePanelVisible: (() -> Bool)?
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        return menuItem.isEnabled
+    }
 
     /// The status menu reads SpotlightManager's cached snapshot, which is refreshed
     /// off the main thread. Kick a refresh as the menu opens so it self-corrects if
@@ -46,25 +50,29 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         viewModel?.objectWillChange.send()
     }
 
-    func buildMenu() -> NSMenu? {
+    func buildMenu(isForModal: Bool = false) -> NSMenu? {
         guard let hotkeyManager = hotkeyManager else { return nil }
         let currentOption = hotkeyManager.currentOption
 
         let menu = NSMenu()
 
-        // 1. Show Lightspot
-        let showItem = NSMenuItem(title: "Show Lightspot (\(currentOption.shortLabel))", action: #selector(showAction), keyEquivalent: "")
-        showItem.target = self
-        menu.addItem(showItem)
+        // 1. Show Lightspot (menu bar only)
+        if !isForModal {
+            let showItem = NSMenuItem(title: "Show Lightspot (\(currentOption.shortLabel))", action: #selector(showAction), keyEquivalent: "")
+            showItem.target = self
+            menu.addItem(showItem)
+        }
 
-        // 2. Category Navigation
-        let nextCatItem = NSMenuItem(title: "Next Category (Tab)", action: #selector(nextCategoryAction), keyEquivalent: "")
-        nextCatItem.target = self
-        menu.addItem(nextCatItem)
+        // 2. Category Navigation (modal only)
+        if isForModal {
+            let nextCatItem = NSMenuItem(title: "Next Category (Tab)", action: #selector(nextCategoryAction), keyEquivalent: "")
+            nextCatItem.target = self
+            menu.addItem(nextCatItem)
 
-        let prevCatItem = NSMenuItem(title: "Previous Category (⇧Tab)", action: #selector(prevCategoryAction), keyEquivalent: "")
-        prevCatItem.target = self
-        menu.addItem(prevCatItem)
+            let prevCatItem = NSMenuItem(title: "Previous Category (⇧Tab)", action: #selector(prevCategoryAction), keyEquivalent: "")
+            prevCatItem.target = self
+            menu.addItem(prevCatItem)
+        }
 
         menu.addItem(NSMenuItem.separator())
 
@@ -80,9 +88,25 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         pinnedItem.target = self
         menu.addItem(pinnedItem)
 
-        let pinToggleItem = NSMenuItem(title: "Pin / Unpin Selected Command (⌘P)", action: #selector(togglePinAction), keyEquivalent: "")
-        pinToggleItem.target = self
-        menu.addItem(pinToggleItem)
+        if isForModal {
+            let pinTitle: String
+            let pinEnabled: Bool
+            if viewModel?.isPinManagerPresented == true {
+                pinTitle = "Unpin Selected Command (⌘P)"
+                pinEnabled = !(viewModel?.pinnedCommands.isEmpty ?? true)
+            } else if let command = viewModel?.selectedCommand {
+                let isPinned = PinnedCommandsStore.shared.isPinned(command)
+                pinTitle = isPinned ? "Unpin Selected Command (⌘P)" : "Pin Selected Command (⌘P)"
+                pinEnabled = true
+            } else {
+                pinTitle = "Pin / Unpin Selected Command (⌘P)"
+                pinEnabled = false
+            }
+            let pinToggleItem = NSMenuItem(title: pinTitle, action: #selector(togglePinAction), keyEquivalent: "")
+            pinToggleItem.target = self
+            pinToggleItem.isEnabled = pinEnabled
+            menu.addItem(pinToggleItem)
+        }
 
         menu.addItem(NSMenuItem.separator())
 
@@ -266,24 +290,25 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 16. Clear Search
-        let clearSearchItem = NSMenuItem(title: "Clear Search (Esc)", action: #selector(clearSearchAction), keyEquivalent: "")
-        clearSearchItem.target = self
-        menu.addItem(clearSearchItem)
+        if isForModal {
+            let clearSearchItem = NSMenuItem(title: "Clear Search (Esc)", action: #selector(clearSearchAction), keyEquivalent: "")
+            clearSearchItem.target = self
+            clearSearchItem.isEnabled = !(viewModel?.query.isEmpty ?? true)
+            menu.addItem(clearSearchItem)
 
-        // 17. About Lightspot
+            let closeItem = NSMenuItem(title: "Close Lightspot", action: #selector(closeAction), keyEquivalent: "")
+            closeItem.target = self
+            menu.addItem(closeItem)
+
+            menu.addItem(NSMenuItem.separator())
+        }
+
+        // About Lightspot
         let aboutItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
 
-        // 18. Close Lightspot
-        let closeItem = NSMenuItem(title: "Close Lightspot", action: #selector(closeAction), keyEquivalent: "")
-        closeItem.target = self
-        menu.addItem(closeItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        // 19. Quit Lightspot
+        // Quit Lightspot
         let quitItem = NSMenuItem(title: "Quit Lightspot", action: #selector(quitAction), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -348,7 +373,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func clearSearchAction() {
         viewModel?.clearSearch()
     }
-
     @objc private func manageCustomCommandsAction() {
         onManageCustomCommands?()
     }
