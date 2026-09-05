@@ -1,0 +1,134 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version Bump Type (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  build-and-release:
+    # Releases are opt-in: a push must carry `[deploy-prod]` (main) or `[deploy]`
+    # (any other branch) in one of its commit messages.
+    #
+    # ⚠️ TAG PUSHES STAY UNGATED. `refs/tags/v*` is itself the explicit release
+    # trigger, and a tag push carries no `commits` payload to read a marker out of —
+    # gating it would make tagging a release silently do nothing.
+    # `workflow_dispatch` always runs.
+    if: >-
+      github.event_name != 'push'
+      || startsWith(github.ref, 'refs/tags/')
+      || (github.ref_name == 'main' && contains(join(github.event.commits.*.message), '[deploy-prod]'))
+      || (github.ref_name != 'main' && contains(join(github.event.commits.*.message), '[deploy]'))
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate Release Version & Auto-Versioning
+        id: versioning
+        run: |
+          # Fetch all tags
+          git fetch --tags || true
+
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${github.ref#refs/tags/}"
+            VERSION="${TAG_NAME#v}"
+          else
+            # Get latest tag
+            LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null || echo "v1.0.0")
+            echo "Latest tag found: ${LATEST_TAG}"
+
+            # Clean tag
+            CLEAN_VER="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CLEAN_VER"
+            MAJOR=${MAJOR:-1}
+            MINOR=${MINOR:-0}
+            PATCH=${PATCH:-0}
+
+            BUMP_TYPE="${{ inputs.bump_type }}"
+            if [ -z "$BUMP_TYPE" ]; then
+              BUMP_TYPE="patch"
+            fi
+
+            if [ "$BUMP_TYPE" = "major" ]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [ "$BUMP_TYPE" = "minor" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            else
+              PATCH=$((PATCH + 1))
+            fi
+
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            TAG_NAME="v${VERSION}"
+          fi
+
+          echo "Target Release Version: ${VERSION}"
+          echo "Target Tag: ${TAG_NAME}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Update Info.plist Version
+        run: |
+          VERSION="${{ steps.versioning.outputs.version }}"
+          echo "Updating Resources/Info.plist to version ${VERSION}..."
+          plutil -replace CFBundleShortVersionString -string "${VERSION}" Resources/Info.plist 2>/dev/null || sed -i '' "s/<string>1.0.0<\/string>/<string>${VERSION}<\/string>/g" Resources/Info.plist || true
+          plutil -replace CFBundleVersion -string "${VERSION}" Resources/Info.plist 2>/dev/null || true
+
+      - name: Build macOS Application
+        env:
+          ARCH_FLAGS: "--arch arm64 --arch x86_64"
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Package Application Zip
+        run: |
+          (cd build && zip -r -y ../Lightspot.zip Lightspot.app)
+
+      - name: Tag Repository
+        env:
+          TAG_NAME: ${{ steps.versioning.outputs.tag_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "Creating git tag ${TAG_NAME}..."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "${TAG_NAME}"
+            git push origin "${TAG_NAME}" || echo "Tag push skipped or already exists."
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.versioning.outputs.tag_name }}
+          name: Lightspot ${{ steps.versioning.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: Lightspot.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,6 +6,30 @@
 
 Lightspot reproduce fielmente el moderno diseño de píldora flotante y la estética de cristal translúcido de Spotlight de macOS (`NSVisualEffectView`). Bajo el capó, ofrece una capacidad de respuesta por debajo del milisegundo (< 1.0 ms de búsqueda) con **cero indexación de archivos en segundo plano**, consumiendo **0.0% de CPU en reposo** y menos de **25 MB de RAM**.
 
+![Captura de pantalla de Lightspot](screenshot.png)
+
+---
+
+## ⚡ Inicio Rápido
+
+### 📦 Descarga e Instalación en una sola línea
+Simplemente copia y pega este comando en tu Terminal para descargar, extraer e instalar automáticamente el último **Lightspot** en tu carpeta `/Applications`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+*(Opcional: Pasa `--user` para instalar en `~/Applications`: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash -s -- --user`)*
+
+---
+
+### 🗑️ Desinstalación Completa
+¿Deseas eliminarlo por completo? Este comando detiene la aplicación, elimina los elementos de inicio automático, borra las preferencias de usuario y elimina el paquete de la aplicación:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
+```
+
 ---
 
 ## 💡 ¿Por qué Lightspot?
@@ -155,26 +179,29 @@ Lightspot incluye automatizaciones integradas en la barra de menú para deshabil
 
 ## 🚀 Construcción e Instalación (No Requiere Xcode)
 
-Lightspot está construido con herramientas estándar de Swift y simples scripts de shell. No se requiere instalación del IDE Xcode.
-
-### 1. Construir
+### 📦 Opción A: Instalación en una sola línea (Recomendada)
+Descarga e instala la última versión precompilada directamente:
 ```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+### 🛠️ Opción B: Construir desde el Código Fuente (Repositorio Local)
+```bash
+# 1. Compilar paquete de lanzamiento
 ./build.sh
 # o: make build
-```
-Compila un binario de lanzamiento (`-Osize -wmo`), elimina símbolos de depuración, empaqueta `Info.plist` e íconos de alta resolución, y firma digitalmente `build/Lightspot.app`.
 
-### 2. Ejecutar
-```bash
+# 2. Ejecutar directamente
 ./run.sh
 # o: make run
-```
 
-### 3. Instalar en `/Applications`
-```bash
+# 3. Instalar en /Applications (o en ~/Applications con --user)
 ./install.sh
 # o: make install
-# (Pasa --user para instalar en ~/Applications en su lugar)
+
+# 4. Desinstalar
+./uninstall.sh
+# o: make uninstall
 ```
 
 ### 4. Pruebas y Verificación
@@ -204,69 +231,6 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y`** / **`⌘⇧H`** | Abrir la superposición del administrador de historial de búsqueda |
 | **`Escape`** | Descartar superposiciones, limpiar el campo de búsqueda o cerrar Lightspot |
 | **Clic Afuera** | Descarta automáticamente el panel flotante |
-
----
-
-## 📁 Estructura del Proyecto
-
-```
-mac-lightspot/
-├── Package.swift                 # Manifiesto SPM (Swift 6, macOS 13+)
-├── Makefile                      # make build / run / install / uninstall / clean
-├── build.sh                      # Script de compilación de lanzamiento y empaquetador .app
-├── run.sh                        # Ayudante de compilación y lanzamiento
-├── install.sh                    # Instalar en /Applications o ~/Applications
-├── uninstall.sh                  # Script de eliminación limpia
-├── README.md                     # Documentación y fundamento
-├── CLAUDE.md                     # Arquitectura, invariantes y guía para desarrolladores
-├── Resources/
-│   ├── Info.plist                # LSUIElement=1, permisos, metadatos del paquete
-│   └── AppIcon.icns              # Ícono de aplicación de macOS en múltiples tamaños
-├── scripts/
-│   ├── generate_icon.sh          # Generador de íconos programático (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Ejecutor de pruebas automatizado (24 suites de pruebas)
-│   └── deep_verify.swift         # Verificación del sistema en vivo (88 comprobaciones)
-└── Sources/
-    └── Lightspot/
-        ├── AppMain.swift         # Punto de entrada @main y NSApplicationDelegate
-        ├── Core/
-        │   ├── Models.swift      # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
-        │   ├── AppScanner.swift  # Escáner de apps rápido y asíncrono y caché de íconos en memoria
-        │   ├── BrowserIntegrationProvider.swift # Marcadores y pestañas del navegador predeterminado
-        │   ├── CalculatorEngine.swift # Analizador matemático y despachador de conversiones
-        │   ├── ClipboardHistoryManager.swift    # Búfer de anillo del portapapeles efímero en memoria
-        │   ├── ConversionEngine.swift   # Motor de unidad, moneda, base y temperatura
-        │   ├── CustomCommandsStore.swift # Modelo y persistencia de comandos de usuario personalizados
-        │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Muestra de Color
-        │   ├── NetworkInfoProvider.swift # IPv4 local y dirección IP pública de internet
-        │   ├── ProcessKillerProvider.swift # Terminador de procesos por nombre, PID y puerto
-        │   ├── QuickActionsProvider.swift # Acciones del sistema enfocadas y Terminal en Finder
-        │   ├── RecentProjectsProvider.swift # Escáner de proyectos multi-IDE (VS Code, Cursor, Zed, JetBrains, Sublime)
-        │   ├── SearchEngine.swift       # Agregador de búsqueda síncrona y clasificación
-        │   ├── SearchHistoryManager.swift # Historial de consultas de búsqueda y selección
-        │   ├── SettingsBackup.swift     # Copia de seguridad de exportación e importación de ajustes
-        │   ├── SettingsProvider.swift   # Más de 35 enlaces profundos a Ajustes del Sistema de macOS
-        │   ├── ShellHistoryProvider.swift # Analizador de historial zsh y comandos fijados
-        │   ├── SnippetsStore.swift      # Fragmentos de expansión de texto con interpolación de variables
-        │   ├── SystemInfoProvider.swift # Panel de hardware Mach/IOKit sin subprocesos
-        │   └── WebSearchProvider.swift  # Búsqueda multimotor y atajos de prefijo
-        ├── System/
-        │   ├── HotkeyManager.swift      # Tecla de acceso rápido global Carbon
-        │   ├── MenuBarController.swift  # Elemento de estado de la barra de menú y preferencias
-        │   ├── SettingsBackupController.swift # Controlador de importación/exportación de ajustes
-        │   ├── SpotlightManager.swift   # Automatizaciones de deshabilitación/restauración de Spotlight de macOS
-        │   └── TerminalLauncher.swift   # Lanzador para 7 emuladores de terminal y detección de Finder
-        └── UI/
-            ├── CustomCommandsView.swift # Superposición del administrador de comandos personalizados
-            ├── HistoryManagerView.swift # Superposición del administrador de historial de búsqueda
-            ├── PinnedCommandsView.swift # Superposición del administrador de comandos fijados
-            ├── PreviewPaneView.swift    # Tarjeta de detalles enriquecidos y vistas previas en vivo
-            ├── SearchFieldView.swift    # Puente de NSTextField y editor de campo personalizado
-            ├── SearchViewModel.swift    # Modelo de vista reactiva y enrutador de eventos de teclado
-            ├── SpotlightComponents.swift# Filas de resultados de búsqueda, botones y encabezados de categoría
-            ├── SpotlightPanel.swift     # NSPanel flotante sin bordes con vitalidad (vibrancy)
-            └── SpotlightView.swift      # Vista SwiftUI raíz
-```
 
 ---
 

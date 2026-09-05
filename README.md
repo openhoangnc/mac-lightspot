@@ -6,6 +6,30 @@
 
 Lightspot faithfully reproduces the modern floating pill design and translucent glass aesthetic of macOS Spotlight (`NSVisualEffectView`). Under the hood, it delivers sub-millisecond responsiveness (< 1.0 ms search) with **zero background file indexing**, consuming **0.0% idle CPU** and under **25 MB of RAM**.
 
+![Lightspot Screenshot](screenshot.png)
+
+---
+
+## ⚡ Quick Start
+
+### 📦 One-Line Download & Install
+Run this in your Terminal to download, extract, and install the latest **Lightspot** into `/Applications`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+*(Optional: Pass `--user` to install into `~/Applications` instead: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash -s -- --user`)*
+
+---
+
+### 🗑️ Complete Uninstallation
+To completely remove Lightspot, unregister auto-start, clear preferences, and delete the app bundle:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
+```
+
 ---
 
 ## 💡 Why Lightspot?
@@ -155,26 +179,29 @@ Lightspot includes built-in automations in the menu bar to disable or re-enable 
 
 ## 🚀 Building & Installing (No Xcode Required)
 
-Lightspot is built with standard Swift tools and simple shell scripts. No Xcode IDE installation is required.
-
-### 1. Build
+### 📦 Option A: One-Line Install (Recommended)
+Download and install the latest prebuilt release directly:
 ```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+### 🛠️ Option B: Build from Source (Local Checkout)
+```bash
+# 1. Build release bundle
 ./build.sh
 # or: make build
-```
-Compiles a release binary (`-Osize -wmo`), strips debug symbols, bundles `Info.plist` and high-resolution icons, and codesigns `build/Lightspot.app`.
 
-### 2. Run
-```bash
+# 2. Run directly
 ./run.sh
 # or: make run
-```
 
-### 3. Install to `/Applications`
-```bash
+# 3. Install to /Applications (or ~/Applications with --user)
 ./install.sh
 # or: make install
-# (Pass --user to install to ~/Applications instead)
+
+# 4. Uninstall
+./uninstall.sh
+# or: make uninstall
 ```
 
 ### 4. Tests & Verification
@@ -204,69 +231,6 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y` / `⌘⇧H`** | Open search history manager overlay |
 | **`Escape`** | Dismiss overlays, clear search field, or close Lightspot |
 | **Click Outside** | Automatically dismisses the floating panel |
-
----
-
-## 📁 Project Structure
-
-```
-mac-lightspot/
-├── Package.swift                 # SPM manifest (Swift 6, macOS 13+)
-├── Makefile                      # make build / run / install / uninstall / clean
-├── build.sh                      # Release build & .app packager script
-├── run.sh                        # Build & launch helper
-├── install.sh                    # Install to /Applications or ~/Applications
-├── uninstall.sh                  # Clean removal script
-├── README.md                     # Documentation & rationale
-├── CLAUDE.md                     # Architecture, invariants & developer guide
-├── Resources/
-│   ├── Info.plist                # LSUIElement=1, permissions, bundle metadata
-│   └── AppIcon.icns              # Multi-size macOS application icon
-├── scripts/
-│   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (24 test suites)
-│   └── deep_verify.swift         # Live-system verification (88 checks)
-└── Sources/
-    └── Lightspot/
-        ├── AppMain.swift         # @main entry point & NSApplicationDelegate
-        ├── Core/
-        │   ├── Models.swift      # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
-        │   ├── AppScanner.swift  # Fast async app scanner & memory icon cache
-        │   ├── BrowserIntegrationProvider.swift # Default browser bookmarks & tabs
-        │   ├── CalculatorEngine.swift # Math parser & conversion dispatcher
-        │   ├── ClipboardHistoryManager.swift    # In-memory ephemeral clipboard ring buffer
-        │   ├── ConversionEngine.swift   # Unit, currency, base, & temperature engine
-        │   ├── CustomCommandsStore.swift # Custom user commands model & persistence
-        │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
-        │   ├── NetworkInfoProvider.swift # Local IPv4 & public internet IP address
-        │   ├── ProcessKillerProvider.swift # Name, PID, and port process terminator
-        │   ├── QuickActionsProvider.swift # Focused system actions & Terminal in Finder
-        │   ├── RecentProjectsProvider.swift # Multi-IDE project scanner (VS Code, Cursor, Zed, JetBrains, Sublime)
-        │   ├── SearchEngine.swift       # Synchronous search aggregator & ranking
-        │   ├── SearchHistoryManager.swift # Search query & selection history
-        │   ├── SettingsBackup.swift     # Settings export & import backup
-        │   ├── SettingsProvider.swift   # 35+ macOS System Settings deep links
-        │   ├── ShellHistoryProvider.swift # zsh history parser & pinned commands
-        │   ├── SnippetsStore.swift      # Text expansion snippets with variable interpolation
-        │   ├── SystemInfoProvider.swift # Zero-subprocess Mach/IOKit hardware dashboard
-        │   └── WebSearchProvider.swift  # Multi-engine search & prefix shortcuts
-        ├── System/
-        │   ├── HotkeyManager.swift      # Carbon global hotkey
-        │   ├── MenuBarController.swift  # Menu bar status item & preferences
-        │   ├── SettingsBackupController.swift # Settings import/export controller
-        │   ├── SpotlightManager.swift   # macOS Spotlight disable/restore automations
-        │   └── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
-        └── UI/
-            ├── CustomCommandsView.swift # Custom command manager overlay
-            ├── HistoryManagerView.swift # Search history manager overlay
-            ├── PinnedCommandsView.swift # Pinned command manager overlay
-            ├── PreviewPaneView.swift    # Rich details card & live previews
-            ├── SearchFieldView.swift    # NSTextField bridge & custom field editor
-            ├── SearchViewModel.swift    # Reactive view model & key event router
-            ├── SpotlightComponents.swift# Search result rows, buttons, & category headers
-            ├── SpotlightPanel.swift     # Floating borderless NSPanel with vibrancy
-            └── SpotlightView.swift      # Root SwiftUI view
-```
 
 ---
 

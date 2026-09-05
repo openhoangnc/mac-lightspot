@@ -3,7 +3,15 @@ import SwiftUI
 
 @main
 struct LightspotApp {
+    @MainActor
     static func main() {
+        if CommandLine.arguments.contains("--cleanup-login-item") ||
+           CommandLine.arguments.contains("--uninstall-login-item") ||
+           CommandLine.arguments.contains("--uninstall") {
+            _ = AutoStartManager.setEnabled(false)
+            exit(0)
+        }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

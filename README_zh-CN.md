@@ -6,6 +6,30 @@
 
 Lightspot忠实再现了macOS Spotlight现代的悬浮胶囊设计和半透明玻璃美学（`NSVisualEffectView`）。在底层，它提供亚毫秒级的响应能力（搜索时间 < 1.0毫秒），**完全没有后台文件索引**，消耗**0.0%的空闲CPU**和不到**25MB的RAM**。
 
+![Lightspot 截图](screenshot.png)
+
+---
+
+## ⚡ 快速开始
+
+### 📦 单行下载与安装
+只需在终端中复制并粘贴此命令，即可自动下载、解压并将最新的 **Lightspot** 直接安装到 `/Applications` 文件夹中：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+*(可选：若要安装到 `~/Applications`，请使用：`curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash -s -- --user`)*
+
+---
+
+### 🗑️ 彻底卸载
+如需彻底卸载，此命令可安全停止应用、取消开机自启项、清除用户偏好设置并删除应用程序包：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
+```
+
 ---
 
 ## 💡 为什么选择Lightspot？
@@ -155,26 +179,29 @@ Lightspot在菜单栏中内置了自动化功能，以禁用或重新启用Apple
 
 ## 🚀 构建与安装 (无需Xcode)
 
-Lightspot使用标准Swift工具和简单的Shell脚本构建。无需安装Xcode IDE。
-
-### 1. 构建
+### 📦 方式A：单行命令安装 (推荐)
+直接下载并安装最新预构建版本：
 ```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+### 🛠️ 方式B：从源码构建 (本地代码库)
+```bash
+# 1. 构建发布版本
 ./build.sh
 # 或者: make build
-```
-编译发布二进制文件 (`-Osize -wmo`)，剥离调试符号，打包 `Info.plist` 和高分辨率图标，并为 `build/Lightspot.app` 签名。
 
-### 2. 运行
-```bash
+# 2. 直接运行
 ./run.sh
 # 或者: make run
-```
 
-### 3. 安装到 `/Applications`
-```bash
+# 3. 安装至 /Applications (或加 --user 安装至 ~/Applications)
 ./install.sh
 # 或者: make install
-# (传递 --user 以安装到 ~/Applications)
+
+# 4. 卸载
+./uninstall.sh
+# 或者: make uninstall
 ```
 
 ### 4. 测试与验证
@@ -204,69 +231,6 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y` / `⌘⇧H`** | 打开搜索历史记录管理器浮层 |
 | **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot |
 | **点击外部** | 自动关闭悬浮面板 |
-
----
-
-## 📁 项目结构
-
-```
-mac-lightspot/
-├── Package.swift                 # SPM 清单 (Swift 6, macOS 13+)
-├── Makefile                      # make build / run / install / uninstall / clean
-├── build.sh                      # 发布构建 & .app打包脚本
-├── run.sh                        # 构建 & 启动助手
-├── install.sh                    # 安装到 /Applications 或 ~/Applications
-├── uninstall.sh                  # 干净的移除脚本
-├── README.md                     # 文档 & 设计原理
-├── CLAUDE.md                     # 架构、不变量 & 开发者指南
-├── Resources/
-│   ├── Info.plist                # LSUIElement=1, 权限, 应用程序包元数据
-│   └── AppIcon.icns              # 多尺寸macOS应用程序图标
-├── scripts/
-│   ├── generate_icon.sh          # 编程式图标生成器 (Core Graphics + iconutil)
-│   ├── test_engine.swift         # 自动化测试运行器 (24个测试套件)
-│   └── deep_verify.swift         # 实时系统验证 (88个检查)
-└── Sources/
-    └── Lightspot/
-        ├── AppMain.swift         # @main 入口点 & NSApplicationDelegate
-        ├── Core/
-        │   ├── Models.swift      # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
-        │   ├── AppScanner.swift  # 快速异步应用扫描器 & 内存图标缓存
-        │   ├── BrowserIntegrationProvider.swift # 默认浏览器书签 & 标签页
-        │   ├── CalculatorEngine.swift # 数学解析器 & 转换调度器
-        │   ├── ClipboardHistoryManager.swift    # 内存中的临时剪贴板环形缓冲区
-        │   ├── ConversionEngine.swift   # 单位、货币、基数 & 温度引擎
-        │   ├── CustomCommandsStore.swift # 自定义用户命令模型 & 持久化
-        │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, 色板
-        │   ├── NetworkInfoProvider.swift # 本地IPv4 & 公共互联网IP地址
-        │   ├── ProcessKillerProvider.swift # 按名称、PID和端口终止进程
-        │   ├── QuickActionsProvider.swift # 焦点系统操作 & Finder中的终端
-        │   ├── RecentProjectsProvider.swift # 多IDE项目扫描器 (VS Code, Cursor, Zed, JetBrains, Sublime)
-        │   ├── SearchEngine.swift       # 同步搜索聚合器 & 排名
-        │   ├── SearchHistoryManager.swift # 搜索查询 & 选择历史记录
-        │   ├── SettingsBackup.swift     # 设置导出 & 导入备份
-        │   ├── SettingsProvider.swift   # 35+ 个macOS系统设置深层链接
-        │   ├── ShellHistoryProvider.swift # zsh历史记录解析器 & 固定命令
-        │   ├── SnippetsStore.swift      # 具有变量插值的文本扩展代码段
-        │   ├── SystemInfoProvider.swift # 零子进程Mach/IOKit硬件HUD
-        │   └── WebSearchProvider.swift  # 多引擎搜索 & 前缀快捷键
-        ├── System/
-        │   ├── HotkeyManager.swift      # Carbon全局热键
-        │   ├── MenuBarController.swift  # 菜单栏状态栏项 & 偏好设置
-        │   ├── SettingsBackupController.swift # 设置导入/导出控制器
-        │   ├── SpotlightManager.swift   # macOS Spotlight 禁用/恢复自动化
-        │   └── TerminalLauncher.swift   # 7个终端模拟器启动器 & Finder检测
-        └── UI/
-            ├── CustomCommandsView.swift # 自定义命令管理器浮层
-            ├── HistoryManagerView.swift # 搜索历史记录管理器浮层
-            ├── PinnedCommandsView.swift # 固定命令管理器浮层
-            ├── PreviewPaneView.swift    # 丰富详情卡片 & 实时预览
-            ├── SearchFieldView.swift    # NSTextField桥接 & 自定义字段编辑器
-            ├── SearchViewModel.swift    # 响应式视图模型 & 按键事件路由器
-            ├── SpotlightComponents.swift# 搜索结果行、按钮 & 类别标头
-            ├── SpotlightPanel.swift     # 具有活力的悬浮无边框NSPanel
-            └── SpotlightView.swift      # 根SwiftUI视图
-```
 
 ---
 

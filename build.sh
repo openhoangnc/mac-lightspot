@@ -8,9 +8,11 @@ CONTENTS="$APP_BUNDLE/Contents"
 
 echo "🔨 Building Lightspot..."
 
+ARCH_FLAGS=${ARCH_FLAGS:-}
+
 # Build with SPM (Maximum Optimization)
 echo "🚀 Compiling with maximum optimizations..."
-swift build -c release \
+swift build -c release $ARCH_FLAGS \
     -Xswiftc -Osize \
     -Xswiftc -whole-module-optimization \
     -Xswiftc -cross-module-optimization \
@@ -18,7 +20,8 @@ swift build -c release \
     --package-path "$SCRIPT_DIR" 2>&1
 
 # Find the built binary
-BINARY=$(swift build -c release --package-path "$SCRIPT_DIR" --show-bin-path)/Lightspot
+BINARY=$(swift build -c release $ARCH_FLAGS --package-path "$SCRIPT_DIR" --show-bin-path)/Lightspot
+
 
 if [ ! -f "$BINARY" ]; then
     echo "❌ Build failed: binary not found"

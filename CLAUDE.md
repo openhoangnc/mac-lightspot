@@ -36,6 +36,81 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
+## Project Structure
+
+```
+mac-lightspot/
+├── Package.swift                 # SPM manifest (Swift 6, macOS 13+)
+├── Makefile                      # make build / run / install / uninstall / clean
+├── build.sh                      # Release build & .app packager script
+├── run.sh                        # Build & launch helper
+├── install.sh                    # Install to /Applications or ~/Applications (local or remote)
+├── uninstall.sh                  # Clean removal script
+├── README.md                     # Documentation & rationale (with 4 translations)
+├── CLAUDE.md                     # Architecture, invariants & developer guide
+├── screenshot.png                # Visual preview for documentation
+├── .github/
+│   └── workflows/
+│       └── release.yml           # GitHub Actions CI for multi-arch releases
+├── Resources/
+│   ├── Info.plist                # LSUIElement=1, permissions, bundle metadata
+│   └── AppIcon.icns              # Multi-size macOS application icon
+├── scripts/
+│   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
+│   ├── test_engine.swift         # Automated test runner (24 test suites)
+│   └── deep_verify.swift         # Live-system verification (88 checks)
+└── Sources/
+    └── Lightspot/
+        ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
+        ├── Core/
+        │   ├── AppIconCache.swift       # In-memory async app icon caching
+        │   ├── AppScanner.swift         # Fast async app scanner & memory icon cache
+        │   ├── BrowserIntegrationProvider.swift # Default browser bookmarks, tabs & history
+        │   ├── CalculatorEngine.swift   # Math parser & conversion dispatcher
+        │   ├── ClipboardHistoryManager.swift    # In-memory ephemeral clipboard ring buffer
+        │   ├── ConversionEngine.swift   # Unit, currency, base, & temperature engine
+        │   ├── CustomCommandsStore.swift# Custom user commands model & persistence
+        │   ├── CustomIconCache.swift    # Base64 custom command icon decoding/cache
+        │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
+        │   ├── Models.swift             # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
+        │   ├── NetworkInfoProvider.swift# Local IPv4 & public internet IP address
+        │   ├── ProcessKillerProvider.swift # Name, PID, and port process terminator
+        │   ├── QuickActionsProvider.swift# Focused system actions & Terminal in Finder
+        │   ├── RecentAppsManager.swift  # Recently launched applications tracking
+        │   ├── RecentProjectsProvider.swift # Multi-IDE project scanner (VS Code, Cursor, Zed, JetBrains, Sublime)
+        │   ├── SearchEngine.swift       # Synchronous search aggregator & ranking
+        │   ├── SearchHistoryManager.swift # Search query & selection history
+        │   ├── SettingsBackup.swift     # Settings export & import backup
+        │   ├── SettingsProvider.swift   # 35+ macOS System Settings deep links
+        │   ├── ShellHistoryProvider.swift # zsh history parser & pinned commands
+        │   ├── SnippetsStore.swift      # Text expansion snippets with variable interpolation
+        │   ├── SystemInfoProvider.swift # Zero-subprocess Mach/IOKit hardware dashboard
+        │   ├── VSCodeProjectsProvider.swift # VS Code state.vscdb recent project extractor
+        │   └── WebSearchProvider.swift  # Multi-engine search & prefix shortcuts
+        ├── System/
+        │   ├── AutoStartManager.swift   # SMAppService login item management & caching
+        │   ├── HotkeyManager.swift      # Carbon global hotkey
+        │   ├── MenuBarController.swift  # Menu bar status item & preferences
+        │   ├── SettingsBackupController.swift # Settings import/export controller
+        │   ├── SpotlightManager.swift   # macOS Spotlight disable/restore automations
+        │   └── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
+        └── UI/
+            ├── AppGridView.swift        # Compact 5-column app launcher grid
+            ├── CustomCommandsView.swift # Custom command manager overlay
+            ├── LazyAppIconView.swift    # Asynchronous non-blocking app icon loader
+            ├── PinnedCommandsView.swift # Pinned command manager overlay
+            ├── PreviewPaneView.swift    # Rich details card & live previews
+            ├── ResultRowView.swift      # Individual search result row
+            ├── ResultsListView.swift    # Scrollable search results list
+            ├── SearchFieldView.swift    # NSTextField bridge & custom field editor
+            ├── SearchHistoryView.swift  # Search history manager overlay
+            ├── SearchViewModel.swift    # Reactive view model & key event router
+            ├── SpotlightComponents.swift# Search result rows, buttons, & category headers
+            ├── SpotlightPanel.swift     # Floating borderless NSPanel with vibrancy
+            ├── SpotlightView.swift      # Root SwiftUI view
+            └── VisualEffectBlur.swift   # NSVisualEffectView glass vibrancy wrapper
+```
+
 ## Architecture
 
 `AppMain.swift` is the single wiring point. `AppDelegate.setup()` constructs `SearchViewModel`, `SpotlightPanel`, `HotkeyManager`, and `MenuBarController`, connecting them via closures — there is no DI container or notification bus.

@@ -6,6 +6,30 @@
 
 Lightspotは、macOS Spotlightのモダンなフローティングピルデザインと半透明のガラスのような美しさ（`NSVisualEffectView`）を忠実に再現しています。その内部では、**バックグラウンドでのファイルインデックス作成を一切行わず**、**アイドル時のCPU使用率0.0%**、**RAM使用量25MB未満**で、サブミリ秒の応答性（検索時間1.0ミリ秒未満）を実現します。
 
+![Lightspot スクリーンショット](screenshot.png)
+
+---
+
+## ⚡ クイックスタート
+
+### 📦 ワンライナーのダウンロード＆インストール
+ターミナルに以下のコマンドをコピー＆ペーストするだけで、最新の **Lightspot** が自動的にダウンロード・解凍され、`/Applications` フォルダに直接インストールされます：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+*(オプション: `~/Applications` にインストールしたい場合は `--user` を指定します: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash -s -- --user`)*
+
+---
+
+### 🗑️ 完全アンインストール
+完全に削除したい場合は、このコマンドで安全にアプリを終了し、自動起動設定を解除し、ユーザー設定を消去して、アプリ本体を削除します：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
+```
+
 ---
 
 ## 💡 なぜLightspotなのか？
@@ -155,26 +179,29 @@ Lightspotには、Appleの組み込みSpotlightを無効または再有効化す
 
 ## 🚀 ビルドとインストール (Xcodeは不要)
 
-Lightspotは標準のSwiftツールとシンプルなシェルスクリプトでビルドされます。Xcode IDEのインストールは必要ありません。
-
-### 1. ビルド
+### 📦 方法A: ワンライナーインストール (推奨)
+最新のビルド済みリリースを直接ダウンロードしてインストールします：
 ```bash
+curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
+```
+
+### 🛠️ 方法B: ソースコードからビルド (ローカル環境)
+```bash
+# 1. リリースバンドルをビルド
 ./build.sh
 # または: make build
-```
-リリースバイナリ（`-Osize -wmo`）をコンパイルし、デバッグシンボルをストリップし、`Info.plist`と高解像度アイコンをバンドルして、`build/Lightspot.app`をコード署名します。
 
-### 2. 実行
-```bash
+# 2. 直接実行
 ./run.sh
 # または: make run
-```
 
-### 3. `/Applications` へのインストール
-```bash
+# 3. /Applications にインストール (または --user で ~/Applications へ)
 ./install.sh
 # または: make install
-# (--user を渡すと ~/Applications にインストールされます)
+
+# 4. アンインストール
+./uninstall.sh
+# または: make uninstall
 ```
 
 ### 4. テストと検証
@@ -204,69 +231,6 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y` / `⌘⇧H`** | 検索履歴マネージャーのオーバーレイを開く |
 | **`Escape`** | オーバーレイを閉じる、検索フィールドをクリアする、またはLightspotを閉じる |
 | **外側をクリック** | フローティングパネルを自動的に閉じる |
-
----
-
-## 📁 プロジェクト構造
-
-```
-mac-lightspot/
-├── Package.swift                 # SPM マニフェスト (Swift 6, macOS 13+)
-├── Makefile                      # make build / run / install / uninstall / clean
-├── build.sh                      # リリースビルドと.appパッケージャースクリプト
-├── run.sh                        # ビルドと起動のヘルパー
-├── install.sh                    # /Applications または ~/Applications へのインストール
-├── uninstall.sh                  # クリーンな削除スクリプト
-├── README.md                     # ドキュメントと根拠
-├── CLAUDE.md                     # アーキテクチャ、不変条件、および開発者ガイド
-├── Resources/
-│   ├── Info.plist                # LSUIElement=1, パーミッション, バンドルメタデータ
-│   └── AppIcon.icns              # マルチサイズのmacOSアプリケーションアイコン
-├── scripts/
-│   ├── generate_icon.sh          # プログラムによるアイコンジェネレーター (Core Graphics + iconutil)
-│   ├── test_engine.swift         # 自動テストランナー (24のテストスイート)
-│   └── deep_verify.swift         # ライブシステムの検証 (88のチェック)
-└── Sources/
-    └── Lightspot/
-        ├── AppMain.swift         # @main エントリポイントとNSApplicationDelegate
-        ├── Core/
-        │   ├── Models.swift      # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
-        │   ├── AppScanner.swift  # 高速な非同期アプリスキャナとメモリアイコンキャッシュ
-        │   ├── BrowserIntegrationProvider.swift # デフォルトブラウザのブックマークとタブ
-        │   ├── CalculatorEngine.swift # 計算パーサーと変換ディスパッチャー
-        │   ├── ClipboardHistoryManager.swift    # インメモリの一時的なクリップボードリングバッファ
-        │   ├── ConversionEngine.swift   # 単位、通貨、基数、温度のエンジン
-        │   ├── CustomCommandsStore.swift # カスタムユーザーコマンドモデルと永続化
-        │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, カラーウォッチ
-        │   ├── NetworkInfoProvider.swift # ローカルIPv4とパブリックインターネットIPアドレス
-        │   ├── ProcessKillerProvider.swift # 名前、PID、およびポートプロセス終了ツール
-        │   ├── QuickActionsProvider.swift # フォーカスされたシステムアクションとFinder内のターミナル
-        │   ├── RecentProjectsProvider.swift # 複数のIDEプロジェクトスキャナ (VS Code, Cursor, Zed, JetBrains, Sublime)
-        │   ├── SearchEngine.swift       # 同期検索アグリゲーターとランキング
-        │   ├── SearchHistoryManager.swift # 検索クエリと選択履歴
-        │   ├── SettingsBackup.swift     # 設定のエクスポートとインポートのバックアップ
-        │   ├── SettingsProvider.swift   # 35以上のmacOSシステム設定へのディープリンク
-        │   ├── ShellHistoryProvider.swift # zsh履歴パーサーとピン留めされたコマンド
-        │   ├── SnippetsStore.swift      # 変数補完を伴うテキスト展開スニペット
-        │   ├── SystemInfoProvider.swift # サブプロセスなしのMach/IOKitハードウェアダッシュボード
-        │   └── WebSearchProvider.swift  # マルチエンジン検索とプレフィックスショートカット
-        ├── System/
-        │   ├── HotkeyManager.swift      # Carbonグローバルホットキー
-        │   ├── MenuBarController.swift  # メニューバーステータス項目と設定
-        │   ├── SettingsBackupController.swift # 設定インポート/エクスポートコントローラー
-        │   ├── SpotlightManager.swift   # macOS Spotlightの無効化/復元自動化
-        │   └── TerminalLauncher.swift   # 7つのターミナルエミュレータ用ランチャーとFinder検出
-        └── UI/
-            ├── CustomCommandsView.swift # カスタムコマンドマネージャーのオーバーレイ
-            ├── HistoryManagerView.swift # 検索履歴マネージャーのオーバーレイ
-            ├── PinnedCommandsView.swift # ピン留めされたコマンドマネージャーのオーバーレイ
-            ├── PreviewPaneView.swift    # リッチな詳細カードとライブプレビュー
-            ├── SearchFieldView.swift    # NSTextFieldブリッジとカスタムフィールドエディター
-            ├── SearchViewModel.swift    # リアクティブなビューモデルとキーイベントルーター
-            ├── SpotlightComponents.swift# 検索結果の行、ボタン、カテゴリヘッダー
-            ├── SpotlightPanel.swift     # Vibrancyを伴うフローティングボーダーレスNSPanel
-            └── SpotlightView.swift      # ルートのSwiftUIビュー
-```
 
 ---
 
