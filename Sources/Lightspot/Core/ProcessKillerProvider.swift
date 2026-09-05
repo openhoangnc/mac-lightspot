@@ -16,8 +16,16 @@ public final class ProcessKillerProvider: @unchecked Sendable {
     private let lock = NSLock()
     private var cachedCLIProcesses: [CachedProcess] = []
     private var lastProcessScan: Date = .distantPast
+    private var isScanningProcesses = false
+    private let processQueue = DispatchQueue(label: "com.lightspot.processkiller", qos: .utility)
 
     private init() {}
+
+    /// Primes the process snapshot without blocking, so the first `kill ...` keystroke
+    /// already has CLI processes to match against.
+    public func warmUp() {
+        _ = getCLIProcesses()
+    }
 
     func search(_ query: SearchQuery) -> [SearchResult] {
         let raw = query.raw
@@ -180,15 +188,36 @@ public final class ProcessKillerProvider: @unchecked Sendable {
 
     // MARK: - CLI Processes Snapshot
 
+    /// Non-blocking: returns the cached snapshot and schedules a refresh when it is
+    /// stale. `/bin/ps -axo` costs ~40 ms and this runs from `search()`, so calling it
+    /// inline stalled one keystroke every two seconds for the whole time the user was
+    /// typing a `kill ...` query.
     private func getCLIProcesses() -> [CachedProcess] {
         lock.lock()
+        let cached = cachedCLIProcesses
         let isStale = Date().timeIntervalSince(lastProcessScan) > 2.0
-        if !isStale && !cachedCLIProcesses.isEmpty {
-            let cached = cachedCLIProcesses
-            lock.unlock()
-            return cached
+        let shouldRefresh = isStale && !isScanningProcesses
+        if shouldRefresh {
+            // Claim the slot now so a burst of keystrokes queues one scan, not one each.
+            isScanningProcesses = true
+            lastProcessScan = Date()
         }
         lock.unlock()
+
+        if shouldRefresh {
+            processQueue.async { [weak self] in self?.scanCLIProcesses() }
+        }
+        return cached
+    }
+
+    /// Blocking `ps` snapshot. Only ever called on `processQueue`.
+    @discardableResult
+    private func scanCLIProcesses() -> [CachedProcess] {
+        defer {
+            lock.lock()
+            isScanningProcesses = false
+            lock.unlock()
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -239,7 +268,11 @@ public final class ProcessKillerProvider: @unchecked Sendable {
                     app.terminate()
                 }
             } else {
-                kill(pid, force ? SIGKILL : SIGTERM)
+                let sig = force ? SIGKILL : SIGTERM
+                if kill(pid, sig) != 0 && errno == EPERM {
+                    let flag = force ? "-9" : "-15"
+                    QuickActionsProvider.executePrivilegedWithTouchID(command: "kill \(flag) \(pid)")
+                }
             }
         }
     }

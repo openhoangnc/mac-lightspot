@@ -206,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Prime bookmarks and the open-tab list here so the first keystroke has data
         // to match against; both return immediately and refresh in the background.
         BrowserIntegrationProvider.shared.warmUp()
+        ProcessKillerProvider.shared.warmUp()
         refreshSystemState()
         viewModel.reset()
 

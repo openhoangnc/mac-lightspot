@@ -502,6 +502,12 @@ final class SearchViewModel: ObservableObject {
                 TerminalLauncher.openFolder(at: path)
             case .runInTerminal(let command):
                 TerminalLauncher.run(command)
+            case .runQuickAction(let script, let usesOsascript):
+                // Only plain shell scripts are meaningful in a Terminal. AppleScript sources and
+                // the `internal:` / `open:` sentinels would just print "command not found".
+                if !usesOsascript, !script.hasPrefix("internal:"), !script.hasPrefix("open:") {
+                    TerminalLauncher.run(script)
+                }
             case .launchApp(let path):
                 NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
             default:

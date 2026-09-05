@@ -198,7 +198,7 @@ struct CustomCommand: Identifiable, Codable, Sendable, Hashable {
 
         switch type {
         case .url:
-            let encoded = trimmedQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmedQuery
+            let encoded = URLQueryEncoder.encode(trimmedQuery) ?? trimmedQuery
             if target.contains("{query}") || target.contains("%s") || target.contains("%@") {
                 return target
                     .replacingOccurrences(of: "{query}", with: encoded)

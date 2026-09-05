@@ -23,6 +23,10 @@ public struct BrowserItem: Sendable, Hashable {
     public let host: String
     public let displayURL: String
     public let pathTokens: [String]
+    /// The path tokens joined back together. Every scoring tier that can clear the path
+    /// floor implies `token.contains(query)`, and a token is always a substring of this,
+    /// so one `contains` here rules out the whole per-token loop without false negatives.
+    let pathHaystack: String
 
     public init(
         title: String,
@@ -47,7 +51,9 @@ public struct BrowserItem: Sendable, Hashable {
 
         let urlLower = urlString.lowercased()
         let pathSeps = CharacterSet(charactersIn: " /?&=#-_.:")
-        self.pathTokens = urlLower.components(separatedBy: pathSeps).filter { !$0.isEmpty && $0 != "http" && $0 != "https" }
+        let tokens = urlLower.components(separatedBy: pathSeps).filter { !$0.isEmpty && $0 != "http" && $0 != "https" }
+        self.pathTokens = tokens
+        self.pathHaystack = tokens.joined(separator: " ")
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -66,6 +72,14 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     public static let shared = BrowserIntegrationProvider()
 
     private let lock = NSLock()
+    /// Tabs + bookmarks + history, de-duplicated by URL in priority order. Built once
+    /// per source change: doing it inside `search()` hashed ~1,800 URL strings into a
+    /// fresh Set and allocated a fresh array on every single keystroke.
+    private var cachedCorpus: [BrowserItem] = []
+    private var corpusIsStale = true
+    /// Bumped on every invalidation so a rebuild that raced a refresh does not publish
+    /// its now-outdated merge as fresh.
+    private var corpusGeneration: UInt64 = 0
     private var cachedBookmarks: [BrowserItem] = []
     private var bookmarksSignature: String = ""
     private var isRefreshingBookmarks = false
@@ -103,6 +117,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
             cachedHistory = []
             historySignature = ""
             lastHistoryCheck = .distantPast
+            invalidateCorpusLocked()
             lock.unlock()
             refreshHistoryIfNeeded(force: true)
         }
@@ -174,31 +189,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
         let history = cachedHistory
         lock.unlock()
 
-        var seenURLs = Set<String>()
-        var allItems: [BrowserItem] = []
-        allItems.reserveCapacity(tabs.count + bookmarks.count + history.count)
-
-        // 1. Open tabs have highest priority
-        for tab in tabs {
-            if seenURLs.insert(tab.urlString).inserted {
-                allItems.append(tab)
-            }
-        }
-
-        // 2. Bookmarks have next priority
-        for bm in bookmarks {
-            if seenURLs.insert(bm.urlString).inserted {
-                allItems.append(bm)
-            }
-        }
-
-        // 3. History has standard priority
-        for h in history {
-            if seenURLs.insert(h.urlString).inserted {
-                allItems.append(h)
-            }
-        }
-
+        let allItems = corpus(tabs: tabs, bookmarks: bookmarks, history: history)
         guard !allItems.isEmpty else { return [] }
 
         var matches: [(item: BrowserItem, score: Double)] = []
@@ -209,6 +200,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
         let acceptThreshold = 55.0
         let hostFloor = acceptThreshold / 0.9
         let pathFloor = acceptThreshold / 0.85
+        let q = query.lowercased
 
         for item in allItems {
             // Match against title
@@ -227,8 +219,10 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
                 }
             }
 
-            // Or match against path tokens in the detail URL (e.g. "stores", "apps")
-            if score == nil {
+            // Or match against path tokens in the detail URL (e.g. "stores", "apps").
+            // The haystack check is a pure pre-filter: it cannot reject anything a token
+            // would have matched, and it skips ~28,000 scoring calls per keystroke.
+            if score == nil && containsSubstring(item.pathHaystack, q) {
                 for token in item.pathTokens {
                     if let pScore = FuzzyMatcher.score(query: query, targetLower: token, targetTokens: [], targetInitials: nil, minimumScore: pathFloor) {
                         let weighted = pScore * 0.85
@@ -275,14 +269,53 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
         }
     }
 
+    /// Returns the merged, de-duplicated corpus, rebuilding it only when one of the
+    /// three sources has actually changed.
+    private func corpus(tabs: [BrowserItem], bookmarks: [BrowserItem], history: [BrowserItem]) -> [BrowserItem] {
+        lock.lock()
+        if !corpusIsStale {
+            let cached = cachedCorpus
+            lock.unlock()
+            return cached
+        }
+        let generation = corpusGeneration
+        lock.unlock()
+
+        var seenURLs = Set<String>(minimumCapacity: tabs.count + bookmarks.count + history.count)
+        var merged: [BrowserItem] = []
+        merged.reserveCapacity(tabs.count + bookmarks.count + history.count)
+
+        // Open tabs first, then bookmarks, then history — the first occurrence of a URL wins.
+        for item in tabs where seenURLs.insert(item.urlString).inserted { merged.append(item) }
+        for item in bookmarks where seenURLs.insert(item.urlString).inserted { merged.append(item) }
+        for item in history where seenURLs.insert(item.urlString).inserted { merged.append(item) }
+
+        lock.lock()
+        // Only publish as fresh if nothing invalidated underneath us mid-merge.
+        if corpusGeneration == generation {
+            cachedCorpus = merged
+            corpusIsStale = false
+        }
+        lock.unlock()
+        return merged
+    }
+
+    /// Must be called under `lock` whenever tabs, bookmarks or history are replaced.
+    private func invalidateCorpusLocked() {
+        corpusIsStale = true
+        corpusGeneration &+= 1
+    }
+
     // MARK: - Bookmarks Parsing (Default Browser Only)
 
     /// Re-parses bookmarks only when the source file actually changed. This used to
     /// dispatch a full parse on every keystroke (~12 ms of CPU for 337 bookmarks),
     /// piling up one background parse per character typed.
     public func refreshBookmarksIfNeeded() {
-        guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return }
-
+        // The throttle comes first. `defaultBrowser()` used to run ahead of it — a
+        // LaunchServices lookup plus an Info.plist read (~0.09 ms) on the main thread on
+        // *every* keystroke, twice over counting refreshHistoryIfNeeded. It only matters
+        // once we have actually decided to reparse, which happens on the worker queue.
         lock.lock()
         let tooSoon = Date().timeIntervalSince(lastBookmarksCheck) < bookmarksCheckInterval
         if tooSoon || isRefreshingBookmarks {
@@ -302,6 +335,8 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
                 self.lock.unlock()
             }
 
+            guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return }
+
             // Skip the parse entirely when the file has not changed.
             let signature = Self.bookmarksSignature(bundleID: bundleID)
             if let signature, signature == knownSignature { return }
@@ -309,6 +344,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
             let loaded = Self.loadDefaultBrowserBookmarks(name: name, bundleID: bundleID, appPath: appPath)
             self.lock.lock()
             self.cachedBookmarks = loaded
+            self.invalidateCorpusLocked()
             if let signature { self.bookmarksSignature = signature }
             self.lock.unlock()
         }
@@ -565,6 +601,7 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
         func finish(_ items: [BrowserItem]) {
             lock.lock()
             cachedTabs = items
+            invalidateCorpusLocked()
             lastTabsQuery = Date()
             isRefreshingTabs = false
             lock.unlock()
@@ -636,11 +673,13 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
     // MARK: - Browser History Parsing (Default Browser Only)
 
     public func refreshHistoryIfNeeded(force: Bool = false) {
-        guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return }
         let limit = historyLimitDays
         guard limit != .disabled else {
             lock.lock()
-            if !cachedHistory.isEmpty { cachedHistory = [] }
+            if !cachedHistory.isEmpty {
+                cachedHistory = []
+                invalidateCorpusLocked()
+            }
             lock.unlock()
             return
         }
@@ -664,12 +703,15 @@ public final class BrowserIntegrationProvider: @unchecked Sendable {
                 self.lock.unlock()
             }
 
+            guard let (name, bundleID, appPath) = Self.defaultBrowser() else { return }
+
             let signature = Self.historySignature(bundleID: bundleID)
             if !force, let signature, signature == knownSignature { return }
 
             let loaded = Self.loadDefaultBrowserHistory(name: name, bundleID: bundleID, appPath: appPath, days: limit.rawValue)
             self.lock.lock()
             self.cachedHistory = loaded
+            self.invalidateCorpusLocked()
             if let signature { self.historySignature = signature }
             self.lock.unlock()
         }

@@ -193,13 +193,16 @@ public enum ConversionEngine: Sendable {
         var targetCurrency: String?
 
         // Check for target override e.g. "100 USD in EUR" or "50 EUR to JPY" or "$100 in GBP"
-        let lower = clean.lowercased()
         let inToTokens = [" in ", " to "]
         var queryPart = clean
 
+        // Search `clean` itself (case-insensitively) rather than `lower`. A String index
+        // belongs to the instance that produced it, and `lowercased()` can change length
+        // ("İ" -> "i̇"), so subscripting `clean` with an index into `lower` trapped on such
+        // input. Splitting `clean` also keeps the case of symbols like "R$" intact below.
         for sep in inToTokens {
-            if let range = lower.range(of: sep) {
-                let targetCandidate = String(lower[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if let range = clean.range(of: sep, options: .caseInsensitive) {
+                let targetCandidate = String(clean[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
                 if baseCurrencyRates[targetCandidate] != nil {
                     targetCurrency = targetCandidate
                     queryPart = String(clean[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -279,9 +282,13 @@ public enum ConversionEngine: Sendable {
         return ConversionResult(value: valueString, subtitle: subtitleString)
     }
 
+    /// Whole amounts are shown without cents. The `1e12` ceiling is not cosmetic:
+    /// `Int64(_: Double)` traps for anything past `Int64.max`, and a query as ordinary
+    /// as "100000000000000000000 USD" reaches here straight off the keystroke path.
     private static func formatCurrency(_ val: Double) -> String {
-        if val >= 1000 && val == floor(val) {
-            return decimalFormatter.string(from: NSNumber(value: Int(val))) ?? String(format: "%.0f", val)
+        guard val.isFinite else { return String(format: "%.2f", val) }
+        if val >= 1000 && val == floor(val) && abs(val) < 1e12 {
+            return integerFormatter.string(from: NSNumber(value: Int64(val))) ?? String(format: "%.0f", val)
         }
         return currencyFormatter.string(from: NSNumber(value: val)) ?? String(format: "%.2f", val)
     }
@@ -429,18 +436,21 @@ public enum ConversionEngine: Sendable {
         guard let factor = toMeters[unit.lowercased()] else { return nil }
         let meters = amount * factor
 
-        let defaultTarget: String
-        let u = unit.lowercased()
-        if u.hasPrefix("km") { defaultTarget = "mi" }
-        else if u == "m" || u.hasPrefix("meter") { defaultTarget = "ft" }
-        else if u == "cm" || u == "mm" || u.hasPrefix("cent") || u.hasPrefix("milli") { defaultTarget = "in" }
-        else if u == "mi" || u.hasPrefix("mile") { defaultTarget = "km" }
-        else if u == "ft" || u.hasPrefix("foot") || u.hasPrefix("feet") { defaultTarget = "cm" }
-        else if u == "in" || u.hasPrefix("inch") { defaultTarget = "cm" }
-        else if u == "yd" || u.hasPrefix("yard") { defaultTarget = "m" }
-        else { defaultTarget = "m" }
+        // Keyed by the same aliases as the factor table. Prefix tests were used here and
+        // silently missed every long form ("kilometers".hasPrefix("km") is false), so
+        // "10 kilometers" answered in metres while "10 km" answered in miles.
+        let defaultTargets: [String: String] = [
+            "km": "mi", "kilometer": "mi", "kilometers": "mi",
+            "m": "ft", "meter": "ft", "meters": "ft",
+            "cm": "in", "centimeter": "in", "centimeters": "in",
+            "mm": "in", "millimeter": "in", "millimeters": "in",
+            "mi": "km", "mile": "km", "miles": "km",
+            "yd": "m", "yard": "m", "yards": "m",
+            "ft": "cm", "foot": "cm", "feet": "cm",
+            "in": "cm", "inch": "cm", "inches": "cm"
+        ]
 
-        let targetUnit = target ?? defaultTarget
+        let targetUnit = target ?? defaultTargets[unit.lowercased()] ?? "m"
         guard let targetFactor = toMeters[targetUnit.lowercased()] else { return nil }
 
         let converted = meters / targetFactor
@@ -465,16 +475,16 @@ public enum ConversionEngine: Sendable {
         guard let factor = toKg[unit.lowercased()] else { return nil }
         let kg = amount * factor
 
-        let defaultTarget: String
-        let u = unit.lowercased()
-        if u.hasPrefix("kg") { defaultTarget = "lbs" }
-        else if u == "g" || u.hasPrefix("gram") { defaultTarget = "oz" }
-        else if u == "mg" { defaultTarget = "g" }
-        else if u.hasPrefix("lb") { defaultTarget = "kg" }
-        else if u.hasPrefix("oz") { defaultTarget = "g" }
-        else { defaultTarget = "kg" }
+        let defaultTargets: [String: String] = [
+            "kg": "lbs", "kgs": "lbs", "kilogram": "lbs", "kilograms": "lbs",
+            "g": "oz", "gram": "oz", "grams": "oz",
+            "mg": "g", "milligram": "g", "milligrams": "g",
+            "lb": "kg", "lbs": "kg", "pound": "kg", "pounds": "kg",
+            "oz": "g", "ounce": "g", "ounces": "g",
+            "st": "kg", "stone": "kg"
+        ]
 
-        let targetUnit = target ?? defaultTarget
+        let targetUnit = target ?? defaultTargets[unit.lowercased()] ?? "kg"
         guard let targetFactor = toKg[targetUnit.lowercased()] else { return nil }
 
         let converted = kg / targetFactor
@@ -498,15 +508,15 @@ public enum ConversionEngine: Sendable {
         guard let factor = toMB[unit.lowercased()] else { return nil }
         let mb = amount * factor
 
-        let defaultTarget: String
-        let u = unit.lowercased()
-        if u.hasPrefix("tb") { defaultTarget = "gb" }
-        else if u.hasPrefix("gb") { defaultTarget = "mb" }
-        else if u.hasPrefix("mb") { defaultTarget = "gb" }
-        else if u.hasPrefix("kb") { defaultTarget = "mb" }
-        else { defaultTarget = "kb" }
+        let defaultTargets: [String: String] = [
+            "tb": "gb", "terabyte": "gb", "terabytes": "gb",
+            "gb": "mb", "gigabyte": "mb", "gigabytes": "mb",
+            "mb": "gb", "megabyte": "gb", "megabytes": "gb",
+            "kb": "mb", "kilobyte": "mb", "kilobytes": "mb",
+            "b": "kb", "byte": "kb", "bytes": "kb"
+        ]
 
-        let targetUnit = target ?? defaultTarget
+        let targetUnit = target ?? defaultTargets[unit.lowercased()] ?? "kb"
         guard let targetFactor = toMB[targetUnit.lowercased()] else { return nil }
 
         let converted = mb / targetFactor

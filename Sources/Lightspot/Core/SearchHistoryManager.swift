@@ -185,7 +185,12 @@ final class SearchHistoryManager: @unchecked Sendable {
     /// Record a selection from search results.
     func recordSelection(result: SearchResult, query: String, date: Date = Date()) {
         let canonical = canonicalId(for: result.id)
-        let originalCategory = result.category == .topHit ? .applications : result.category
+        // A promoted Top Hit can come from any category; `promotedFrom` carries the real
+        // one. Falling back to `.applications` mislabelled every promoted project,
+        // setting, quick action and web result in the history view.
+        let originalCategory: ResultCategory = result.category == .topHit
+            ? (result.promotedFrom ?? .applications)
+            : result.category
 
         recordSelection(
             itemId: canonical,

@@ -189,7 +189,7 @@ public final class WebSearchProvider: @unchecked Sendable {
 
         let engine = defaultEngine
         let searchURL: URL? = {
-            guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
+            guard let encoded = URLQueryEncoder.encode(trimmed) else { return nil }
             return URL(string: String(format: engine.urlTemplate, encoded))
         }()
 
@@ -251,7 +251,7 @@ public final class WebSearchProvider: @unchecked Sendable {
             return nil
         }
 
-        guard let encoded = queryPart.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+        guard let encoded = URLQueryEncoder.encode(queryPart),
               let url = URL(string: String(format: matched.urlTemplate, encoded)) else {
             return nil
         }

@@ -84,18 +84,25 @@ public final class SnippetsStore: @unchecked Sendable {
     public static func expandVariables(in template: String) -> String {
         var expanded = template
 
+        // Every branch below is gated on the placeholder actually being present:
+        // `search()` expands each matching snippet on every keystroke, and building a
+        // DateFormatter costs far more than the substring check that avoids it.
+        guard expanded.contains("{{") else { return expanded }
+
         let now = Date()
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
 
         if expanded.contains("{{date}}") {
+            let dateFormatter = DateFormatter()
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
             dateFormatter.dateFormat = "yyyy-MM-dd"
             expanded = expanded.replacingOccurrences(of: "{{date}}", with: dateFormatter.string(from: now))
         }
 
         if expanded.contains("{{time}}") {
-            dateFormatter.dateFormat = "HH:mm:ss"
-            expanded = expanded.replacingOccurrences(of: "{{time}}", with: dateFormatter.string(from: now))
+            let timeFormatter = DateFormatter()
+            timeFormatter.locale = Locale(identifier: "en_US_POSIX")
+            timeFormatter.dateFormat = "HH:mm:ss"
+            expanded = expanded.replacingOccurrences(of: "{{time}}", with: timeFormatter.string(from: now))
         }
 
         if expanded.contains("{{iso}}") {

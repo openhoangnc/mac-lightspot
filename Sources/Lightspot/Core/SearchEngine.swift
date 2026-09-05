@@ -1,11 +1,10 @@
 import AppKit
 
-final class SearchEngine: @unchecked Sendable {
+/// Fully synchronous and in-memory: there is deliberately no debounce or work queue
+/// here, because a complete fan-out across every provider costs well under a millisecond.
+final class SearchEngine: Sendable {
     static let shared = SearchEngine()
 
-    private var currentWorkItem: DispatchWorkItem?
-    private let searchQueue = DispatchQueue(label: "com.lightspot.search", qos: .userInteractive)
-    private let debounceInterval: TimeInterval = 0.15
     private let maxResultsPerCategory = 4
     /// The history is the one open-ended category, so it gets a taller cap than the
     /// curated ones — four rows is not enough to find a command among near-misses.
@@ -126,7 +125,8 @@ final class SearchEngine: @unchecked Sendable {
                 category: .topHit,
                 score: topHit.score,
                 action: topHit.action,
-                isPinned: topHit.isPinned
+                isPinned: topHit.isPinned,
+                promotedFrom: topHit.category
             )
             grouped[.topHit] = [promoted]
         }
@@ -156,7 +156,7 @@ final class SearchEngine: @unchecked Sendable {
 
     /// Ordered categories for display
     static func orderedCategories(from grouped: [ResultCategory: [SearchResult]]) -> [ResultCategory] {
-        ResultCategory.allCases.filter { grouped[$0] != nil }
+        ResultCategory.displayOrder.filter { grouped[$0] != nil }
     }
 
     /// Flat list of all results in display order

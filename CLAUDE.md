@@ -31,8 +31,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 24 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, and system HUD.
-- `deep_verify.swift`: 84 live system checks verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
+- `test_engine.swift`: 24 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, and privileged execution.
+- `deep_verify.swift`: 88 live system checks verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
@@ -50,26 +50,42 @@ Three source layers under `Sources/Lightspot/`:
 
 `SearchViewModel.performSearch` → `SearchEngine.searchImmediate(SearchQuery)` → synchronous fan-out to providers → merge.
 
-`SearchEngine` is **fully synchronous and in-memory**. A complete search across all providers executes in `< 1.0 ms` on the main thread without debouncing lag.
+`SearchEngine` is **fully synchronous and in-memory**, with no debounce. A complete
+fan-out across every provider costs a few milliseconds on the main thread — measured at
+**~2.8 ms** with 7 days of browser history (1,499 entries) plus 337 bookmarks and 1,200
+shell-history commands resident, and well under 1 ms without the browser corpus. The
+browser provider dominates whatever the total is; measure with a benchmark rather than
+assuming, and see invariant 0 before adding work to a `search()`.
 
-Search results are grouped by `ResultCategory`:
+Display order is `ResultCategory.displayOrder` — an explicit list, deliberately *not*
+`allCases` (which follows declaration order, so moving a case would silently reshuffle
+the panel). A test asserts it stays complete and duplicate-free. Raw values are separate
+and must stay stable: they are persisted in search history.
+
 1. `topHit` (promoted highest non-exempt match)
 2. `calculator` (math calculations and relaxed unit/currency conversions)
 3. `devTools` (UUID, Base64, Hash, JWT, JSON, Epoch, Color Swatch)
-4. `systemInfo` (Hardware HUD: CPU, RAM, Disk, Battery, Uptime via `sys`)
-5. `applications` (Installed macOS apps)
-6. `recentProjects` (VS Code, Cursor, Zed, JetBrains, Sublime Text)
-7. `processKiller` (Interactive process/port terminator via `kill`)
-8. `snippets` (Text expansion templates)
-9. `clipboard` (In-memory clipboard history via `clip`)
-10. `browser` (Default browser bookmarks and open tabs)
-11. `settings` (macOS System Settings deep links)
-12. `quickActions` (Flush DNS, Show Desktop, Downloads, Finder, IP, Terminal in Finder)
-13. `customCommands` (User-defined shell/AppleScript commands)
-14. `shellHistory` (zsh command history)
-15. `webSearch` (Multi-engine search and prefixes `gh`, `yt`, `so`, etc.)
+4. `applications` (Installed macOS apps)
+5. `recentProjects` (VS Code, Cursor, Zed, JetBrains, Sublime Text)
+6. `snippets` (Text expansion templates)
+7. `clipboard` (In-memory clipboard history via `clip`)
+8. `browser` (Default browser bookmarks, history and open tabs)
+9. `systemSettings` (macOS System Settings deep links)
+10. `quickActions` — also carries the Hardware HUD (`sys`) and the process/port killer (`kill`)
+11. `customCommands` (User-defined shell/AppleScript commands)
+12. `shellHistory` (zsh command history)
+13. `webSearch` (Multi-engine search and prefixes `gh`, `yt`, `so`, etc.)
+
+Calculator and dev tools lead because they only produce a row when the query actually
+parses as one, so when they fire they are almost certainly the intent. Web search trails
+because it is the fallback that is always present.
 
 Scoring tiers: exact 100, prefix 95, word-boundary prefix 85, initials 80, substring 65, subsequence 40.
+
+The substring tier goes through `containsSubstring` (Models.swift), not `String.contains`:
+the latter is a Foundation extension that forwards to `range(of:)` and collates, costing
+~3.3 µs against a 90-character haystack versus ~0.11 µs byte-wise. It runs once per
+candidate per keystroke across every provider, so the difference is the search.
 
 ### Keyboard Shortcuts & Action Modifiers
 
@@ -116,8 +132,17 @@ Scoring tiers: exact 100, prefix 95, word-boundary prefix 85, initials 80, subst
    `activeFinderFolderPath` at launch time), keep it as a separate method from the
    non-blocking one the search path uses (`cachedFinderFolderPath`).
 
+   Also watch for work that is technically in-memory but *scales*: rebuilding a merged,
+   de-duplicated corpus (`BrowserIntegrationProvider`), lowercasing an entry's full
+   content (`ClipboardHistoryManager`), or building a `DateFormatter` (`SnippetsStore`)
+   all ran per keystroke at some point. Pre-compute on write, not on read — `AppInfo`,
+   `ShellCommand`, `BrowserItem` and `ClipboardEntry` all cache their lowercased and
+   tokenized forms at construction for exactly this reason.
+
    Known remaining exception: `ProcessKillerProvider.findProcessesOnPort` shells out to
-   `lsof` (~55 ms) inline, but only for `kill <port>` queries.
+   `lsof` (~55 ms) inline, but only for `kill <port>` queries. Its sibling `ps -axo`
+   snapshot is *not* an exception — it refreshes on a background queue behind a
+   staleness check and in-flight flag, primed by `warmUp()` when the panel is shown.
 
 1. **Subprocess Pipe Deadlock Prevention**:
    When using `Process` with a `Pipe` on macOS (e.g. `ps`, `lsof`, `sqlite3`, or `osascript`), **always** read data via `pipe.fileHandleForReading.readDataToEndOfFile()` **before** calling `process.waitUntilExit()`. Connecting standardError to `FileHandle.nullDevice` prevents pipe buffer overflow deadlocks.
@@ -141,3 +166,5 @@ Scoring tiers: exact 100, prefix 95, word-boundary prefix 85, initials 80, subst
    - `lightspot_custom_commands`
    - `lightspot_snippets`
    - `lightspot_auto_start_enabled`
+7. **Privileged Commands & Headless Touch ID Execution**:
+   Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.

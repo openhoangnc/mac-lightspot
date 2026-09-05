@@ -4,19 +4,31 @@ import Foundation
 // MARK: - Clipboard Entry Model
 
 public struct ClipboardEntry: Identifiable, Sendable, Hashable {
+    /// Only this much of an entry is matched against. A clipboard entry can be an entire
+    /// file, and `search()` scores every one of the 50 entries on every keystroke.
+    static let searchableCharacters = 4096
+
     public let id: UUID
     public let content: String
     public let timestamp: Date
     public let characterCount: Int
     public let firstLine: String
+    /// Pre-computed for the same reason `AppInfo` and `ShellCommand` pre-compute theirs:
+    /// lowercasing the full content of every entry on every keystroke allocated megabytes
+    /// per character typed once anything sizeable had been copied.
+    let searchableLowercase: String
 
     public init(content: String, timestamp: Date = Date()) {
         self.id = UUID()
         self.content = content
         self.timestamp = timestamp
         self.characterCount = content.count
-        let line = content.components(separatedBy: .newlines).first?.trimmingCharacters(in: .whitespaces) ?? ""
+        // Scanning only the head avoids walking a multi-megabyte paste to find one line.
+        let head = content.prefix(200)
+        let line = (head.firstIndex(where: { $0.isNewline }).map { head[..<$0] } ?? head)
+            .trimmingCharacters(in: .whitespaces)
         self.firstLine = line.isEmpty ? "Empty" : String(line.prefix(80))
+        self.searchableLowercase = String(content.prefix(Self.searchableCharacters)).lowercased()
     }
 }
 
@@ -157,11 +169,14 @@ public final class ClipboardHistoryManager: @unchecked Sendable {
         var matches: [(entry: ClipboardEntry, score: Double)] = []
 
         for entry in items {
-            let lowerContent = entry.content.lowercased()
-            if let score = FuzzyMatcher.score(query: subQuery, targetLower: lowerContent, targetTokens: [], targetInitials: nil) {
-                if score >= 60 {
-                    matches.append((entry, score))
-                }
+            if let score = FuzzyMatcher.score(
+                query: subQuery,
+                targetLower: entry.searchableLowercase,
+                targetTokens: [],
+                targetInitials: nil,
+                minimumScore: 60
+            ), score >= 60 {
+                matches.append((entry, score))
             }
         }
 

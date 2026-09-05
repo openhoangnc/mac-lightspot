@@ -52,6 +52,11 @@ Lightspot brings the modern floating pill design and translucent glass aesthetic
 - **Multi-Engine Web Search**: Instant web search with built-in prefix shortcuts:
   - `gh <repo>` (GitHub), `yt <video>` (YouTube), `so <query>` (StackOverflow), `ddg <query>` (DuckDuckGo), `npm <pkg>`, `crates <crate>`, `wiki <article>`, `mdn <api>`, `brew <formula>`.
 - **zsh History & Pinned Commands**: Search your `~/.zsh_history` (or `$HISTFILE`) with instant Terminal execution. Pin frequently used commands (`⌘P`) to keep them at the top.
+- **Quick Actions & Privileged Commands with Touch ID**:
+  - **Flush DNS Cache**: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`
+  - **Purge Inactive Memory**: `sudo purge`
+  - **Headless Touch ID Execution**: Privileged commands automatically execute via a background pseudo-terminal (PTY) invoking `pam_tid.so` for instant **Touch ID (fingerprint)** authorization — **without ever opening a Terminal window**!
+  - **Toggle Touch ID for Sudo**: 1-click toggle to enable or disable persistent Touch ID authentication for `sudo` in Terminal via `/etc/pam.d/sudo_local`.
 - **macOS System Settings**: 30+ deep links (`x-apple.systempreferences:...`) directly opening settings panes.
 - **Custom Commands**: Create and organize custom URL, Terminal, AppleScript, or shell actions with full parameter expansion (`⌘⇧C`).
 - **Global Hotkey**: Configurable **`⌘Space`**, **`⌘⇧Space`**, or **`⌥Space`**.
@@ -101,7 +106,7 @@ Compiles the release binary with `-Osize -wmo`, strips debug symbols, bundles `I
 # Core logic & engine tests (24 test suites)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
 
-# Live system checks (84 checks)
+# Live system checks (88 checks)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 

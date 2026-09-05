@@ -925,6 +925,32 @@ struct TestRunner {
         assertTrue(currResult != nil, "100 USD in EUR converts")
         assertEqual(currResult?.value, "92.00 EUR", "100 USD in EUR is 92.00 EUR")
 
+        // Regression: formatCurrency used Int(_: Double), which traps past Int.max.
+        // "100000000000000000000 USD" crashed the app straight from the search field.
+        let hugeAmount = ConversionEngine.convert("100000000000000000000 USD")
+        assertTrue(hugeAmount != nil, "Astronomically large currency amounts convert instead of trapping")
+
+        // Regression: the " in "/" to " split took a range from `lower` and applied it to
+        // `clean`. "İ".lowercased() is longer than "İ", so the index ran past the end.
+        let unicodeSplit = ConversionEngine.convert(String(repeating: "\u{0130}", count: 20) + " in eur")
+        assertTrue(unicodeSplit == nil, "Unicode that changes length when lowercased does not trap the currency split")
+
+        // Regression: splitting on `clean` must preserve case so "R$" is still recognised.
+        let brlResult = ConversionEngine.convert("R$100 in USD")
+        assertTrue(brlResult?.subtitle.contains("BRL") == true, "R$ prefix survives the in/to split")
+
+        // Whole amounts keep their thousands separators (decimalFormatter had grouping off).
+        assertEqual(ConversionEngine.convert("1500 usd in eur")?.value, "1,380 EUR", "Whole currency amounts keep their thousands separators")
+
+        // Regression: default targets were chosen by prefix tests that every long form
+        // missed, so "10 kilograms" answered "10 kg" and "10 gigabytes" answered in KB.
+        assertTrue(ConversionEngine.convert("10 kilometers")?.value.contains("mi") == true, "kilometers defaults to miles like km")
+        assertTrue(ConversionEngine.convert("10 kilograms")?.value.contains("lbs") == true, "kilograms defaults to lbs like kg")
+        assertTrue(ConversionEngine.convert("10 ounces")?.value.contains("g") == true, "ounces defaults to grams like oz")
+        assertTrue(ConversionEngine.convert("10 milligrams")?.value.contains("g") == true, "milligrams defaults to grams like mg")
+        assertEqual(ConversionEngine.convert("16 gigabytes")?.value, "16,384 MB", "gigabytes defaults to MB like gb")
+        assertTrue(ConversionEngine.convert("2 terabytes")?.value.contains("GB") == true, "terabytes defaults to GB like tb")
+
         // Verify CalculatorEngine.evaluateExtended connects properly
         let ext = CalculatorEngine.evaluateExtended("72F")
         assertTrue(ext != nil, "CalculatorEngine.evaluateExtended handles 72F")
@@ -1086,6 +1112,46 @@ struct TestRunner {
             assertTrue(termFinderResults.isEmpty, "Terminal in Finder Folder is hidden when no Finder window is open")
         }
 
+        // Test Sudo Stripping & Privilege Detection
+        assertEqual(QuickActionsProvider.stripSudo(from: "sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder"),
+                    "dscacheutil -flushcache; killall -HUP mDNSResponder", "Strips leading and chained sudo")
+        assertEqual(QuickActionsProvider.stripSudo(from: "sudo purge"), "purge", "Strips sudo from single command")
+        assertEqual(QuickActionsProvider.stripSudo(from: "echo 1 && sudo echo 2"), "echo 1 && echo 2", "Strips chained && sudo")
+        assertEqual(QuickActionsProvider.stripSudo(from: "echo 1 || sudo echo 2"), "echo 1 || echo 2", "Strips chained || sudo")
+        assertEqual(QuickActionsProvider.stripSudo(from: "cat foo | sudo tee bar"), "cat foo | tee bar", "Strips piped | sudo")
+        assertEqual(QuickActionsProvider.stripSudo(from: "sudo -u postgres psql"), "sudo -u postgres psql",
+                    "Keeps sudo that carries its own options (stripping would promote -u to the command)")
+        assertEqual(QuickActionsProvider.stripSudo(from: "echo \"install sudo now\""), "echo \"install sudo now\"",
+                    "Leaves a mid-argument sudo word alone")
+        assertEqual(QuickActionsProvider.normalizePrivilegedCommand("admin:sudo purge"), "purge",
+                    "normalizePrivilegedCommand strips both the admin: marker and sudo")
+
+        assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: "sudo dscacheutil -flushcache"), "sudo prefix requires admin")
+        assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: "dscacheutil -flushcache; killall -HUP mDNSResponder"), "mDNSResponder requires admin")
+        assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: "purge"), "purge requires admin")
+        assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: "sudo purge"), "sudo purge requires admin")
+        assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: "admin:whoami"), "admin: prefix requires admin")
+        assertTrue(!QuickActionsProvider.requiresAdministratorPrivileges(script: "echo hello"), "echo hello does not require admin")
+        assertTrue(!QuickActionsProvider.requiresAdministratorPrivileges(script: "pmset sleepnow"), "pmset sleepnow does not require admin")
+        assertTrue(!QuickActionsProvider.requiresAdministratorPrivileges(script: "grep mDNSResponder /var/log/system.log"),
+                   "Merely mentioning mDNSResponder does not require admin")
+        assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: "internal:toggle-touchid-sudo"),
+                   "Actions flagged requiresAdmin in the action table are detected by script")
+
+        // Every requiresAdmin action must actually route through the privileged path.
+        for action in QuickActionsProvider.defaultActions where action.requiresAdmin {
+            assertTrue(QuickActionsProvider.requiresAdministratorPrivileges(script: action.script),
+                       "Admin action '\(action.name)' is detected as privileged")
+        }
+
+        let purgeResults = qaProvider.search(SearchQuery("purge"))
+        assertTrue(!purgeResults.isEmpty, "Purge search finds Purge Inactive Memory")
+        assertEqual(purgeResults.first?.title, "Purge Inactive Memory", "Top result for purge is Purge Inactive Memory")
+
+        let touchIdResults = qaProvider.search(SearchQuery("touch id sudo"))
+        assertTrue(!touchIdResults.isEmpty, "Touch ID sudo search finds Toggle Touch ID for Sudo")
+        assertEqual(touchIdResults.first?.title, "Toggle Touch ID for Sudo", "Top result for touch id sudo is Toggle Touch ID for Sudo")
+
         print("✅ Enhanced Quick Actions passed all tests!\n")
 
         // Test 19: Universal Recent Projects Provider (Multi-IDE)
@@ -1186,6 +1252,89 @@ struct TestRunner {
 
         let snippetSearch = SnippetsStore.shared.search(SearchQuery("date"))
         assertTrue(!snippetSearch.isEmpty, "Snippet search finds Date snippet")
+
+        // `displayOrder` drives the UI. A category missing from it would vanish from the
+        // panel entirely, and duplicates would render a section twice.
+        assertEqual(ResultCategory.displayOrder.count, ResultCategory.allCases.count,
+                    "displayOrder covers every ResultCategory")
+        assertEqual(Set(ResultCategory.displayOrder).count, ResultCategory.displayOrder.count,
+                    "displayOrder has no duplicates")
+        for category in ResultCategory.allCases {
+            assertTrue(ResultCategory.displayOrder.contains(category),
+                       "\(category.displayName) has a display position")
+        }
+        assertEqual(ResultCategory.displayOrder.first, .topHit, "Top Hit sorts first")
+        assertEqual(ResultCategory.displayOrder.last, .webSearch, "Web Search is the trailing fallback")
+        assertTrue(ResultCategory.displayOrder.firstIndex(of: .calculator)!
+                   < ResultCategory.displayOrder.firstIndex(of: .applications)!,
+                   "Calculator outranks Applications")
+        assertTrue(ResultCategory.displayOrder.firstIndex(of: .devTools)!
+                   < ResultCategory.displayOrder.firstIndex(of: .shellHistory)!,
+                   "Developer Tools outrank Terminal History")
+
+        // The engine renders in displayOrder, not in enum declaration order.
+        let orderProbe: [ResultCategory: [SearchResult]] = [
+            .webSearch: [SearchResult(id: "w", title: "w", subtitle: "", iconType: .systemSymbol(name: "globe"),
+                                      category: .webSearch, score: 10, action: .copyToClipboard("w"))],
+            .calculator: [SearchResult(id: "c", title: "c", subtitle: "", iconType: .systemSymbol(name: "equal"),
+                                       category: .calculator, score: 90, action: .copyToClipboard("c"))],
+            .applications: [SearchResult(id: "a", title: "a", subtitle: "", iconType: .systemSymbol(name: "app"),
+                                         category: .applications, score: 95, action: .copyToClipboard("a"))]
+        ]
+        assertEqual(SearchEngine.orderedCategories(from: orderProbe), [.calculator, .applications, .webSearch],
+                    "orderedCategories renders calculator above applications above web search")
+
+        // Regression: FuzzyMatcher's substring tier used String.contains, a Foundation
+        // collating search ~31x slower than a byte-wise scan. Verify the replacement
+        // agrees with Foundation on the cases the matcher actually sees.
+        for (hay, needle) in [("hello world", "lo w"), ("hello", "hello"), ("a", "abc"),
+                              ("h\u{e9}llo", "\u{e9}ll"), ("abc", "abcd"), ("aaab", "aab"),
+                              ("safari browser", "saf"), ("safari", "zzz")] {
+            assertEqual(containsSubstring(hay, needle), hay.contains(needle),
+                        "containsSubstring(\"\(hay)\", \"\(needle)\") matches Foundation")
+        }
+        assertEqual(FuzzyMatcher.score(query: SearchQuery("ari"), targetLower: "safari", targetTokens: ["safari"]), 65,
+                    "Substring tier still scores 65")
+        assertTrue(FuzzyMatcher.score(query: SearchQuery("zzq"), targetLower: "safari", targetTokens: ["safari"]) == nil,
+                   "Non-matching query still scores nil")
+
+        // Regression: `.urlQueryAllowed` leaves &, =, + and ? intact, so a query became
+        // part of the URL's structure — "c++" reached the engine as "c  ".
+        for (raw, mustNotContain) in [("c++", "q=c++"), ("a&b=c", "q=a&b=c"), ("1+1", "q=1+1")] {
+            let webResults = WebSearchProvider.shared.search(SearchQuery(raw))
+            guard case .openWebSearch(let url)? = webResults.last?.action else {
+                assertTrue(false, "Web search produced a URL for '\(raw)'")
+                continue
+            }
+            assertTrue(!url.absoluteString.contains(mustNotContain),
+                       "'\(raw)' is percent-encoded as a query value, not left as URL structure")
+            assertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                            .queryItems?.first(where: { $0.name == "q" })?.value,
+                        raw, "'\(raw)' round-trips through the search URL intact")
+        }
+
+        // Custom URL commands share the same encoder.
+        let encodedCmd = CustomCommand(name: "Issue", type: .url, target: "https://example.com/s?x=1", keywords: ["iss"])
+        assertTrue(encodedCmd.interpolatedTarget(with: "a&b").hasSuffix("q=a%26b"),
+                   "Custom URL command encodes & in the interpolated query")
+
+        // Regression: DevTools ids were built from String.hashValue, which is seeded per
+        // process, so every launch produced ids that could never match persisted history.
+        let b64a = DevToolsProvider.shared.search(SearchQuery("b64 hello"))
+        let b64b = DevToolsProvider.shared.search(SearchQuery("b64 hello"))
+        assertEqual(b64a.first?.id, b64b.first?.id, "DevTools ids are deterministic for the same input")
+        assertTrue(b64a.first?.id.hasPrefix("dev-b64-") == true, "DevTools id keeps its stable prefix")
+        assertTrue(DevToolsProvider.shared.search(SearchQuery("b64 world")).first?.id != b64a.first?.id,
+                   "DevTools ids still differ between inputs")
+
+        // Regression: clipboard search lowercased every entry's full content per keystroke.
+        clipManager.clearHistory()
+        clipManager.addEntry(content: "MiXeD CaSe Lightspot Needle " + String(repeating: "x", count: 200_000))
+        assertTrue(!clipManager.search(SearchQuery("clip needle")).isEmpty,
+                   "Clipboard search matches case-insensitively via the pre-computed field")
+        assertEqual(clipManager.allEntries().first?.firstLine.hasPrefix("MiXeD CaSe"), true,
+                    "firstLine is derived from the head of a large entry")
+        clipManager.clearHistory()
 
         // Test 24: System Info Provider (Mach/IOKit)
         print("Testing SystemInfoProvider...")

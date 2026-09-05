@@ -9,6 +9,13 @@ public final class DevToolsProvider: Sendable {
 
     private init() {}
 
+    /// Swift seeds `String` hashing randomly per process, so ids built from it never
+    /// matched across launches: every activation wrote a fresh, permanently unreachable
+    /// row into the persisted search history and evicted a real one. SHA-256 is stable.
+    private static func stableID(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
     func search(_ query: SearchQuery) -> [SearchResult] {
         if query.isEmpty { return [] }
 
@@ -36,7 +43,7 @@ public final class DevToolsProvider: Sendable {
             if !text.isEmpty, let data = text.data(using: .utf8) {
                 let encoded = data.base64EncodedString()
                 return [SearchResult(
-                    id: "dev-b64-\(text.hashValue)",
+                    id: "dev-b64-\(Self.stableID(text))",
                     title: encoded,
                     subtitle: "Base64 Encoded · '\(text)'",
                     iconType: .systemSymbol(name: "lock.rectangle.fill"),
@@ -53,7 +60,7 @@ public final class DevToolsProvider: Sendable {
             let text = String(trimmed.dropFirst(prefixLen)).trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty, let data = Data(base64Encoded: text), let decoded = String(data: data, encoding: .utf8) {
                 return [SearchResult(
-                    id: "dev-b64d-\(text.hashValue)",
+                    id: "dev-b64d-\(Self.stableID(text))",
                     title: decoded,
                     subtitle: "Base64 Decoded Text",
                     iconType: .systemSymbol(name: "lock.open.trianglebadge.exclamationmark.fill"),
@@ -69,7 +76,7 @@ public final class DevToolsProvider: Sendable {
             let text = String(trimmed.dropFirst("urlencode ".count))
             if let encoded = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
                 return [SearchResult(
-                    id: "dev-urlencode-\(text.hashValue)",
+                    id: "dev-urlencode-\(Self.stableID(text))",
                     title: encoded,
                     subtitle: "URL Percent-Encoded",
                     iconType: .systemSymbol(name: "link"),
@@ -85,7 +92,7 @@ public final class DevToolsProvider: Sendable {
             let text = String(trimmed.dropFirst("urldecode ".count))
             if let decoded = text.removingPercentEncoding {
                 return [SearchResult(
-                    id: "dev-urldecode-\(text.hashValue)",
+                    id: "dev-urldecode-\(Self.stableID(text))",
                     title: decoded,
                     subtitle: "URL Percent-Decoded",
                     iconType: .systemSymbol(name: "link.badge.plus"),
@@ -151,7 +158,7 @@ public final class DevToolsProvider: Sendable {
 
                 return [
                     SearchResult(
-                        id: "dev-hash-sha256-\(text.hashValue)",
+                        id: "dev-hash-sha256-\(Self.stableID(text))",
                         title: sha256,
                         subtitle: "SHA-256 · '\(text)'",
                         iconType: .systemSymbol(name: "number.square.fill"),
@@ -160,7 +167,7 @@ public final class DevToolsProvider: Sendable {
                         action: .copyToClipboard(sha256)
                     ),
                     SearchResult(
-                        id: "dev-hash-md5-\(text.hashValue)",
+                        id: "dev-hash-md5-\(Self.stableID(text))",
                         title: md5,
                         subtitle: "MD5 · '\(text)'",
                         iconType: .systemSymbol(name: "number.square"),
@@ -169,7 +176,7 @@ public final class DevToolsProvider: Sendable {
                         action: .copyToClipboard(md5)
                     ),
                     SearchResult(
-                        id: "dev-hash-sha1-\(text.hashValue)",
+                        id: "dev-hash-sha1-\(Self.stableID(text))",
                         title: sha1,
                         subtitle: "SHA-1 · '\(text)'",
                         iconType: .systemSymbol(name: "number.square"),
@@ -199,7 +206,7 @@ public final class DevToolsProvider: Sendable {
             let jsonStr = lower.hasPrefix("json ") ? String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines) : trimmed
             if let formatted = Self.formatJSON(jsonStr) {
                 return [SearchResult(
-                    id: "dev-json-\(jsonStr.hashValue)",
+                    id: "dev-json-\(Self.stableID(jsonStr))",
                     title: "Formatted JSON",
                     subtitle: formatted.replacingOccurrences(of: "\n", with: " "),
                     iconType: .systemSymbol(name: "curlybraces"),
@@ -309,7 +316,7 @@ public final class DevToolsProvider: Sendable {
         }
 
         return SearchResult(
-            id: "dev-jwt-\(token.prefix(16).hashValue)",
+            id: "dev-jwt-\(stableID(String(token.prefix(16))))",
             title: "Decoded JWT Payload",
             subtitle: prettyString.replacingOccurrences(of: "\n", with: " "),
             iconType: .systemSymbol(name: "shield.lefthalf.filled"),

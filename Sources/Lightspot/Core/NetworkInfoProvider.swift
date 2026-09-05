@@ -32,14 +32,22 @@ public final class NetworkInfoProvider: @unchecked Sendable {
         while let cursor = ptr {
             let interface = cursor.pointee
             let flags = Int32(interface.ifa_flags)
-            let addr = interface.ifa_addr.pointee
+
+            // getifaddrs leaves ifa_addr NULL for interfaces that carry no address
+            // (down tunnels, some virtual devices). Swift imports it as an implicitly
+            // unwrapped pointer, so dereferencing it unchecked traps.
+            guard let addrPtr = interface.ifa_addr else {
+                ptr = cursor.pointee.ifa_next
+                continue
+            }
+            let addr = addrPtr.pointee
 
             // Check for IPv4 and non-loopback
             if addr.sa_family == UInt8(AF_INET) && (flags & IFF_LOOPBACK) == 0 && (flags & IFF_UP) != 0 {
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                 if getnameinfo(
-                    cursor.pointee.ifa_addr,
-                    socklen_t(cursor.pointee.ifa_addr.pointee.sa_len),
+                    addrPtr,
+                    socklen_t(addr.sa_len),
                     &hostname,
                     socklen_t(hostname.count),
                     nil,

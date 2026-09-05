@@ -61,12 +61,16 @@ public final class SystemInfoProvider: @unchecked Sendable {
     }
 
     public func collectSystemInfo() -> SystemMetrics {
+        // Bind once: reading `.used` and `.total` off separate calls ran the Mach VM
+        // query and the statfs on "/" twice each, on the keystroke path.
+        let ram = getRAMUsage()
+        let disk = getDiskUsage()
         return SystemMetrics(
             cpuUsage: getCPUUsage(),
-            ramUsedGB: getRAMUsage().used,
-            ramTotalGB: getRAMUsage().total,
-            diskFreeGB: getDiskUsage().free,
-            diskTotalGB: getDiskUsage().total,
+            ramUsedGB: ram.used,
+            ramTotalGB: ram.total,
+            diskFreeGB: disk.free,
+            diskTotalGB: disk.total,
             battery: getBatteryStatus(),
             uptime: getUptime()
         )
