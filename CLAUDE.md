@@ -27,11 +27,11 @@ The app is a singleton by hotkey registration: a second instance fails to grab t
 There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` and `System/TerminalLauncher` sources:
 
 ```bash
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift && /tmp/test_engine
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 24 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, and privileged execution.
+- `test_engine.swift`: 25 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, and first-run onboarding.
 - `deep_verify.swift`: 88 live system checks verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
@@ -89,6 +89,7 @@ mac-lightspot/
         │   └── WebSearchProvider.swift  # Multi-engine search & prefix shortcuts
         ├── System/
         │   ├── AutoStartManager.swift   # SMAppService login item management & caching
+        │   ├── FirstRunManager.swift    # Onboarding: auto launch-at-login & Spotlight disable prompt
         │   ├── HotkeyManager.swift      # Carbon global hotkey
         │   ├── MenuBarController.swift  # Menu bar status item & preferences
         │   ├── SettingsBackupController.swift # Settings import/export controller
@@ -241,5 +242,6 @@ candidate per keystroke across every provider, so the difference is the search.
    - `lightspot_custom_commands`
    - `lightspot_snippets`
    - `lightspot_auto_start_enabled`
+   - `lightspot_first_run_completed`
 7. **Privileged Commands & Headless Touch ID Execution**:
    Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.

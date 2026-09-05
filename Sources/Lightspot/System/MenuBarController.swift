@@ -520,7 +520,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         }
     }
 
-    private func showAlert(title: String, message: String) {
+    func showAlert(title: String, message: String) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
@@ -570,3 +570,6 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         NSApp.terminate(nil)
     }
 }
+
+extension MenuBarController: FirstRunDelegate {}
+

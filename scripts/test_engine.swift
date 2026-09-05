@@ -5,6 +5,8 @@ import Foundation
 // Build & run:
 //   swiftc -o /tmp/test_engine scripts/test_engine.swift \
 //       Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift \
+//       Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift \
+//       Sources/Lightspot/System/FirstRunManager.swift \
 //       && /tmp/test_engine
 
 @main
@@ -61,6 +63,7 @@ struct TestRunner {
         return false
     }
 
+    @MainActor
     static func main() {
         print("🧪 Running Lightspot Core Tests...\n")
 
@@ -719,6 +722,7 @@ struct TestRunner {
 
     // MARK: - Test 16: Settings Backup (Export / Import)
 
+    @MainActor
     static func testSettingsBackup() {
         print("Testing SettingsBackup...")
 
@@ -1347,5 +1351,58 @@ struct TestRunner {
         assertEqual(sysResults.first?.id, "system-hud", "HUD result ID is system-hud")
 
         print("✅ Browser, Clipboard, Snippets, and System HUD passed all tests!\n")
+
+        // Test 25: FirstRunManager
+        print("Testing FirstRunManager...")
+        @MainActor
+        final class MockFirstRunDelegate: FirstRunDelegate {
+            var rebuildMenuCallCount = 0
+            var alertTitle: String?
+            var alertMessage: String?
+
+            func rebuildMenu() {
+                rebuildMenuCallCount += 1
+            }
+
+            func showAlert(title: String, message: String) {
+                alertTitle = title
+                alertMessage = message
+            }
+        }
+
+        let originalFirstRun = UserDefaults.standard.object(forKey: FirstRunManager.userDefaultsKey)
+        let originalAutoStart = UserDefaults.standard.object(forKey: "lightspot_auto_start_enabled")
+
+        FirstRunManager.resetFirstRunForTesting()
+        assertTrue(FirstRunManager.isFirstRun, "isFirstRun is true after reset")
+
+        FirstRunManager.markFirstRunCompleted()
+        assertTrue(!FirstRunManager.isFirstRun, "isFirstRun is false after markFirstRunCompleted")
+
+        FirstRunManager.resetFirstRunForTesting()
+        let mockDelegate = MockFirstRunDelegate()
+        // promptDelay: -1 skips the UI modal prompt during headless unit tests
+        FirstRunManager.handleFirstRunIfNeeded(delegate: mockDelegate, promptDelay: -1)
+
+        assertTrue(!FirstRunManager.isFirstRun, "isFirstRun is false after handleFirstRunIfNeeded")
+        assertTrue(AutoStartManager.isEnabled, "AutoStartManager is enabled on first run")
+        assertEqual(mockDelegate.rebuildMenuCallCount, 1, "rebuildMenu called on first run")
+
+        // Second run must be a no-op
+        FirstRunManager.handleFirstRunIfNeeded(delegate: mockDelegate, promptDelay: -1)
+        assertEqual(mockDelegate.rebuildMenuCallCount, 1, "rebuildMenu not called again on subsequent run")
+
+        // Restore original state
+        if let original = originalFirstRun {
+            UserDefaults.standard.set(original, forKey: FirstRunManager.userDefaultsKey)
+        } else {
+            FirstRunManager.resetFirstRunForTesting()
+        }
+        if let originalAuto = originalAutoStart {
+            UserDefaults.standard.set(originalAuto, forKey: "lightspot_auto_start_enabled")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "lightspot_auto_start_enabled")
+        }
+        print("✅ FirstRunManager passed all tests!\n")
     }
 }

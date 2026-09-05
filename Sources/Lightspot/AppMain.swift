@@ -180,6 +180,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Prime the cached system-state snapshots off the main thread. Menus read
         // the cache; probing live would block the UI (see SpotlightManager).
         refreshSystemState()
+
+        // Handle first-run onboarding (auto-enable launch at login & suggest disabling Spotlight)
+        FirstRunManager.handleFirstRunIfNeeded(delegate: menuBarController)
     }
 
     /// Re-probes macOS Spotlight / login-item state in the background and rebuilds
