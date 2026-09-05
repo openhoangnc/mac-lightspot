@@ -46,12 +46,15 @@ jobs:
 
       - name: Calculate Release Version & Auto-Versioning
         id: versioning
+        env:
+          REF_NAME: ${{ github.ref }}
+          BUMP_TYPE_INPUT: ${{ inputs.bump_type }}
         run: |
           # Fetch all tags
-          git fetch --tags || true
+          git fetch --tags --force 2>/dev/null || true
 
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAG_NAME="${github.ref#refs/tags/}"
+          if [[ "$REF_NAME" == refs/tags/* ]]; then
+            TAG_NAME="${REF_NAME#refs/tags/}"
             VERSION="${TAG_NAME#v}"
           else
             # Get latest tag
@@ -65,7 +68,7 @@ jobs:
             MINOR=${MINOR:-0}
             PATCH=${PATCH:-0}
 
-            BUMP_TYPE="${{ inputs.bump_type }}"
+            BUMP_TYPE="$BUMP_TYPE_INPUT"
             if [ -z "$BUMP_TYPE" ]; then
               BUMP_TYPE="patch"
             fi
@@ -87,8 +90,8 @@ jobs:
 
           echo "Target Release Version: ${VERSION}"
           echo "Target Tag: ${TAG_NAME}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Update Info.plist Version
         run: |

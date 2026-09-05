@@ -12,15 +12,33 @@ ARCH_FLAGS=${ARCH_FLAGS:-}
 
 # Build with SPM (Maximum Optimization)
 echo "🚀 Compiling with maximum optimizations..."
-swift build -c release $ARCH_FLAGS \
-    -Xswiftc -Osize \
-    -Xswiftc -whole-module-optimization \
-    -Xswiftc -cross-module-optimization \
-    -Xswiftc -enforce-exclusivity=unchecked \
-    --package-path "$SCRIPT_DIR" 2>&1
+BUILD_SUCCESS=0
+if [ -n "$ARCH_FLAGS" ]; then
+    if swift build -c release $ARCH_FLAGS \
+        -Xswiftc -Osize \
+        -Xswiftc -whole-module-optimization \
+        -Xswiftc -cross-module-optimization \
+        -Xswiftc -enforce-exclusivity=unchecked \
+        --package-path "$SCRIPT_DIR" 2>&1; then
+        BUILD_SUCCESS=1
+    else
+        echo "⚠️ Build with ARCH_FLAGS ($ARCH_FLAGS) failed. Falling back to native architecture..."
+        ARCH_FLAGS=""
+    fi
+fi
+
+if [ "$BUILD_SUCCESS" -eq 0 ]; then
+    swift build -c release \
+        -Xswiftc -Osize \
+        -Xswiftc -whole-module-optimization \
+        -Xswiftc -cross-module-optimization \
+        -Xswiftc -enforce-exclusivity=unchecked \
+        --package-path "$SCRIPT_DIR" 2>&1
+fi
 
 # Find the built binary
-BINARY=$(swift build -c release $ARCH_FLAGS --package-path "$SCRIPT_DIR" --show-bin-path)/Lightspot
+BIN_DIR=$(swift build -c release $ARCH_FLAGS --package-path "$SCRIPT_DIR" --show-bin-path 2>/dev/null || swift build -c release --package-path "$SCRIPT_DIR" --show-bin-path)
+BINARY="$BIN_DIR/Lightspot"
 
 
 if [ ! -f "$BINARY" ]; then
