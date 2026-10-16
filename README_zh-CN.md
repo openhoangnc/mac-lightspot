@@ -4,7 +4,7 @@
 
 > **纯粹的Swift构建，macOS Spotlight的轻量级、完美像素替代品 — 专为需要极速响应且免受文件索引臃肿困扰的开发者和高级用户设计。**
 
-Lightspot忠实再现了macOS Spotlight现代的悬浮胶囊设计和半透明玻璃美学（`NSVisualEffectView`）。在底层，它提供亚毫秒级的响应能力（搜索时间 < 1.0毫秒），**完全没有后台文件索引**，消耗**0.0%的空闲CPU**和不到**25MB的RAM**。
+Lightspot忠实再现了macOS Spotlight现代的悬浮胶囊设计和半透明玻璃美学（`NSVisualEffectView`）。在底层，它提供亚毫秒级的响应能力（搜索时间 < 1.0毫秒），**完全没有后台文件索引**。空闲时唯一的周期性工作是每0.6秒一次的轻量级剪贴板检查，并且仅占用不到**25MB的RAM**。
 
 ![Lightspot 截图](screenshot.png)
 
@@ -52,15 +52,15 @@ Apple内置的Spotlight是为普通文件搜索设计的。但对于开发者和
 
 Lightspot通过采取一种截然不同的方法来解决这些问题：**零后台文件索引。**
 
-Lightspot不主动抓取整个硬盘，而是严格关注高级用户实际搜索的内容：应用程序、IDE项目、浏览器选项卡、开发者实用工具和自定义命令。
+Lightspot不主动抓取整个硬盘，而是严格关注高级用户实际搜索的内容：应用程序、IDE项目、浏览器选项卡、书签与历史记录、开发者实用工具和自定义命令。
 
 ### 比较矩阵
 
 | 指标 | Apple Spotlight | Raycast / Alfred | Lightspot 🔍 |
 |:---|:---|:---|:---|
 | **文件索引** | 无法控制的后台抓取 | 可选 / 可配置 | **从不** (通过架构保证) |
-| **空闲CPU使用率** | 操作期间峰值超过100% | 1% – 5% (后台) | **0.0%** (完全休眠) |
-| **磁盘存储** | 10 GB – 200 GB+ 隐藏缓存 | 100 MB – 1 GB | **0 KB** (零磁盘占用) |
+| **空闲CPU使用率** | 操作期间峰值超过100% | 1% – 5% (后台) | **极低** (无索引；仅每0.6秒检查一次剪贴板) |
+| **磁盘存储** | 10 GB – 200 GB+ 隐藏缓存 | 100 MB – 1 GB | **无索引或缓存** (仅在 `UserDefaults` 中保存你的设置) |
 | **RAM占用** | 500 MB – 2 GB+ | 200 MB – 500 MB | **约15 – 25 MB** (纯Swift) |
 | **应用启动** | 经常损坏；需要重建 | 可靠 | **100%可靠** (直接扫描) |
 | **搜索延迟** | 防抖处理 (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬时同步) |
@@ -82,19 +82,19 @@ Lightspot从一开始就被设计为开发者的主要控制中心。每一个�
 - **动态参数扩展**：
   - 使用 `{query}`、`%s` 或 `%@` 来替换你在命令后输入的任何参数。
 - **前缀触发器**：
-  - 绑定自定义的1-3个字母前缀（例如 `dlog <container>` 追踪docker日志，`c <url>` 请求curl headers，`png <host>` 进行ping操作）。
+  - 为命令设置你自己的前缀，然后输入 `<前缀> <查询>`（例如 `c <url>` 请求curl headers，`png <host>` 进行ping操作）。编辑器的 **Presets** 菜单提供九个现成命令：`gh`、`g`、`yt`、`so`、`ddg`、`wiki`、`npm`、`png` 和 `c`。
 - **自定义关键字与图标**：
-  - 添加模糊关键字以实现即时发现，并使用SF Symbols或base64应用图标自定义图标。
+  - 添加模糊关键字以实现即时发现。命令图标默认使用其运行器的应用图标（浏览器、终端或脚本编辑器）；你也可以切换为运行器的内置符号，或选择自己的图片或应用程序文件。
 
-### 2. 💬 动态文本代码段 (`⌘P` / `snippets`)
-定义带有自动动态变量扩展的可重用文本代码段：
+### 2. 💬 动态文本代码段
+Lightspot内置五个文本代码段——`date`、`iso`、`uuid`、`shrug` 和 `flip`——并在你复制时即时展开动态变量：
 - `{{date}}`：当前日期 (`YYYY-MM-DD`)
 - `{{time}}`：当前时间 (`HH:mm:ss`)
 - `{{iso}}`：ISO 8601 UTC 时间戳 (`2026-09-05T14:30:00Z`)
 - `{{uuid}}`：随机UUID v4
 - `{{clipboard}}`：当前剪贴板的内容
 
-输入任何代码段关键字（例如 `iso`、`uuid`、`date`）并按 **`↵`** 即可将计算后的字符串直接复制到剪贴板。
+输入代码段关键字（例如 `iso`、`uuid`、`date`）或名称的一部分，并按 **`↵`** 即可将计算后的字符串直接复制到剪贴板。
 
 ### 3. 💻 从7种现代终端模拟器中选择
 Lightspot与你最喜欢的终端模拟器集成。随时通过菜单栏切换：
@@ -131,7 +131,7 @@ Lightspot自动监控以下最近工作区：
 ### 7. 🔐 Sudo及特权操作的无头Touch ID
 利用指纹生物识别技术执行特权维护操作（如 `Flush DNS Cache`、`Purge Inactive Memory`）：
 - **无终端弹出窗口**：通过后台伪终端(PTY)运行，调用macOS的 `pam_tid.so` 实现即时Touch ID身份验证。
-- **在终端中切换Sudo的Touch ID**：一键菜单操作，配置 `/etc/pam.d/sudo_local`，让你在常规终端中的 `sudo` 命令也能使用Touch ID。
+- **在终端中切换Sudo的Touch ID**：一个可搜索的快速操作（输入 `touch id` 或 `sudo`），在管理员授权提示后编辑 `/etc/pam.d/sudo_local`，让你在常规终端中的 `sudo` 命令也能使用Touch ID。其副标题会显示当前是否已启用sudo的Touch ID。
 
 ### 8. 📜 zsh历史记录与固定命令 (`⌘P` / `⌘⇧P`)
 - 搜索本地的 `~/.zsh_history` (或自定义的 `$HISTFILE`)，提供亚毫秒级的即时排名。
@@ -139,7 +139,7 @@ Lightspot自动监控以下最近工作区：
 - 按 **`⌘⇧P`** 管理、重新排序或删除固定命令。
 
 ### 9. 📦 设置备份与跨机同步
-- 将整个配置（自定义命令、固定项、代码段、热键）导出到干净的JSON文件中。
+- 在菜单栏中使用 **Export Settings…** / **Import Settings…**，将配置导出为干净的JSON文件或从中导入。内容包括自定义命令、固定的shell命令、搜索历史与排名、最近使用的应用，以及偏好设置（全局热键、登录时启动、菜单栏图标可见性、浏览器历史范围）。文本代码段、首选终端和默认网页搜索引擎不包含在内。
 - 自动路径净化会将 `/Users/username` 替换为 `~`，这样配置就可以在工作Mac和个人Mac之间无缝共享。
 
 ### 10. 🔄 内置自动更新
@@ -163,10 +163,10 @@ Lightspot自动监控以下最近工作区：
   - 单位：`100km in mi`, `72F in C`, `16GB in MB`
   - 货币：`$100 in EUR`, `50 GBP in USD`
   - 数字基数：`0xFF in dec`, `255 in hex`, `0b1010 in dec`
-- **默认浏览器书签与标签页**：仅为当前处于活动状态的默认浏览器（**Chrome**、**Safari**、**Firefox**、**Arc**、**Brave**、**Edge**）提供零冗余的书签和打开的标签页集成。
+- **默认浏览器书签、历史记录与标签页**：仅为当前处于活动状态的默认浏览器（**Chrome**、**Safari**、**Firefox**、**Arc**、**Brave**、**Edge**）提供零冗余集成。书签和近期历史记录直接从浏览器自身的文件中读取（历史记录涵盖最近3天或7天，默认7天，也可通过菜单栏的 **Browser History** 关闭）；打开的标签页则通过Safari和基于Chromium的浏览器查询。
 - **内存中的临时剪贴板**：仅限RAM的易失性环形缓冲区（最多50项），可通过 `clip <query>` 访问。从不写入磁盘，并严格过滤密码管理器（`1Password`、`Bitwarden`）。
-- **macOS系统设置深层链接**：35+ 个直接深层链接，用于打开特定的macOS设置窗格 (`x-apple.systempreferences:...`)。
-- **多引擎网页搜索**：内置前缀快捷键：`gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `brew`, `yt`, `ddg`。
+- **macOS系统设置深层链接**：35 个直接深层链接，用于打开特定的macOS设置窗格 (`x-apple.systempreferences:...`)。
+- **多引擎网页搜索**：内置前缀快捷键：`g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`，另有 `brew <formula>`，它会打开 formulae.brew.sh 上对应formula的页面，而不是执行搜索。
 
 ---
 
@@ -211,12 +211,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. 测试与验证
-Lightspot包含27个自动化测试套件和88个实时系统检查：
+Lightspot没有XCTest目标。`scripts/` 下有两个独立脚本，会随源码一起即时编译：逻辑与引擎测试运行器（32个测试块）和实时系统验证器（10个部分，在配置齐全的机器上共88项检查；例如没有zsh历史记录或未安装VS Code时，部分检查会被跳过）：
 ```bash
-# 核心逻辑与引擎测试 (27个测试套件)
+# 核心逻辑与引擎测试 (32个测试块)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 
-# 实时系统检查 (88个验证检查)
+# 实时系统检查 (10个部分，配置齐全的机器上共88项检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
