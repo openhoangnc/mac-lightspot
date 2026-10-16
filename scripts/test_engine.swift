@@ -179,6 +179,7 @@ struct TestRunner {
         testSettingsBackup()
         testPublicIPLookupIsOnDemand()
         testHistoryDoesNotPersistCopiedContent()
+        testBareClipListsLatestEntries()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -646,6 +647,31 @@ struct TestRunner {
 
         history.reset()
         print("✅ Search history privacy passed all tests!\n")
+    }
+
+    // MARK: - Test 28: bare `clip` lists the clipboard
+
+    static func testBareClipListsLatestEntries() {
+        print("Testing bare clip lists latest clipboard entries...")
+        let clip = ClipboardHistoryManager.shared
+        clip.clearHistory()
+        for index in 1...10 {
+            clip.addEntry(content: "Lightspot bare clip entry \(index)")
+        }
+
+        for query in ["clip", "Clip", "clipboard", "clip "] {
+            let results = clip.search(SearchQuery(query))
+            assertEqual(results.count, 8, "'\(query)' lists the latest 8 entries")
+            assertEqual(results.first?.title, "Lightspot bare clip entry 10", "'\(query)' lists the newest entry first")
+            assertTrue(results.allSatisfy { $0.category == .clipboard && $0.score == 95 }, "'\(query)' rows are clipboard rows at 95")
+        }
+
+        let filtered = clip.search(SearchQuery("clip entry 7"))
+        assertEqual(filtered.first?.title, "Lightspot bare clip entry 7", "'clip <text>' still filters the entries")
+
+        clip.clearHistory()
+        assertTrue(clip.search(SearchQuery("clip")).isEmpty, "Bare clip with an empty clipboard history shows nothing")
+        print("✅ Bare clip passed all tests!\n")
     }
 
     // MARK: - Test 14: Custom Commands Store & Engine Integration
