@@ -24,11 +24,13 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ---
 
 ### 🗑️ 完全アンインストール
-完全に削除したい場合は、このコマンドで安全にアプリを終了し、自動起動設定を解除し、ユーザー設定を消去して、アプリ本体を削除します：
+完全に削除したい場合は、このコマンドで安全にアプリを終了し、自動起動設定を解除し、ユーザー設定を消去して、アプリ本体を削除します。Lightspot が Apple Spotlight を無効にしていた場合は再び有効にします（インデックス作成の再有効化には管理者パスワードが必要です。後で実行する場合は表示される `sudo mdutil -a -i on` コマンドを使ってください）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
 ```
+
+*(オプション: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash -s -- --dry-run` は何も変更せずに変更内容だけを表示します。代わりに `--keep-spotlight-disabled` を指定すると Spotlight を無効のままにします。)*
 
 ---
 

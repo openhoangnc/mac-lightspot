@@ -24,11 +24,13 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ---
 
 ### 🗑️ Desinstalación Completa
-¿Deseas eliminarlo por completo? Este comando detiene la aplicación, elimina los elementos de inicio automático, borra las preferencias de usuario y elimina el paquete de la aplicación:
+¿Deseas eliminarlo por completo? Este comando detiene la aplicación, elimina los elementos de inicio automático, borra las preferencias de usuario, elimina el paquete de la aplicación y vuelve a activar Apple Spotlight si Lightspot lo desactivó (reactivar la indexación pide tu contraseña de administrador, o muestra el comando `sudo mdutil -a -i on` para ejecutarlo más tarde):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
 ```
+
+*(Opcional: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash -s -- --dry-run` muestra lo que se cambiaría sin modificar nada; usa `--keep-spotlight-disabled` en su lugar para dejar Spotlight desactivado.)*
 
 ---
 

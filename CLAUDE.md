@@ -20,14 +20,14 @@ make clean      # rm -rf build .build
 
 `swift build` alone produces the bare binary; it will not run correctly as an app (no bundle, no `Info.plist`, so no `LSUIElement`). Always go through `build.sh` or `install.sh`.
 
-The app is a singleton by hotkey registration: a second instance fails to grab the hotkey. `run.sh` and `install.sh` kill the running process first — do the same manually if launching by other means.
+The app is single-instance via `System/SingleInstanceGuard.swift`, checked in `main()` after the uninstall helper flags: an `flock` on `~/Library/Application Support/Lightspot/<bundle id>.lock`. Launching the same build again asks the running copy to show its panel and exits; launching a different build (reinstalled, rebuilt, or at another path such as `build/`) asks the running copy to quit, then takes over. `run.sh` and `install.sh` still kill first, but that kill is refused from a sandboxed shell (EPERM), which is how duplicate instances used to pile up. An updater that relaunches must likewise launch the new build and let it take over, not start a copy of the same file.
 
 ### Tests
 
 There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` and `System/TerminalLauncher` sources:
 
 ```bash
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift && /tmp/test_engine
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
@@ -93,6 +93,7 @@ mac-lightspot/
         │   ├── HotkeyManager.swift      # Carbon global hotkey
         │   ├── MenuBarController.swift  # Menu bar status item & preferences
         │   ├── SettingsBackupController.swift # Settings import/export controller
+        │   ├── SingleInstanceGuard.swift # flock instance lock; hand-off / take-over between launches
         │   ├── SpotlightManager.swift   # macOS Spotlight disable/restore automations
         │   └── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
         └── UI/
@@ -184,6 +185,7 @@ candidate per keystroke across every provider, so the difference is the search.
   - `⌘⇧P`: Open pinned commands manager
   - `⌘⇧C`: Open custom commands manager
   - `⌘Y` or `⌘⇧H`: Open search history manager
+  - `⌫` (search history manager open): Delete the selected entry
   - `Escape`: Clear search or dismiss panel
 
 ### Key Invariants & Safety Rules

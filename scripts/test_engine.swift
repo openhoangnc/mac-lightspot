@@ -6,7 +6,7 @@ import Foundation
 //   swiftc -o /tmp/test_engine scripts/test_engine.swift \
 //       Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift \
 //       Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift \
-//       Sources/Lightspot/System/FirstRunManager.swift \
+//       Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift \
 //       && /tmp/test_engine
 
 @main
@@ -65,6 +65,13 @@ struct TestRunner {
 
     @MainActor
     static func main() {
+        // Child mode for testSingleInstanceGuard: this binary, re-executed, plays the
+        // Lightspot that already holds the lock.
+        let arguments = CommandLine.arguments
+        if let flag = arguments.firstIndex(of: "--single-instance-holder"), arguments.count > flag + 3 {
+            runSingleInstanceHolder(lockPath: arguments[flag + 1], bundleIdentifier: arguments[flag + 2], build: arguments[flag + 3])
+        }
+
         print("🧪 Running Lightspot Core Tests...\n")
 
         // Test 1: Calculator Arithmetic
@@ -174,6 +181,7 @@ struct TestRunner {
         testCustomCommandsStore()
         testVSCodeProjectsProvider()
         testSettingsBackup()
+        testSingleInstanceGuard()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -1404,5 +1412,158 @@ struct TestRunner {
             UserDefaults.standard.removeObject(forKey: "lightspot_auto_start_enabled")
         }
         print("✅ FirstRunManager passed all tests!\n")
+    }
+
+    // MARK: - Single instance guard
+
+    /// Child process: takes the lock, prints `locked`, then prints `show` / `quit` for
+    /// each request a later launch sends (exiting on `quit`). Lives 10 s at most so a
+    /// failed test cannot leave it behind.
+    @MainActor
+    static func runSingleInstanceHolder(lockPath: String, bundleIdentifier: String, build: String) -> Never {
+        func say(_ line: String) { FileHandle.standardOutput.write(Data((line + "\n").utf8)) }
+        guard case .acquired = SingleInstanceGuard.acquireLock(atPath: lockPath, build: build) else {
+            say("busy")
+            exit(2)
+        }
+        let listener = SingleInstanceGuard.RequestListener(
+            bundleIdentifier: bundleIdentifier,
+            onShowPanel: { say("show") },
+            onQuit: { say("quit"); exit(0) }
+        )
+        say("locked")
+        RunLoop.main.run(until: Date().addingTimeInterval(10))
+        withExtendedLifetime(listener) {}
+        exit(3)
+    }
+
+    final class HolderProcess {
+        let process = Process()
+        private let pipe = Pipe()
+        private var output = ""
+
+        init(lockPath: String, bundleIdentifier: String, build: String) {
+            process.executableURL = Bundle.main.executableURL
+            process.arguments = ["--single-instance-holder", lockPath, bundleIdentifier, build]
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+        }
+
+        var pid: pid_t { process.processIdentifier }
+
+        /// Blocks until the child prints `line`; false if it exits first.
+        func waitFor(_ line: String) -> Bool {
+            while !output.split(separator: "\n").contains(Substring(line)) {
+                let data = pipe.fileHandleForReading.availableData
+                if data.isEmpty { return false }
+                output += String(decoding: data, as: UTF8.self)
+            }
+            return true
+        }
+    }
+
+    @MainActor
+    static func testSingleInstanceGuard() {
+        print("Testing SingleInstanceGuard...")
+        let fileManager = FileManager.default
+        let directory = NSTemporaryDirectory() + "lightspot-guard-\(getpid())"
+        try? fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(atPath: directory) }
+
+        // 1. Build identity: stable for one file, new once the file is replaced the way
+        //    install.sh does (delete, copy), even at the same path with the same bytes.
+        let executable = directory + "/Lightspot"
+        fileManager.createFile(atPath: executable, contents: Data("build".utf8))
+        let identity = SingleInstanceGuard.buildIdentity(executablePath: executable)
+        assertEqual(SingleInstanceGuard.buildIdentity(executablePath: executable), identity, "Identity of an unchanged executable is stable")
+        try? fileManager.removeItem(atPath: executable)
+        fileManager.createFile(atPath: executable, contents: Data("build".utf8))
+        assertTrue(SingleInstanceGuard.buildIdentity(executablePath: executable) != identity, "A reinstalled executable has a new identity")
+
+        // 2. The lock excludes a second holder and records who holds it; closing frees it.
+        let lockA = directory + "/a.lock"
+        guard case .acquired(let fdA) = SingleInstanceGuard.acquireLock(atPath: lockA, build: "build-1") else {
+            assertTrue(false, "First acquire takes the lock"); return
+        }
+        assertEqual(
+            SingleInstanceGuard.acquireLock(atPath: lockA, build: "build-2"),
+            .held(by: SingleInstanceGuard.Holder(pid: getpid(), build: "build-1")),
+            "Second acquire sees the holder's PID and build"
+        )
+        close(fdA)
+        guard case .acquired(let fdA2) = SingleInstanceGuard.acquireLock(atPath: lockA, build: "build-2") else {
+            assertTrue(false, "Lock is free again once the holder closes it"); return
+        }
+        close(fdA2)
+
+        // 3. An unusable lock path must not stop Lightspot from starting.
+        assertEqual(SingleInstanceGuard.acquireLock(atPath: "/dev/null/x.lock", build: "b"), .unavailable, "Unopenable lock file")
+        assertEqual(
+            SingleInstanceGuard.claim(bundleIdentifier: "com.lightspot.tests.none", lockPath: "/dev/null/x.lock", build: "b"),
+            .run(lockFD: nil),
+            "Unopenable lock file runs unguarded"
+        )
+
+        // 4. Show requests right after launch are a start-up race, not a user.
+        let launched = Date()
+        assertTrue(!SingleInstanceGuard.shouldHonorShowRequest(launchedAt: launched, now: launched.addingTimeInterval(1)), "Show request 1 s after launch is ignored")
+        assertTrue(SingleInstanceGuard.shouldHonorShowRequest(launchedAt: launched, now: launched.addingTimeInterval(SingleInstanceGuard.launchGraceInterval)), "Show request after the grace interval is honored")
+
+        // 5. Across processes, through distributed notifications.
+        let bundleIdentifier = "com.lightspot.tests.guard.\(getpid())"
+        let lockB = directory + "/b.lock"
+        let holder = HolderProcess(lockPath: lockB, bundleIdentifier: bundleIdentifier, build: "build-A")
+        assertTrue(holder.waitFor("locked"), "Holder process took the lock")
+        assertEqual(
+            SingleInstanceGuard.acquireLock(atPath: lockB, build: "probe"),
+            .held(by: SingleInstanceGuard.Holder(pid: holder.pid, build: "build-A")),
+            "Another process's lock is visible with its PID"
+        )
+
+        // Same build started again: hand off, the running copy is asked to show its panel.
+        assertEqual(
+            SingleInstanceGuard.claim(bundleIdentifier: bundleIdentifier, lockPath: lockB, build: "build-A"),
+            .handedOff,
+            "Second launch of the same build hands off"
+        )
+        assertTrue(holder.waitFor("show"), "Running copy received the show request")
+
+        // A different build (reinstall / rebuild / update): the old copy quits, the new one runs.
+        let takeOver = SingleInstanceGuard.claim(bundleIdentifier: bundleIdentifier, lockPath: lockB, build: "build-B")
+        guard case .run(let fdB?) = takeOver else {
+            assertTrue(false, "New build takes over, got \(takeOver)"); return
+        }
+        assertTrue(holder.waitFor("quit"), "Old build received the quit request")
+        holder.process.waitUntilExit()
+        assertEqual(
+            SingleInstanceGuard.acquireLock(atPath: lockB, build: "probe"),
+            .held(by: SingleInstanceGuard.Holder(pid: getpid(), build: "build-B")),
+            "New build now holds the lock"
+        )
+        close(fdB)
+
+        // 6. SIGKILL (install.sh's last resort) releases the lock: no stale lock.
+        let lockC = directory + "/c.lock"
+        let killed = HolderProcess(lockPath: lockC, bundleIdentifier: bundleIdentifier, build: "build-A")
+        assertTrue(killed.waitFor("locked"), "Second holder took the lock")
+        kill(killed.pid, SIGKILL)
+        killed.process.waitUntilExit()
+        guard case .acquired(let fdC) = SingleInstanceGuard.acquireLock(atPath: lockC, build: "build-B") else {
+            assertTrue(false, "Lock is free once its holder is killed"); return
+        }
+        close(fdC)
+
+        // 7. A holder that cannot answer (stopped) keeps the lock: the new build gives up.
+        let lockD = directory + "/d.lock"
+        let stuck = HolderProcess(lockPath: lockD, bundleIdentifier: bundleIdentifier, build: "build-A")
+        assertTrue(stuck.waitFor("locked"), "Third holder took the lock")
+        kill(stuck.pid, SIGSTOP)
+        let gaveUp = SingleInstanceGuard.claim(bundleIdentifier: bundleIdentifier, lockPath: lockD, build: "build-B", takeOverTimeout: 0.5)
+        kill(stuck.pid, SIGKILL)
+        stuck.process.waitUntilExit()
+        assertEqual(gaveUp, .holderDidNotQuit(pid: stuck.pid), "Unresponsive holder: new build exits instead of running twice")
+
+        print("✅ SingleInstanceGuard passed all tests!\n")
     }
 }

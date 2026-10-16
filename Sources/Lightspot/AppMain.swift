@@ -12,6 +12,26 @@ struct LightspotApp {
             exit(0)
         }
 
+        // One Lightspot per user; see SingleInstanceGuard. Checked after the helper
+        // flags above, which the uninstaller runs while a copy may still be up.
+        if let bundleIdentifier = Bundle.main.bundleIdentifier,
+           let executablePath = Bundle.main.executablePath {
+            let decision = SingleInstanceGuard.claim(
+                bundleIdentifier: bundleIdentifier,
+                lockPath: SingleInstanceGuard.lockFilePath(bundleIdentifier: bundleIdentifier),
+                build: SingleInstanceGuard.buildIdentity(executablePath: executablePath)
+            )
+            switch decision {
+            case .run:
+                break // the lock descriptor stays open until the process exits
+            case .handedOff:
+                exit(0)
+            case .holderDidNotQuit(let pid):
+                NSLog("Lightspot: another build (pid %d) is running and did not quit; exiting.", pid ?? -1)
+                exit(1)
+            }
+        }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -26,11 +46,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController!
     private var viewModel: SearchViewModel!
     private var hostingView: NSHostingView<SpotlightView>!
+    private var instanceRequests: SingleInstanceGuard.RequestListener?
+    private let launchedAt = Date()
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
             setup()
         }
+    }
+
+    /// Opening Lightspot.app while it runs (Finder, `open`) reopens this instance
+    /// instead of starting another: treat it like a second launch's hand-off.
+    nonisolated func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainActor.assumeIsolated {
+            handleShowRequest()
+        }
+        return false
     }
 
     private func setup() {
@@ -57,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create and configure the panel
         panel = SpotlightPanel()
+        panel.onDismiss = { [weak self] in
+            self?.hidePanel()
+        }
 
         // Hook up dynamic height animation from view model
         viewModel.onHeightChange = { [weak self] targetHeight in
@@ -121,6 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onManageCustomCommands = { [weak self] in
             self?.viewModel.toggleCustomCommandManager()
         }
+        panel.onDeleteKey = { [weak self] in
+            self?.viewModel.handleDeleteKey() ?? false
+        }
 
         // Set up hotkey
         hotkeyManager = HotkeyManager()
@@ -183,6 +220,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Handle first-run onboarding (auto-enable launch at login & suggest disabling Spotlight)
         FirstRunManager.handleFirstRunIfNeeded(delegate: menuBarController)
+
+        // Answer later launches: show the panel for a second copy of this build,
+        // quit when a different build (reinstalled, rebuilt, updated) takes over.
+        if let bundleIdentifier = Bundle.main.bundleIdentifier {
+            instanceRequests = SingleInstanceGuard.RequestListener(
+                bundleIdentifier: bundleIdentifier,
+                onShowPanel: { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.handleShowRequest()
+                    }
+                },
+                onQuit: {
+                    MainActor.assumeIsolated {
+                        NSApp.terminate(nil)
+                    }
+                }
+            )
+        }
+    }
+
+    private func handleShowRequest() {
+        guard panel != nil, !panel.isVisible,
+              SingleInstanceGuard.shouldHonorShowRequest(launchedAt: launchedAt) else { return }
+        showPanel()
     }
 
     /// Re-probes macOS Spotlight / login-item state in the background and rebuilds
