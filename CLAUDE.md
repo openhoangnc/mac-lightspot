@@ -57,7 +57,7 @@ mac-lightspot/
 │   └── AppIcon.icns              # Multi-size macOS application icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (26 test blocks)
+│   ├── test_engine.swift         # Automated test runner (32 test blocks)
 │   └── deep_verify.swift         # Live-system verification (10 sections, 88 checks)
 └── Sources/
     └── Lightspot/
