@@ -62,7 +62,7 @@ Lightspot不主动抓取整个硬盘，而是严格关注高级用户实际搜�
 |:---|:---|:---|:---|
 | **文件索引** | 无法控制的后台抓取 | 可选 / 可配置 | **从不** (通过架构保证) |
 | **空闲CPU使用率** | 操作期间峰值超过100% | 1% – 5% (后台) | **极低** (无索引；仅每0.6秒检查一次剪贴板) |
-| **磁盘存储** | 10 GB – 200 GB+ 隐藏缓存 | 100 MB – 1 GB | **无索引或缓存** (仅在 `UserDefaults` 中保存你的设置) |
+| **磁盘存储** | 10 GB – 200 GB+ 隐藏缓存 | 100 MB – 1 GB | **无索引或缓存** (仅 `UserDefaults` 中的设置和一个锁文件) |
 | **RAM占用** | 500 MB – 2 GB+ | 200 MB – 500 MB | **约15 – 25 MB** (纯Swift) |
 | **应用启动** | 经常损坏；需要重建 | 可靠 | **100%可靠** (直接扫描) |
 | **搜索延迟** | 防抖处理 (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬时同步) |
@@ -145,7 +145,7 @@ Lightspot自动监控以下最近工作区：
 - 自动路径净化会将 `/Users/username` 替换为 `~`，这样配置就可以在工作Mac和个人Mac之间无缝共享。
 
 ### 10. 🔄 内置自动更新
-- 每天在后台检查一次GitHub Releases，并从菜单栏提示新版本：**`Check for Updates...`** 可随时手动运行，**`Automatically Check for Updates`** 则可完全关闭每日检查。
+- 在后台检查GitHub Releases（启动后不久，以及打开菜单栏菜单时），并从菜单栏提示新版本。检查成功后会间隔一天再检查；检查失败（离线、被限流）时会在下次启动或打开菜单时重试。**`Check for Updates...`** 可随时手动运行，**`Automatically Check for Updates`** 则可完全关闭自动检查。
 - 原地安装：Lightspot会下载该版本、进行校验、替换自身的应用包并重新启动。**`Skip This Version`** 只会忽略这一个版本，而不会关闭检查。
 - 每次下载都有门槛：仅限HTTPS、仅限GitHub主机（重定向后会再次校验），解压后的应用包必须带有Lightspot的包标识符、可运行的可执行文件，以及与公布版本完全一致的版本号，且绝不接受比已安装版本更旧的构建。
 - 发布版本采用临时（ad-hoc）签名（本项目不附带Developer ID），因此没有可供验证的代码签名——以上检查加上通往GitHub的HTTPS就是全部的信任模型，与 `install.sh` 已经要求的完全相同。
@@ -177,7 +177,7 @@ Lightspot自动监控以下最近工作区：
 Lightspot在菜单栏中内置了自动化功能，以禁用或重新启用Apple内置的Spotlight：
 
 1. **Spotlight快捷键 (`⌘Space`)**：在无需root的情况下，禁用或恢复Apple默认的Spotlight热键——包括 `⌘Space`（「显示Spotlight搜索」）和 `⌥⌘Space`（「显示Finder搜索窗口」）。更改通过偏好设置守护进程写入，并通过回读进行验证，立即生效（无需注销）；而且一旦macOS释放 `⌘Space`，Lightspot便会立即将其收归自用。
-2. **后台进程 (`com.apple.Spotlight`)**：通过 `launchctl` 禁用或启用Spotlight GUI后台代理。
+2. **后台进程 (`com.apple.Spotlight`)**：通过 `launchctl` 禁用或启用Spotlight GUI后台代理。启用时还会加载并启动该代理，因此无需注销即可恢复Spotlight。
 3. **文件索引 (`mdutil`)**：完全关闭所有挂载卷上的文件系统元数据索引 (`mds` / `mds_stores`)。
 4. **一键主操作**：
    - **`Disable Everything (Shortcut + Process + Indexing)...`**：彻底关闭Apple Spotlight，以收回CPU、RAM、磁盘空间和 `⌘Space`。
@@ -216,7 +216,7 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 Lightspot没有XCTest目标。`scripts/` 下有两个独立脚本，会随源码一起即时编译：逻辑与引擎测试运行器（32个测试块）和实时系统验证器（10个部分，在配置齐全的机器上共88项检查；例如没有zsh历史记录或未安装VS Code时，部分检查会被跳过）：
 ```bash
 # 核心逻辑与引擎测试 (32个测试块)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift && /tmp/test_engine
 
 # 实时系统检查 (10个部分，配置齐全的机器上共88项检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -248,9 +248,11 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **纯RAM的临时剪贴板**：剪贴板历史记录仅保留在易失性内存中，并主动忽略隐藏/密码管理器类型（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）。它从不写入磁盘，也不会进入搜索历史；搜索历史同样不会保存您从计算器、开发者工具或代码段结果中复制的文本。
 - **默认浏览器隔离**：书签、已打开的标签页和近期浏览历史仅在本机从您配置的默认浏览器中读取，避免跨浏览器抓取。
 - **由用户触发的命令**：您的命令、脚本和快捷操作只有在明确的用户操作（`Return` 或 `⌘↵`）下才会运行。
-- **零遥测，仅两个由您掌控的网络请求**：没有分析统计、没有追踪、无需账号。Lightspot 自身只会发出两类请求，且两者都由您决定。第一类是更新检查：向 GitHub 公共发布 API 发出的未经身份验证的 `GET` 请求，除了 `User-Agent` 中的当前版本号之外不发送任何内容，且每天最多一次；在菜单栏中关闭 **`Automatically Check for Updates`**，它便永远不会发出。第二类是 `GET https://api.ipify.org`（第三方服务），用于获取您的公网IP，并且只在您主动查询时发出：输入明确指向它的查询（`ip`, `my ip`, `public ip`, `ipv4`），或在 **IP Address** 行上按下 `Return`。与任何网站一样，ipify 会看到您的IP地址和一个标准的 macOS User-Agent。查询结果仅在内存中缓存 15 分钟，从不写入磁盘。网页搜索、URL 和书签由您的浏览器打开，且仅在您按下 `Return` 时才会打开。
-- **写入磁盘的内容**：仅有 Lightspot 自身的偏好设置（`UserDefaults`，位于 `~/Library/Preferences/com.lightspot.app.plist`）：
+- **零遥测，仅与两个由您掌控的服务通信**：没有分析统计、没有追踪、无需账号。Lightspot 自身只与两个服务通信，且两者都由您决定。第一个是用于更新的 GitHub：向公共发布 API（`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`）发出未经身份验证的 `GET` 请求，`User-Agent` 为 `Lightspot/<版本> (+https://github.com/openhoangnc/mac-lightspot)`；它在启动后不久以及打开菜单栏菜单时发出，但检查成功后每天最多一次（检查失败会在下次启动或打开菜单时重试）。在菜单栏中关闭 **`Automatically Check for Updates`**，它便不会自行发出。安装您接受的更新时，会从 GitHub 下载其 zip 文件（`User-Agent: Lightspot/<版本>`）。两者都使用临时（ephemeral）会话，因此不会在磁盘上保存任何响应或 Cookie。第二个是 ipify：`GET https://api.ipify.org`（第三方服务），用于获取您的公网IP，并且只在您主动查询时发出：输入明确指向它的查询（`ip`, `my ip`, `public ip`, `ipv4`），或在 **IP Address** 行上按下 `Return`。与任何网站一样，ipify 会看到您的IP地址和一个标准的 macOS User-Agent。查询结果仅在内存中缓存 15 分钟，从不写入磁盘。网页搜索、URL 和书签由您的浏览器打开，且仅在您按下 `Return` 时才会打开。
+- **写入磁盘的内容**：Lightspot 自身的偏好设置（`UserDefaults`，位于 `~/Library/Preferences/com.lightspot.app.plist`）、一个锁文件，以及安装更新期间的临时文件：
   - 设置：`lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state`（最近一次检测到的 Spotlight 状态，用于菜单显示）、`lightspot_auto_update_enabled`, `lightspot_last_update_check`, `lightspot_skipped_version`（自动更新检查）。
   - 您创建的内容：`lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`。
   - 使用记录：`lightspot_recent_app_bundle_ids`（最近启动的应用）和 `lightspot_search_history`：您输入的查询和打开的结果（标题、应用与项目路径、URL、Shell 命令），以及用于排序的选择次数。可在搜索历史管理器（`⌘Y`）中查看或清除。剪贴板、计算器和开发者工具的选择从不记录；代码段和硬件报告的选择只保留查询词和次数，绝不保存复制的文本。
+  - `~/Library/Application Support/Lightspot/com.lightspot.app.lock`：防止启动第二个副本。其中记录正在运行的进程的 PID，以及其可执行文件的路径、inode 和修改时间，以便新的启动能区分是同一构建还是更新的构建。
+  - 安装您接受的更新期间：下载的文件、解压后的应用包和一个小型辅助脚本位于 macOS 临时目录（`NSTemporaryDirectory()`，文件夹 `lightspot-update-…` 与 `lightspot-updater-…`）中，旧版本会以 `Lightspot.app.lightspot-old` 保留在应用旁边，直到新版本就位。辅助脚本完成后会将它们全部删除。
   - **Export Settings** 只会将 JSON 备份（包含搜索历史）写入您选择的文件。

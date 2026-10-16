@@ -92,8 +92,9 @@ public final class NetworkInfoProvider: @unchecked Sendable {
 
     // MARK: - Public IPv4 Address
     //
-    // The public address can only be learned from a server, so this is Lightspot's one
-    // outbound request (GET https://api.ipify.org). It is sent only when the user asks for
+    // The public address can only be learned from a server, so this asks one
+    // (GET https://api.ipify.org): the only request Lightspot sends to a third party, and
+    // its only network use besides the GitHub update check. It is sent only when the user asks for
     // the public IP: a query that clearly names it (`QuickActionsProvider.queryAsksForPublicIP`)
     // or ↵ on the IP Address row. Nothing here runs at launch or on a loose fuzzy match.
 

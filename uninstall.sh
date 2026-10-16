@@ -105,19 +105,28 @@ if [ "$FOUND" -eq 0 ]; then
     echo "⚠️  ${APP_NAME} not found in /Applications or ~/Applications"
 fi
 
-# 4. Remove Preferences and the single-instance lock directory
+# 4. Remove Preferences, the single-instance lock directory, and the HTTP cache and
+#    cookie store that versions up to 1.2.0 left behind (their update check used
+#    URLSession.shared, which writes both).
 echo "--> Clearing application preferences..."
 run_quiet defaults delete com.lightspot.app
 run rm -f "${HOME}/Library/Preferences/com.lightspot.app.plist"
 run rm -rf "${HOME}/Library/Application Support/${APP_NAME}"
+for LEFTOVER in "${HOME}/Library/Caches/com.lightspot.app" "${HOME}/Library/HTTPStorages/com.lightspot.app"; do
+    if [ -e "${LEFTOVER}" ]; then
+        run rm -rf "${LEFTOVER}"
+    fi
+done
 
 # 5. Restore Apple Spotlight. Lightspot's "Disable Everything" (offered at first
 #    launch) turns off the Spotlight shortcut, the Spotlight agent and indexing;
 #    with Lightspot gone that would leave the Mac without a launcher.
 
-# Spotlight shortcut: symbolic hotkey 64. Only `enabled` is flipped, keeping the key
-# the user had (⌘Space by default). Read and written through `defaults` (cfprefsd),
-# which would otherwise keep serving a cached copy of a file edited underneath it.
+# Spotlight shortcuts: symbolic hotkeys 64 ("Show Spotlight search", ⌘Space by
+# default) and 65 ("Show Finder search window", ⌥⌘Space). Lightspot turns off both
+# (SpotlightManager.spotlightHotkeyIDs). Only `enabled` is flipped, keeping the key
+# each one had. Read and written through `defaults` (cfprefsd), which would
+# otherwise keep serving a cached copy of a file edited underneath it.
 restore_spotlight_shortcut() {
     local domain="com.apple.symbolichotkeys"
     local exported
@@ -128,26 +137,41 @@ restore_spotlight_shortcut() {
     fi
 
     local buddy="/usr/libexec/PlistBuddy"
-    local key=":AppleSymbolicHotKeys:64"
-    if [ "$("$buddy" -c "Print ${key}:enabled" "$exported" 2>/dev/null)" != "false" ]; then
-        rm -f "$exported"
+    local id key type params i value restored=0
+    for id in 64 65; do
+        key=":AppleSymbolicHotKeys:${id}"
+        # A CFBoolean prints as false; `defaults write -int 0` leaves a 0.
+        case "$("$buddy" -c "Print ${key}:enabled" "$exported" 2>/dev/null)" in
+            false|0) ;;
+            *) continue ;;
+        esac
+
+        type="$("$buddy" -c "Print ${key}:value:type" "$exported" 2>/dev/null || echo standard)"
+        params=""
+        for i in 0 1 2; do
+            value="$("$buddy" -c "Print ${key}:value:parameters:${i}" "$exported" 2>/dev/null)" || break
+            params="${params}<integer>${value}</integer>"
+        done
+        if [ -z "$params" ]; then
+            if [ "$id" -eq 65 ]; then
+                params="<integer>32</integer><integer>49</integer><integer>1572864</integer>" # ⌥⌘Space
+            else
+                params="<integer>32</integer><integer>49</integer><integer>1048576</integer>" # ⌘Space
+            fi
+        fi
+
+        if [ "$restored" -eq 0 ]; then
+            echo "--> Re-enabling the Spotlight keyboard shortcuts..."
+        fi
+        run defaults write "$domain" AppleSymbolicHotKeys -dict-add "$id" \
+            "<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array>${params}</array><key>type</key><string>${type}</string></dict></dict>"
+        restored=1
+    done
+    rm -f "$exported"
+    if [ "$restored" -eq 0 ]; then
         return 0
     fi
 
-    local type params="" i value
-    type="$("$buddy" -c "Print ${key}:value:type" "$exported" 2>/dev/null || echo standard)"
-    for i in 0 1 2; do
-        value="$("$buddy" -c "Print ${key}:value:parameters:${i}" "$exported" 2>/dev/null)" || break
-        params="${params}<integer>${value}</integer>"
-    done
-    rm -f "$exported"
-    if [ -z "$params" ]; then
-        params="<integer>32</integer><integer>49</integer><integer>1048576</integer>" # ⌘Space
-    fi
-
-    echo "--> Re-enabling the Spotlight keyboard shortcut..."
-    run defaults write "$domain" AppleSymbolicHotKeys -dict-add 64 \
-        "<dict><key>enabled</key><true/><key>value</key><dict><key>parameters</key><array>${params}</array><key>type</key><string>${type}</string></dict></dict>"
     # Apply now instead of at next login.
     local activate="/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings"
     if [ -x "$activate" ]; then

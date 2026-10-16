@@ -2119,6 +2119,20 @@ struct TestRunner {
         assertTrue(!FirstRunManager.summary(for: noIndexing).contains("File Indexing"),
                    "Indexing is omitted when it was not attempted")
 
+        // Re-enabling the agent has to load and start it, not only clear the override:
+        // after a login with it disabled launchd never loaded it, and `enable` alone
+        // left Spotlight gone until the next login.
+        let target = "gui/501/com.apple.Spotlight"
+        let enable = SpotlightManager.serviceCommands(enabled: true, uid: 501)
+        assertEqual(enable.first, ["enable", target], "Enabling clears the override first")
+        assertEqual(enable.dropFirst().first, ["bootstrap", "gui/501", SpotlightManager.servicePlistPath],
+                    "Then loads the agent into the GUI domain")
+        assertEqual(enable.last, ["kickstart", target], "Then starts it now")
+        assertTrue(FileManager.default.fileExists(atPath: SpotlightManager.servicePlistPath),
+                   "The Spotlight agent plist exists where bootstrap looks for it")
+        assertEqual(SpotlightManager.serviceCommands(enabled: false, uid: 501), [["disable", target]],
+                    "Disabling only sets the override")
+
         print("✅ SpotlightManager shortcut state passed all tests!\n")
     }
 
@@ -2311,6 +2325,8 @@ struct TestRunner {
         assertTrue(script.contains("xattr -dr com.apple.quarantine"), "The helper clears quarantine")
         assertTrue(script.contains("/usr/bin/open '/Applications/Lightspot.app'"), "The helper relaunches the app")
         assertTrue(!script.contains("launchctl asuser"), "The unprivileged helper relaunches directly")
+        assertTrue(script.contains("rm -rf '/tmp/stage'") && script.contains("rm -rf \"$(dirname \"$0\")\""),
+                   "The helper removes the staging folder and its own folder")
 
         let privileged = UpdateManager.installerScript(pid: 4242,
                                                        stagedBundle: "/tmp/stage/Lightspot.app",
@@ -2322,6 +2338,15 @@ struct TestRunner {
         assertTrue(privileged.contains("/bin/launchctl asuser 501 /usr/bin/open '/Applications/Lightspot.app'"),
                    "The privileged helper relaunches back in the user's session")
         assertTrue(privileged.contains("chown -R 501"), "The privileged helper hands the bundle back to the user")
+
+        // Regression: the check ran on URLSession.shared, which stored every release feed
+        // in ~/Library/Caches/<bundle id>/Cache.db and its cookies in ~/Library/HTTPStorages.
+        let updateSession = UpdateManager.session
+        assertTrue(updateSession !== URLSession.shared, "The update check does not use the shared session")
+        assertEqual(updateSession.configuration.urlCache?.diskCapacity ?? 0, 0,
+                    "The update check never caches a response on disk")
+        assertTrue(updateSession.configuration.httpCookieStorage !== HTTPCookieStorage.shared,
+                   "The update check does not touch the persistent cookie store")
 
         try? fm.removeItem(at: sandbox)
         print("✅ UpdateManager passed all tests!\n")
