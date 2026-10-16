@@ -22,7 +22,8 @@ struct PreviewPaneView: View {
 
             // Specialized color swatch or large icon
             if result.id.hasPrefix("dev-color-") {
-                let hex = String(result.id.dropFirst("dev-color-".count))
+                // "dev-color-#HEX", or "dev-color-#HEX-rgb" / "-hsl" for the copy-format rows.
+                let hex = String(result.id.dropFirst("dev-color-".count).prefix { $0 != "-" })
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(Color(hex: hex) ?? Color.accentColor)
                     .frame(width: 80, height: 80)

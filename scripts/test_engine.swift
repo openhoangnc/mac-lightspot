@@ -28,6 +28,12 @@ struct TestRunner {
 
     // MARK: - Helpers
 
+    /// The text a `.copyToClipboard` result would copy, or nil for any other action.
+    static func copiedText(_ result: SearchResult?) -> String? {
+        if case .copyToClipboard(let text) = result?.action { return text }
+        return nil
+    }
+
     /// `FuzzyMatcher.score` consumes pre-tokenized targets so it never allocates on
     /// the search path; the tests build those forms the same way the models do.
     static func score(query: String, target: String) -> Double? {
@@ -998,6 +1004,18 @@ struct TestRunner {
         assertTrue(binResult != nil, "42 in bin converts")
         assertEqual(binResult?.value, "0b101010", "42 in bin is 0b101010")
 
+        // Regression: the bare 0x/0b literal branches ran first, tried to parse "ff in dec"
+        // as hex, failed and returned nil, so the README's own examples converted to nothing.
+        assertEqual(ConversionEngine.convert("0xFF in dec")?.value, "255", "0xFF in dec converts to 255")
+        assertEqual(ConversionEngine.convert("0b1010 in dec")?.value, "10", "0b1010 in dec converts to 10")
+        assertEqual(ConversionEngine.convert("0xFF in bin")?.value, "0b11111111", "0xFF in bin converts to binary")
+        assertEqual(ConversionEngine.convert("0b1010 to hex")?.value, "0xA", "0b1010 to hex converts to hex")
+        assertEqual(ConversionEngine.convert("0XFF IN DEC")?.value, "255", "Prefixed base conversion is case-insensitive")
+        assertEqual(ConversionEngine.convert("0xFF in dec")?.subtitle, "0xFF in decimal = 255", "Subtitle keeps the input as typed")
+        assertEqual(ConversionEngine.convert("0b1010")?.value, "10", "Bare 0b1010 still converts")
+        assertTrue(ConversionEngine.convert("0xZZ in dec") == nil, "Invalid hex digits do not convert")
+        assertTrue(ConversionEngine.convert("10km in mi")?.value.contains("mi") == true, "Unit 'in' conversions still reach the unit engine")
+
         let currResult = ConversionEngine.convert("100 USD in EUR")
         assertTrue(currResult != nil, "100 USD in EUR converts")
         assertEqual(currResult?.value, "92.00 EUR", "100 USD in EUR is 92.00 EUR")
@@ -1137,6 +1155,69 @@ struct TestRunner {
         let jsonResults = devProvider.search(SearchQuery("json {\"a\":1}"))
         assertTrue(!jsonResults.isEmpty, "json pretty-prints")
         assertTrue(jsonResults.first?.action != nil, "json action is copyToClipboard")
+
+        // Regression: "b64 " was matched before "b64 decode ", so decode encoded the word "decode".
+        assertEqual(devProvider.search(SearchQuery("b64 decode aGVsbG8=")).first?.title, "hello", "b64 decode decodes")
+        assertEqual(devProvider.search(SearchQuery("base64 decode aGVsbG8=")).first?.title, "hello", "base64 decode decodes")
+        assertTrue(devProvider.search(SearchQuery("b64 decode")).isEmpty, "Bare 'b64 decode' does not encode the word 'decode'")
+        assertTrue(devProvider.search(SearchQuery("b64 decode !!!")).isEmpty, "Invalid Base64 after 'b64 decode' does not fall through to encode")
+        assertEqual(devProvider.search(SearchQuery("base64 hi")).first?.title, "aGk=", "base64 <text> still encodes")
+
+        // Regression: "hash sha256 <text>" hashed the literal string "sha256 <text>".
+        let helloSHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        let helloMD5 = "5d41402abc4b2a76b9719d911017c592"
+        let helloSHA1 = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
+        let allHashes = devProvider.search(SearchQuery("hash hello"))
+        assertEqual(allHashes.map(\.title), [helloSHA256, helloMD5, helloSHA1], "hash <text> returns SHA-256, MD5 and SHA-1")
+        let sha256Only = devProvider.search(SearchQuery("hash sha256 hello"))
+        assertEqual(sha256Only.map(\.title), [helloSHA256], "hash sha256 <text> returns only SHA-256 of <text>")
+        assertEqual(copiedText(sha256Only.first), helloSHA256, "hash sha256 copies the digest")
+        assertEqual(devProvider.search(SearchQuery("hash md5 hello")).map(\.title), [helloMD5], "hash md5 <text> returns only MD5")
+        assertEqual(devProvider.search(SearchQuery("hash SHA1 hello")).map(\.title), [helloSHA1], "hash SHA1 <text> is case-insensitive")
+        assertEqual(devProvider.search(SearchQuery("hash md5 hello world")).first?.subtitle, "MD5 · 'hello world'", "Algorithm subcommand keeps spaces in the text")
+        assertTrue(devProvider.search(SearchQuery("hash sha256")).isEmpty, "hash sha256 with no text does not hash the algorithm name")
+
+        // Regression: only the JWT payload was decoded; the README promises the header too.
+        let jwtToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        let jwtResults = devProvider.search(SearchQuery("jwt \(jwtToken)"))
+        assertEqual(jwtResults.map(\.title), ["Decoded JWT Payload", "Decoded JWT Header"], "jwt shows payload then header")
+        assertTrue(copiedText(jwtResults.first)?.contains("\"name\" : \"John Doe\"") == true, "JWT payload row copies the pretty payload")
+        assertTrue(copiedText(jwtResults.last)?.contains("\"alg\" : \"HS256\"") == true, "JWT header row copies the pretty header")
+        assertTrue(jwtResults.allSatisfy { $0.id.hasPrefix("dev-jwt-") }, "Both JWT rows keep the prefix the preview pane keys on")
+        assertTrue(jwtResults.first?.id != jwtResults.last?.id, "JWT payload and header rows have distinct ids")
+        assertEqual(devProvider.search(SearchQuery(jwtToken)).count, 2, "A raw token also decodes both parts")
+        let otherJWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0MiJ9.c2ln"
+        assertTrue(devProvider.search(SearchQuery(otherJWT)).first?.id != jwtResults.first?.id,
+                   "Tokens sharing a header get different ids")
+
+        // Regression: the README promised HEX, RGB and HSL copying; only HEX was offered.
+        let swatch = devProvider.search(SearchQuery("#3498db"))
+        assertEqual(swatch.count, 3, "Colour returns HEX, RGB and HSL rows")
+        assertEqual(swatch.first?.title, "#3498DB · rgb(52, 152, 219) · hsl(204, 70%, 53%)", "Colour title shows HEX, RGB and HSL")
+        assertEqual(swatch.map { copiedText($0) ?? "" }, ["#3498DB", "rgb(52, 152, 219)", "hsl(204, 70%, 53%)"], "Each colour row copies its own format")
+        assertTrue(swatch.allSatisfy { $0.id.hasPrefix("dev-color-#3498DB") }, "Every colour row id starts with the HEX the swatch reads")
+        assertEqual(Set(swatch.map(\.id)).count, 3, "Colour rows have distinct ids")
+        assertEqual(copiedText(devProvider.search(SearchQuery("rgb(52, 152, 219)")).last), "hsl(204, 70%, 53%)", "rgb() input also offers HSL")
+        assertEqual(copiedText(devProvider.search(SearchQuery("#ff00ff")).last), "hsl(300, 100%, 50%)", "Magenta hue wraps to 300, not -60")
+        assertEqual(copiedText(devProvider.search(SearchQuery("#fff")).last), "hsl(0, 0%, 100%)", "Achromatic colours have zero hue and saturation")
+        assertEqual(copiedText(devProvider.search(SearchQuery("#3498DB80")).last), "hsla(204, 70%, 53%, 0.50)", "Alpha carries into hsla()")
+
+        // Regression: README says epoch converts "vice-versa"; only epoch -> date existed.
+        let zoned = devProvider.search(SearchQuery("epoch 2024-01-15T10:30:00Z"))
+        assertEqual(zoned.first?.title, "1705314600", "ISO 8601 date with zone converts to epoch seconds")
+        assertEqual(copiedText(zoned.first), "1705314600", "Date -> epoch copies the seconds")
+        assertEqual(devProvider.search(SearchQuery("epoch 2024-01-15T17:30:00+07:00")).first?.title, "1705314600", "A numeric zone offset is honoured")
+        var localParts = DateComponents()
+        (localParts.year, localParts.month, localParts.day, localParts.hour, localParts.minute) = (2024, 1, 15, 10, 30)
+        let localEpoch = Int64(Calendar.current.date(from: localParts)!.timeIntervalSince1970)
+        assertEqual(devProvider.search(SearchQuery("epoch 2024-01-15 10:30")).first?.title, "\(localEpoch)", "Zone-less date-time is read in local time")
+        assertEqual(devProvider.search(SearchQuery("epoch 2024-01-15T10:30")).first?.title, "\(localEpoch)", "A T separator works too")
+        (localParts.hour, localParts.minute) = (0, 0)
+        let midnightEpoch = Int64(Calendar.current.date(from: localParts)!.timeIntervalSince1970)
+        assertEqual(devProvider.search(SearchQuery("epoch 2024-01-15")).first?.title, "\(midnightEpoch)", "Bare date is local midnight")
+        assertTrue(devProvider.search(SearchQuery("epoch 2024-02-30")).isEmpty, "Impossible dates do not convert")
+        assertTrue(devProvider.search(SearchQuery("epoch hello")).isEmpty, "Non-dates do not convert")
+        assertTrue(devProvider.search(SearchQuery("epoch 1700000000")).first?.id == "dev-epoch-1700000000", "Epoch -> date still works")
 
         print("✅ DevToolsProvider passed all tests!\n")
 

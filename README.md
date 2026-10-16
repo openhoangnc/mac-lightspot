@@ -120,12 +120,12 @@ Quickly terminate lingering dev servers, stuck background tasks, or rogue proces
 ### 6. 🛠️ Built-in Offline Developer Utilities (DevTools)
 Perform common developer operations in milliseconds without opening web utilities or installing CLI packages:
 - **`uuid`**: Generates a cryptographically random UUID v4.
-- **`b64 <text>`** / **`b64d <hash>`**: Base64 encode and decode.
+- **`b64 <text>`** / **`b64d <base64>`** (or **`b64 decode <base64>`**): Base64 encode and decode.
 - **`urlencode <url>`** / **`urldecode <url>`**: URL percent-encoding.
-- **`hash sha256 <text>`** / **`sha1`** / **`md5`**: Instant cryptographic checksums.
+- **`hash <text>`** / **`hash sha256|sha1|md5 <text>`**: Instant cryptographic checksums — all three at once, or only the algorithm you name.
 - **`jwt <token>`**: Decodes and pretty-prints JWT headers and payload.
 - **`json <raw>`**: Formats, indents, and validates minified JSON.
-- **`epoch`** / **`now`**: Unix timestamp conversion to human dates and vice-versa.
+- **`epoch`** / **`now`**: Current Unix timestamp; **`epoch <timestamp>`** converts it to a human date, and **`epoch 2024-01-15 10:30`** converts back (local time, or ISO 8601 with a zone).
 - **`#3498db`**: Live color preview swatch with 1-click Hex, RGB, and HSL copying.
 
 ### 7. 🔐 Headless Touch ID for Sudo & Privileged Actions

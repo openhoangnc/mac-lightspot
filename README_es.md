@@ -120,12 +120,12 @@ Termina rápidamente servidores de desarrollo persistentes, tareas en segundo pl
 ### 6. 🛠️ Utilidades para Desarrolladores Offline Integradas (DevTools)
 Realiza operaciones comunes de desarrollador en milisegundos sin abrir utilidades web ni instalar paquetes CLI:
 - **`uuid`**: Genera un UUID v4 criptográficamente aleatorio.
-- **`b64 <texto>`** / **`b64d <hash>`**: Codifica y decodifica Base64.
+- **`b64 <texto>`** / **`b64d <base64>`** (o **`b64 decode <base64>`**): Codifica y decodifica Base64.
 - **`urlencode <url>`** / **`urldecode <url>`**: Codificación porcentual de URL.
-- **`hash sha256 <texto>`** / **`sha1`** / **`md5`**: Sumas de comprobación criptográficas instantáneas.
+- **`hash <texto>`** / **`hash sha256|sha1|md5 <texto>`**: Sumas de comprobación criptográficas instantáneas: las tres a la vez, o solo el algoritmo indicado.
 - **`jwt <token>`**: Decodifica e imprime bonitamente los encabezados y la carga útil de JWT.
 - **`json <raw>`**: Formatea, sangra y valida JSON minificado.
-- **`epoch`** / **`now`**: Conversión de marcas de tiempo Unix a fechas humanas y viceversa.
+- **`epoch`** / **`now`**: Marca de tiempo Unix actual; **`epoch <marca>`** la convierte en una fecha legible y **`epoch 2024-01-15 10:30`** hace lo inverso (hora local, o ISO 8601 con zona horaria).
 - **`#3498db`**: Muestra de vista previa de color en vivo con copia de Hex, RGB y HSL con un solo clic.
 
 ### 7. 🔐 Touch ID sin Interfaz para Sudo y Acciones Privilegiadas
