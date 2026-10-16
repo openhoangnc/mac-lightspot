@@ -139,8 +139,14 @@ public final class ClipboardHistoryManager: @unchecked Sendable {
         let trimmed = query.trimmed
         let lower = query.lowercased
 
-        let isExplicitClip = lower.hasPrefix("clip ") || lower == "clip" || lower == "clipboard"
-        let keyword = isExplicitClip && lower.hasPrefix("clip ") ? String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines) : trimmed
+        let isClipPrefix = lower.hasPrefix("clip ")
+        let isBareClip = lower == "clip" || lower == "clipboard"
+        let isExplicitClip = isClipPrefix || isBareClip
+        // SearchQuery trims, so "clip " arrives as a bare "clip": that must list the latest
+        // entries, not fuzzy-search them for the word "clip".
+        let keyword = isClipPrefix
+            ? String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespacesAndNewlines)
+            : (isBareClip ? "" : trimmed)
 
         lock.lock()
         let items = entries

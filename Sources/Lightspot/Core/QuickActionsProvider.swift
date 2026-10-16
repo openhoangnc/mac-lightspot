@@ -194,13 +194,12 @@ final class QuickActionsProvider: Sendable {
 
             if let score = highestScore {
                 var subtitle = action.subtitle
-                var actionPayload: SearchAction = .runQuickAction(script: action.script, usesOsascript: action.usesOsascript)
+                let actionPayload: SearchAction = .runQuickAction(script: action.script, usesOsascript: action.usesOsascript)
 
                 if action.name == "IP Address" {
-                    let local = NetworkInfoProvider.shared.localIPv4Address() ?? "Offline"
-                    let pub = NetworkInfoProvider.shared.cachedPublicIPv4Address() ?? "Fetching..."
-                    subtitle = "Local: \(local) · Public: \(pub) · Press ↵ to copy"
-                    actionPayload = .copyToClipboard(pub != "Fetching..." ? "\(local) (Local) · \(pub) (Public)" : local)
+                    // The action stays `internal:copy-ip`, which embeds no address, so
+                    // search history never stores one; the IPs are read again on ↵.
+                    subtitle = Self.ipAddressSubtitle(query: query, score: score)
                 } else if action.name == "Terminal in Finder Folder" {
                     guard let folder = TerminalLauncher.cachedFinderFolderPath(), !folder.isEmpty else {
                         continue
@@ -227,6 +226,59 @@ final class QuickActionsProvider: Sendable {
         }
 
         return results.sorted { $0.score > $1.score }
+    }
+
+    // MARK: - IP Address
+
+    /// Weakest match that may look up the public IP: a word-boundary prefix (85) or better,
+    /// so substring, initials and subsequence matches never do.
+    static let publicIPLookupMinScore: Double = 85
+
+    /// True only when the query names the IP itself ("ip", "my ip", "public ip", "ipv4").
+    /// The lookup is a request to api.ipify.org, and quick actions have no score floor, so
+    /// matching the action is not enough: "lo" prefixes the "local ip" keyword, "ad" the
+    /// word "address" and "i" the name, and none of them asked for an IP. "local ip" is a
+    /// question about the local address only.
+    static func queryAsksForPublicIP(_ query: SearchQuery, score: Double) -> Bool {
+        guard score >= publicIPLookupMinScore else { return false }
+        let words = query.lowercased.split { !$0.isLetter && !$0.isNumber }
+        return words.contains { $0 == "ip" || $0 == "ipv4" } && !words.contains("local")
+    }
+
+    /// Shows the local IP immediately (getifaddrs, < 0.1 ms) and the public IP only once
+    /// it has been asked for. Non-blocking: a lookup, if due, runs in the background.
+    static func ipAddressSubtitle(query: SearchQuery, score: Double) -> String {
+        let network = NetworkInfoProvider.shared
+        if queryAsksForPublicIP(query, score: score) {
+            network.requestPublicIPv4Address()
+        }
+        let local = network.localIPv4Address() ?? "Offline"
+        switch network.publicIPState() {
+        case .available(let ip):
+            return "Local: \(local) · Public: \(ip) · Press ↵ to copy"
+        case .fetching:
+            return "Local: \(local) · Public: Fetching... · Press ↵ to copy"
+        case .unavailable:
+            return "Local: \(local) · Public: Unavailable · Press ↵ to copy"
+        case .notRequested:
+            return "Local: \(local) · Press ↵ to copy with public IP"
+        }
+    }
+
+    /// ↵ on the IP Address row: the user asked, so look up the public IP if none is cached
+    /// fresh, then copy both. Falls back to the local IP alone if the lookup fails.
+    static func copyIPAddresses() {
+        guard let local = NetworkInfoProvider.shared.localIPv4Address() else { return }
+        let changeCount = NSPasteboard.general.changeCount
+        NetworkInfoProvider.shared.requestPublicIPv4Address(force: true) { pub in
+            let text = pub.map { "\(local) (Local) · \($0) (Public)" } ?? local
+            DispatchQueue.main.async {
+                // The lookup can take up to 3 s; never overwrite something copied meanwhile.
+                guard NSPasteboard.general.changeCount == changeCount else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+        }
     }
 
     // MARK: - Sudo & Privileged Execution
@@ -444,12 +496,7 @@ final class QuickActionsProvider: Sendable {
     static func execute(script: String, usesOsascript: Bool, requiresAdmin: Bool = false) {
         DispatchQueue.global(qos: .userInitiated).async {
             if script == "internal:copy-ip" {
-                if let local = NetworkInfoProvider.shared.localIPv4Address() {
-                    let pub = NetworkInfoProvider.shared.cachedPublicIPv4Address()
-                    let text = pub != nil ? "\(local) (Local) · \(pub!) (Public)" : local
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                }
+                copyIPAddresses()
             } else if script == "internal:terminal-finder" {
                 TerminalLauncher.openFinderCurrentFolderInTerminal()
             } else if script == "internal:toggle-touchid-sudo" {
