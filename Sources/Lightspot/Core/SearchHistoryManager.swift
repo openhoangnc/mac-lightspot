@@ -353,8 +353,12 @@ final class SearchHistoryManager: @unchecked Sendable {
     // MARK: - Retention
 
     /// Id prefixes of results that are never recorded (see `retention`). Stats carry no
-    /// category, so this is how stored stats are matched when scrubbing.
-    private static let unretainedIdPrefixes = ["clip-", "calc-", "dev-"]
+    /// category, so this is how stored stats are matched when scrubbing. The process-killer
+    /// prefixes are listed one by one so `kill-hint` keeps its stats.
+    private static let unretainedIdPrefixes = [
+        "clip-", "calc-", "dev-",
+        "kill-pid-", "kill-app-", "kill-cli-", "kill-port-",
+    ]
 
     /// Decides what a selection may leave on disk.
     /// - Clipboard entries are never recorded: clipboard history is RAM-only by design.
@@ -365,12 +369,20 @@ final class SearchHistoryManager: @unchecked Sendable {
     /// - Any other result that copies text (snippets, whose expansion can include the
     ///   clipboard; the hardware HUD) keeps ranking stats under its stable id, but no
     ///   replayable entry, since that would store the copied text.
+    /// - Process-killer results are never recorded. Replaying one would signal whatever
+    ///   process holds that PID now, possibly an unrelated one after PID reuse, and their
+    ///   ids (`kill-pid-<pid>`, `kill-port-<port>-<pid>`) are meaningless in the next session,
+    ///   so stats under them would never boost anything. The `kill-hint` row carries no PID
+    ///   and keeps its stats like any other copy result.
     static func retention(itemId: String, category: ResultCategory, action: SearchAction) -> HistoryRetention {
         switch category {
         case .clipboard, .calculator, .devTools:
             return .none
         default:
             break
+        }
+        if case .killProcess = action {
+            return .none
         }
         if unretainedIdPrefixes.contains(where: { itemId.hasPrefix($0) }) {
             return .none

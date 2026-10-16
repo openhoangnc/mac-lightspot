@@ -179,6 +179,7 @@ struct TestRunner {
         testSettingsBackup()
         testPublicIPLookupIsOnDemand()
         testHistoryDoesNotPersistCopiedContent()
+        testHistoryDoesNotRecordProcessKills()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -646,6 +647,97 @@ struct TestRunner {
 
         history.reset()
         print("✅ Search history privacy passed all tests!\n")
+    }
+
+    // MARK: - Test 28: process kills are never replayable from history
+
+    static func testHistoryDoesNotRecordProcessKills() {
+        print("Testing search history does not record process kills...")
+        let history = SearchHistoryManager.shared
+        history.reset()
+
+        // A real `kill <pid>` result, as selected and as promoted to Top Hit.
+        let pid = getpid()
+        let pidResult = ProcessKillerProvider.shared.search(SearchQuery("kill \(pid)"))
+            .first { $0.id == "kill-pid-\(pid)" }
+        assertTrue(pidResult != nil, "kill <pid> yields a kill-pid result")
+        if let pidResult {
+            history.recordSelection(result: pidResult, query: "kill \(pid)")
+            let promoted = SearchResult(
+                id: "top-\(pidResult.id)", title: pidResult.title, subtitle: pidResult.subtitle,
+                iconType: pidResult.iconType, category: .topHit, score: pidResult.score,
+                action: pidResult.action, promotedFrom: .quickActions
+            )
+            history.recordSelection(result: promoted, query: "kill \(pid)")
+            assertTrue(history.itemRecord(for: pidResult.id) == nil, "kill-pid selection leaves no ranking stats")
+        }
+
+        // The other process-killer ids, and a force kill.
+        for id in ["kill-app-4242", "kill-cli-4242", "kill-port-3000-4242"] {
+            history.recordSelection(
+                itemId: id, title: "Kill node", subtitle: "PID: 4242", category: .quickActions,
+                iconType: .systemSymbol(name: "terminal.fill"),
+                action: .killProcess(pid: 4242, name: "node", force: id == "kill-cli-4242"),
+                query: "kill node"
+            )
+            assertTrue(history.itemRecord(for: id) == nil, "\(id) selection leaves no ranking stats")
+        }
+        assertEqual(SearchHistoryManager.retention(itemId: "renamed-kill", category: .quickActions,
+                                                   action: .killProcess(pid: 4242, name: "node", force: false)),
+                    HistoryRetention.none, "Any kill action is unrecorded, whatever its id")
+        assertTrue(history.entries().isEmpty, "Process kills leave no replayable history entry")
+
+        // The `kill` hint carries no PID and keeps its ranking stats.
+        let hint = ProcessKillerProvider.shared.search(SearchQuery("kill")).first
+        assertEqual(hint?.id, "kill-hint", "Bare kill yields the hint row")
+        if let hint {
+            history.recordSelection(result: hint, query: "kill")
+            assertEqual(history.itemRecord(for: "kill-hint")?.totalCount, 1, "kill-hint keeps ranking stats")
+            assertTrue(history.entries().isEmpty, "kill-hint stores no replayable entry")
+        }
+
+        let key = "lightspot_search_history"
+        assertTrue(waitUntil {
+            UserDefaults.standard.data(forKey: key).map { String(decoding: $0, as: UTF8.self).contains("kill-hint") } ?? false
+        }, "History was persisted")
+        let stored = UserDefaults.standard.data(forKey: key).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        assertTrue(!stored.contains("killProcess"), "Persisted history holds no kill action")
+        assertTrue(!stored.contains("kill-pid-") && !stored.contains("kill-port-"), "Persisted history holds no PID-keyed ids")
+
+        // Kill entries written by an earlier version (or restored from its backup) are scrubbed.
+        let legacyKill = SearchHistoryEntry(
+            itemId: "kill-pid-4242", query: "kill 4242", title: "Terminate node (PID: 4242)",
+            subtitle: "Press ↵ to terminate gracefully · ⌥↵ to force kill", category: .quickActions,
+            iconType: .systemSymbol(name: "gearshape.2.fill"),
+            action: .killProcess(pid: 4242, name: "node", force: false)
+        )
+        let legacyPortKill = SearchHistoryEntry(
+            itemId: "kill-port-3000-4242", query: "kill :3000", title: "Kill node on Port :3000",
+            subtitle: "PID: 4242", category: .quickActions,
+            iconType: .systemSymbol(name: "network.badge.shield.half.filled"),
+            action: .killProcess(pid: 4242, name: "node", force: true)
+        )
+        let legacyApp = SearchHistoryEntry(
+            itemId: "app-com.apple.Terminal", query: "term", title: "Terminal", subtitle: "Application",
+            category: .applications, iconType: .systemSymbol(name: "terminal"), action: .launchApp(path: "/System/Applications/Utilities/Terminal.app")
+        )
+        let usage = ItemUsageRecord(totalCount: 1, lastSelected: Date())
+        history.restore(
+            entries: [legacyKill, legacyPortKill, legacyApp],
+            stats: [
+                "kill-pid-4242": usage, "kill-app-4242": usage, "kill-cli-4242": usage,
+                "kill-port-3000-4242": usage, "kill-hint": usage, "app-com.apple.Terminal": usage,
+            ]
+        )
+        assertEqual(history.entries().map(\.itemId), ["app-com.apple.Terminal"], "Legacy kill entries are dropped")
+        for id in ["kill-pid-4242", "kill-app-4242", "kill-cli-4242", "kill-port-3000-4242"] {
+            assertTrue(history.itemRecord(for: id) == nil, "Legacy \(id) stats are dropped")
+        }
+        assertTrue(history.itemRecord(for: "kill-hint") != nil, "kill-hint ranking stats are kept")
+        assertTrue(history.itemRecord(for: "app-com.apple.Terminal") != nil, "App ranking stats are kept")
+
+        history.reset()
+        print("✅ Process kill history passed all tests!\n")
     }
 
     // MARK: - Test 14: Custom Commands Store & Engine Integration
