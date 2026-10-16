@@ -507,7 +507,9 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             guard success else {
                 self.showAlert(
                     title: "Could Not Change Spotlight Process",
-                    message: "launchctl refused to \(target ? "enable" : "disable") com.apple.Spotlight for this user."
+                    message: target
+                        ? "launchctl could not enable and start com.apple.Spotlight for this user."
+                        : "launchctl refused to disable com.apple.Spotlight for this user."
                 )
                 return
             }
@@ -515,7 +517,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             self.showAlert(
                 title: target ? "Spotlight Process Enabled" : "Spotlight Process Disabled",
                 message: target
-                    ? "The Spotlight launchd background process has been re-enabled."
+                    ? "The Spotlight launchd background process has been re-enabled and started."
                     : "The Spotlight launchd background process has been disabled and terminated."
             )
         }

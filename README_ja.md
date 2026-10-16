@@ -62,7 +62,7 @@ Lightspotは根本的に異なるアプローチをとることでこれらの�
 |:---|:---|:---|:---|
 | **ファイルインデックス作成** | 制御されないバックグラウンドクロール | オプション / 設定可能 | **なし** (アーキテクチャによる保証) |
 | **アイドル時のCPU使用率** | 動作時に100%+までスパイク | 1% – 5% (バックグラウンド) | **最小限** (インデックスなし。0.6秒ごとのクリップボード確認のみ) |
-| **ディスクストレージ** | 10 GB – 200 GB+ の隠しキャッシュ | 100 MB – 1 GB | **インデックスもキャッシュもなし** (設定のみ `UserDefaults` に保存) |
+| **ディスクストレージ** | 10 GB – 200 GB+ の隠しキャッシュ | 100 MB – 1 GB | **インデックスもキャッシュもなし** (`UserDefaults` の設定とロックファイルのみ) |
 | **RAMフットプリント** | 500 MB – 2 GB+ | 200 MB – 500 MB | **約15 – 25 MB** (Pure Swift) |
 | **アプリの起動** | 頻繁に壊れ、再構築が必要 | 信頼できる | **100%の信頼性** (直接スキャン) |
 | **検索レイテンシ** | デバウンス処理あり (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬時の同期処理) |
@@ -145,7 +145,7 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 - 自動的なパスのサニタイズにより、`/Users/username` が `~` に置き換えられるため、設定を仕事用と個人用のMac間でシームレスに共有できます。
 
 ### 10. 🔄 組み込みの自動アップデート
-- GitHub Releasesを1日1回バックグラウンドで確認し、メニューバーから新しいバージョンを提示します。**`Check for Updates...`** でその場で実行でき、**`Automatically Check for Updates`** で毎日の確認を完全に無効化できます。
+- GitHub Releasesをバックグラウンドで確認し（起動の少し後と、メニューバーのメニューを開いたとき）、メニューバーから新しいバージョンを提示します。確認に成功すると次の確認まで1日空けます。失敗した場合（オフライン、レート制限）は、次回の起動時またはメニューを開いたときに再試行します。**`Check for Updates...`** でその場で実行でき、**`Automatically Check for Updates`** で自動確認を完全に無効化できます。
 - その場で更新します: Lightspotがリリースをダウンロードして検証し、自身のバンドルを置き換えて再起動します。**`Skip This Version`** を選べば、確認を無効化せずにそのリリースだけを見送れます。
 - すべてのダウンロードには関門があります: HTTPSのみ、GitHubのホストのみ（リダイレクト後に再確認）、展開されたバンドルはLightspotのバンドル識別子・実行可能なバイナリ・公表されたバージョンとの完全一致が必須で、インストール済みより古いビルドは決して受け入れません。
 - リリースはアドホック署名です（このプロジェクトはDeveloper IDを同梱していません）。そのため検証できるコード署名は存在せず、上記のチェックとGitHubへのHTTPSが信頼モデルのすべてです。これは `install.sh` が既に求めているものと同じです。
@@ -177,7 +177,7 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 Lightspotには、Appleの組み込みSpotlightを無効または再有効化するためのメニューバー内の自動化機能が含まれています：
 
 1. **Spotlightのショートカット (`⌘Space`)**: Appleのデフォルトのホットキー、`⌘Space`（「Spotlight検索を表示」）と `⌥⌘Space`（「Finderの検索ウインドウを表示」）の両方を、root権限なしで無効化または復元します。変更は環境設定デーモンを通じて書き込まれ、読み戻して検証され、ログアウトなしで即時に適用されます。さらに、macOSがキーを手放すと同時にLightspotが `⌘Space` を自分のものとして登録します。
-2. **バックグラウンドプロセス (`com.apple.Spotlight`)**: `launchctl` を介してSpotlight GUIのバックグラウンドエージェントを無効化または有効化します。
+2. **バックグラウンドプロセス (`com.apple.Spotlight`)**: `launchctl` を介してSpotlight GUIのバックグラウンドエージェントを無効化または有効化します。有効化するとエージェントの読み込みと起動も行うため、ログアウトせずにSpotlightが戻ります。
 3. **ファイルインデックス作成 (`mdutil`)**: マウントされているすべてのボリュームにわたり、ファイルシステムのメタデータインデックス作成（`mds` / `mds_stores`）を完全にシャットダウンします。
 4. **ワンクリックのマスターアクション**:
    - **`Disable Everything (Shortcut + Process + Indexing)...`**: AppleのSpotlightを完全にシャットダウンし、CPU、RAM、ディスク容量、および `⌘Space` を取り戻します。
@@ -216,7 +216,7 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 LightspotにはXCTestターゲットはありません。`scripts/` 配下の2つの独立したスクリプトをソースとともにその場でコンパイルして実行します：ロジックとエンジンのテストランナー（32のテストブロック）と、ライブシステム検証ツール（10セクション、フル装備のマシンで88チェック。zshの履歴やVS Codeがない場合などは一部がスキップされます）：
 ```bash
 # コアロジックとエンジンのテスト (32のテストブロック)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift && /tmp/test_engine
 
 # ライブシステムチェック (10セクション、フル装備のマシンで88チェック)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -248,9 +248,11 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **RAM専用の一時的なクリップボード**: クリップボードの履歴は揮発性メモリ内にのみ留まり、隠蔽されたタイプ/パスワードマネージャー（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）を積極的に無視します。ディスクには一切書き込まれず、検索履歴にも残りません。検索履歴は、計算機・開発者ツール・スニペットの結果からコピーしたテキストも保存しません。
 - **デフォルトブラウザの分離**: ブックマーク、開いているタブ、最近の閲覧履歴は、設定されたデフォルトブラウザからのみ、このMac上で読み取られ、クロスブラウザのスクレイピングを回避します。
 - **ユーザー操作によるコマンド実行**: あなたのコマンド、スクリプト、クイックアクションは、明示的なユーザーアクション（`Return` または `⌘↵`）があった場合にのみ実行されます。
-- **テレメトリゼロ、通信は2種類だけ（どちらもあなたの管理下）**: 分析、トラッキング、アカウントは一切ありません。Lightspot自身が送信するリクエストは2種類だけで、どちらもあなたが決められます。1つ目はアップデート確認で、GitHubの公開リリースAPIへの認証なしの `GET` です。送信するのは `User-Agent` に含まれる現在のバージョンだけで、多くても1日1回です。メニューバーで **`Automatically Check for Updates`** をオフにすれば、一度も実行されません。2つ目はパブリックIPを調べるための `GET https://api.ipify.org`（サードパーティのサービス）で、あなたが求めたときにだけ送信されます：IPを指すクエリ（`ip`, `my ip`, `public ip`, `ipv4`）を入力したとき、または **IP Address** の行で `Return` を押したときです。他のWebサーバーと同様に、ipifyにはあなたのIPアドレスと標準的なmacOSのユーザーエージェントが見えます。結果はメモリ内に15分間保持され、ディスクには書き込まれません。Web検索、URL、ブックマークはブラウザが開き、それも `Return` を押したときだけです。
-- **ディスクに書き込まれるもの**: Lightspot自身の環境設定のみです（`UserDefaults`、`~/Library/Preferences/com.lightspot.app.plist`）：
+- **テレメトリゼロ、通信先は2つだけ（どちらもあなたの管理下）**: 分析、トラッキング、アカウントは一切ありません。Lightspot自身が通信するサービスは2つだけで、どちらもあなたが決められます。1つ目はアップデートのためのGitHubです。公開リリースAPI（`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`）への認証なしの `GET` で、`User-Agent: Lightspot/<バージョン> (+https://github.com/openhoangnc/mac-lightspot)` を付けて、起動の少し後とメニューバーのメニューを開いたときに送信しますが、確認に成功した後は1日1回までです（失敗した確認は次回の起動時またはメニューを開いたときに再試行します）。メニューバーで **`Automatically Check for Updates`** をオフにすれば、自動では一度も実行されません。承認したアップデートをインストールするときは、そのzipをGitHubからダウンロードします（`User-Agent: Lightspot/<バージョン>`）。どちらもエフェメラルセッションを使うため、レスポンスやCookieがディスクに保存されることはありません。2つ目はipifyで、パブリックIPを調べるための `GET https://api.ipify.org`（サードパーティのサービス）で、あなたが求めたときにだけ送信されます：IPを指すクエリ（`ip`, `my ip`, `public ip`, `ipv4`）を入力したとき、または **IP Address** の行で `Return` を押したときです。他のWebサーバーと同様に、ipifyにはあなたのIPアドレスと標準的なmacOSのユーザーエージェントが見えます。結果はメモリ内に15分間保持され、ディスクには書き込まれません。Web検索、URL、ブックマークはブラウザが開き、それも `Return` を押したときだけです。
+- **ディスクに書き込まれるもの**: Lightspot自身の環境設定（`UserDefaults`、`~/Library/Preferences/com.lightspot.app.plist`）、ロックファイル1つ、そしてアップデートのインストール中の一時ファイルです：
   - 設定: `lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state`（メニュー表示用に、最後に確認したSpotlightの状態）、`lightspot_auto_update_enabled`, `lightspot_last_update_check`, `lightspot_skipped_version`（自動アップデート確認）。
   - あなたが作成したもの: `lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`。
   - 利用履歴: `lightspot_recent_app_bundle_ids`（最近起動したアプリ）と `lightspot_search_history`：入力したクエリと開いた結果（タイトル、アプリやプロジェクトのパス、URL、シェルコマンド）、およびランキング用の選択回数。検索履歴マネージャー（`⌘Y`）で確認・消去できます。クリップボード、計算機、開発者ツールの選択は記録されません。スニペットとハードウェアレポートの選択は、クエリと回数のみを保持し、コピーしたテキストは保存しません。
+  - `~/Library/Application Support/Lightspot/com.lightspot.app.lock`：2つ目のコピーが起動するのを防ぎます。実行中のプロセスのPIDと、その実行ファイルのパス・inode・更新日時を記録し、新たな起動が同じビルドか新しいビルドかを判別できるようにします。
+  - 承認したアップデートのインストール中：ダウンロードしたファイル、展開したバンドル、小さなヘルパースクリプトをmacOSの一時ディレクトリ（`NSTemporaryDirectory()`、`lightspot-update-…` と `lightspot-updater-…` フォルダ）に置き、新しいバージョンが配置されるまで以前のバージョンを `Lightspot.app.lightspot-old` としてアプリの隣に残します。ヘルパーは終了時にこれらをすべて削除します。
   - **Export Settings** は、検索履歴を含むJSONバックアップを、あなたが選んだファイルにのみ書き込みます。

@@ -225,6 +225,51 @@ enum SpotlightManager {
 
     // MARK: - 2. Spotlight Background Service / Process (launchctl)
 
+    nonisolated static let serviceLabel = "com.apple.Spotlight"
+    nonisolated static let servicePlistPath = "/System/Library/LaunchAgents/com.apple.Spotlight.plist"
+
+    /// The `launchctl` invocations that turn the agent off or back on, in order.
+    ///
+    /// `enable` on its own only clears the override. launchd skips a disabled agent at
+    /// login, so after a logout or restart with Spotlight disabled the agent is not
+    /// loaded at all, and it stays absent after `enable` (`kickstart` then fails with
+    /// "Could not find service") until the next login. `bootstrap` loads it and
+    /// `kickstart` starts it now, as uninstall.sh does. `bootstrap` fails when the
+    /// agent is already loaded, which is the usual case, so only the first command's
+    /// exit status counts and the outcome is verified by probing afterwards.
+    nonisolated static func serviceCommands(enabled: Bool, uid: uid_t) -> [[String]] {
+        let target = "gui/\(uid)/\(serviceLabel)"
+        guard enabled else { return [["disable", target]] }
+        return [
+            ["enable", target],
+            ["bootstrap", "gui/\(uid)", servicePlistPath],
+            ["kickstart", target],
+        ]
+    }
+
+    /// Runs `/bin/launchctl` with its output discarded. Blocking.
+    @discardableResult
+    private nonisolated static func runLaunchctl(_ arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            NSLog("SpotlightManager: launchctl %@ failed to launch: %@", arguments.first ?? "", error.localizedDescription)
+            return false
+        }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    /// Whether launchd has the agent loaded in this login session. Blocking.
+    private nonisolated static func probeServiceLoaded() -> Bool {
+        runLaunchctl(["print", "gui/\(getuid())/\(serviceLabel)"])
+    }
+
     /// Reads whether the Spotlight launchd service is disabled for the current user. Blocking (~66 ms).
     private nonisolated static func probeServiceDisabled() -> Bool {
         let uid = getuid()
@@ -247,29 +292,20 @@ enum SpotlightManager {
         process.waitUntilExit()
 
         let output = String(data: data, encoding: .utf8) ?? ""
-        return output.contains("\"com.apple.Spotlight\" => disabled")
+        return output.contains("\"\(serviceLabel)\" => disabled")
     }
 
-    /// Enables or disables the Spotlight launchd background process.
-    /// `completion` reports the verified outcome.
+    /// Enables or disables the Spotlight launchd background process; enabling also
+    /// loads and starts it (see `serviceCommands`). `completion` reports the verified
+    /// outcome.
     static func setService(enabled: Bool, completion: (@Sendable @MainActor (Bool) -> Void)? = nil) {
         cachedState.serviceDisabled = !enabled // optimistic; reconciled below
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let uid = getuid()
-            let action = enabled ? "enable" : "disable"
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            process.arguments = [action, "gui/\(uid)/com.apple.Spotlight"]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            var launched = false
-            do {
-                try process.run()
-                process.waitUntilExit()
-                launched = process.terminationStatus == 0
-            } catch {
-                NSLog("SpotlightManager: launchctl %@ failed to launch: %@", action, error.localizedDescription)
+            let commands = serviceCommands(enabled: enabled, uid: getuid())
+            let launched = runLaunchctl(commands[0])
+            for arguments in commands.dropFirst() {
+                runLaunchctl(arguments)
             }
 
             if !enabled {
@@ -283,7 +319,9 @@ enum SpotlightManager {
             }
 
             let disabled = probeServiceDisabled()
-            let success = launched && (disabled == !enabled)
+            // Re-enabled but not loaded is the bug this guards: the flag reads right
+            // and Spotlight is still gone until the next login.
+            let success = launched && (disabled == !enabled) && (!enabled || probeServiceLoaded())
             Task { @MainActor in
                 cachedState.serviceDisabled = disabled
                 persist(cachedState)

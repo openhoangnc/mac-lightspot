@@ -132,6 +132,12 @@ final class UpdateManager {
     /// How long a successful check is good for.
     nonisolated static let checkInterval: TimeInterval = 24 * 60 * 60
 
+    /// Used for the check and the download. Ephemeral, so no response or cookie lands
+    /// in `~/Library/Caches/<bundle id>/Cache.db` or `~/Library/HTTPStorages`:
+    /// `URLSession.shared` stored every release feed there, and
+    /// `.reloadIgnoringLocalCacheData` only skips reading the cache, not writing it.
+    nonisolated static let session = URLSession(configuration: .ephemeral)
+
     // MARK: Persisted preferences
 
     private nonisolated static let automaticKey = "lightspot_auto_update_enabled"
@@ -209,7 +215,7 @@ final class UpdateManager {
         request.timeoutInterval = 20
         request.cachePolicy = .reloadIgnoringLocalCacheData
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        Self.session.dataTask(with: request) { data, response, error in
             let outcome = Self.evaluate(data: data, response: response, error: error, current: current)
             Task { @MainActor in
                 self.isChecking = false
@@ -346,7 +352,7 @@ final class UpdateManager {
         request.setValue("Lightspot/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 300
 
-        URLSession.shared.downloadTask(with: request) { location, response, error in
+        Self.session.downloadTask(with: request) { location, response, error in
             let result = Self.stageDownload(location: location,
                                             response: response,
                                             error: error,
@@ -566,7 +572,8 @@ final class UpdateManager {
         \(relaunch) || true
 
         rm -rf \(work)
-        rm -f "$0"
+        # The helper sits alone in its own lightspot-updater-* folder; take that too.
+        rm -rf "$(dirname "$0")"
         """
     }
 
