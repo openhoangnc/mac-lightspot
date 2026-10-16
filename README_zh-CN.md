@@ -24,11 +24,13 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ---
 
 ### 🗑️ 彻底卸载
-如需彻底卸载，此命令可安全停止应用、取消开机自启项、清除用户偏好设置并删除应用程序包：
+如需彻底卸载，此命令可安全停止应用、取消开机自启项、清除用户偏好设置并删除应用程序包；如果 Lightspot 曾关闭 Apple Spotlight，还会将其重新启用（重新开启索引需要管理员密码，也可以稍后自行运行打印出的 `sudo mdutil -a -i on` 命令）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
 ```
+
+*(可选：`curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash -s -- --dry-run` 仅显示将要执行的更改而不做任何修改；改用 `--keep-spotlight-disabled` 则保持 Spotlight 关闭。)*
 
 ---
 

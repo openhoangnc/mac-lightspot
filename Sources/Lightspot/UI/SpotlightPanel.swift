@@ -19,6 +19,9 @@ final class SpotlightFieldEditor: NSTextView {
     var onManagePins: (@MainActor () -> Void)?
     var onManageHistory: (@MainActor () -> Void)?
     var onManageCustomCommands: (@MainActor () -> Void)?
+    /// ⌫ / ⌦. Returns true when a manager overlay consumed the key; otherwise the
+    /// key edits the query as usual.
+    var onDeleteKey: (@MainActor () -> Bool)?
 
     override func keyDown(with event: NSEvent) {
         let isReturn = event.keyCode == 36 || event.keyCode == 76
@@ -92,6 +95,10 @@ final class SpotlightFieldEditor: NSTextView {
             }
         } else if selector == #selector(NSResponder.cancelOperation(_:)) {
             onCancel?()
+        } else if (selector == #selector(NSResponder.deleteBackward(_:)) ||
+                   selector == #selector(NSResponder.deleteForward(_:))) &&
+                  onDeleteKey?() == true {
+            return
         } else {
             super.doCommand(by: selector)
         }
@@ -224,6 +231,10 @@ final class SpotlightPanel: NSPanel {
     var onManagePins: (() -> Void)?
     var onManageHistory: (() -> Void)?
     var onManageCustomCommands: (() -> Void)?
+    var onDeleteKey: (() -> Bool)?
+    /// Click-outside dismissal. Routed to the owner so it hides the same way Esc and
+    /// the hotkey do (including the memory reclaim); without an owner, just hide.
+    var onDismiss: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -282,6 +293,7 @@ final class SpotlightPanel: NSPanel {
             editor.onManagePins = { [weak self] in self?.onManagePins?() }
             editor.onManageHistory = { [weak self] in self?.onManageHistory?() }
             editor.onManageCustomCommands = { [weak self] in self?.onManageCustomCommands?() }
+            editor.onDeleteKey = { [weak self] in self?.onDeleteKey?() ?? false }
             fieldEditor = editor
         }
         return fieldEditor
@@ -378,7 +390,12 @@ final class SpotlightPanel: NSPanel {
         // Global monitor: clicks outside the panel
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             if NSApp.modalWindow != nil { return }
-            self?.hidePanel()
+            guard let self else { return }
+            if let onDismiss = self.onDismiss {
+                onDismiss()
+            } else {
+                self.hidePanel()
+            }
         }
 
         // Local monitor: handle escape key and option/command return

@@ -24,11 +24,13 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ---
 
 ### 🗑️ Complete Uninstallation
-To completely remove Lightspot, unregister auto-start, clear preferences, and delete the app bundle:
+To completely remove Lightspot, unregister auto-start, clear preferences, delete the app bundle, and turn Apple Spotlight back on if Lightspot switched it off (re-enabling indexing asks for your administrator password, or prints the `sudo mdutil -a -i on` command to run later):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash
 ```
+
+*(Optional: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash -s -- --dry-run` shows what would change without changing anything; pass `--keep-spotlight-disabled` instead to leave Spotlight off.)*
 
 ---
 

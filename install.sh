@@ -93,6 +93,12 @@ if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
         killall -9 "${APP_NAME}" 2>/dev/null || pkill -9 -x "${APP_NAME}" 2>/dev/null || true
         sleep 0.2
     fi
+    # Signals are refused from some shells (e.g. sandboxed ones). The new copy asks the
+    # running one to quit when it launches; versions before that could not be asked.
+    if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+        echo "⚠️ Could not stop ${APP_NAME} (pid $(pgrep -x "${APP_NAME}" | tr '\n' ' ')): not permitted from this shell."
+        echo "   The new copy will ask it to quit. If two keep running, quit the old one from its menu bar icon."
+    fi
 fi
 
 # Create destination directory

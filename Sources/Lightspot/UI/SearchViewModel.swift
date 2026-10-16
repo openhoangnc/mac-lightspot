@@ -647,6 +647,15 @@ final class SearchViewModel: ObservableObject {
         historySelectedIndex = min(index, max(historyEntries.count - 1, 0))
     }
 
+    /// ⌫ / ⌦ from the search field. With the history manager open it deletes the
+    /// selected entry (the footer advertises it) and returns true so the key does not
+    /// also edit the query; otherwise returns false and the field handles it.
+    func handleDeleteKey() -> Bool {
+        guard isHistoryManagerPresented, !isCustomCommandManagerPresented, !isPinManagerPresented else { return false }
+        deleteHistoryEntry(at: historySelectedIndex)
+        return true
+    }
+
     func clearAllHistory() {
         SearchHistoryManager.shared.clearHistory()
         historyEntries = []
