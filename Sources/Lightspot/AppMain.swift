@@ -183,6 +183,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Handle first-run onboarding (auto-enable launch at login & suggest disabling Spotlight)
         FirstRunManager.handleFirstRunIfNeeded(delegate: menuBarController)
+
+        // Carbon hands a key combination to one owner. If Lightspot lost the race at
+        // launch the panel would silently never open, so say so instead — after the
+        // Spotlight state snapshot has landed, which decides what the alert offers.
+        if !hotkeyManager.isRegistered {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.menuBarController?.presentHotkeyConflictIfNeeded()
+                }
+            }
+        }
+
+        // Look for a new release in the background. Deliberately delayed: it is
+        // network work and nothing at launch depends on the answer.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            MainActor.assumeIsolated {
+                UpdateManager.shared.checkAutomaticallyIfDue { release in
+                    MainActor.assumeIsolated {
+                        guard UpdateManager.shared.hasPromptableUpdate else { return }
+                        self?.menuBarController?.rebuildMenu()
+                        self?.menuBarController?.presentUpdatePrompt(for: release)
+                    }
+                }
+            }
+        }
     }
 
     /// Re-probes macOS Spotlight / login-item state in the background and rebuilds

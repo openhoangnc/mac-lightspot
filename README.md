@@ -64,7 +64,7 @@ Instead of aggressively crawling your entire hard drive, Lightspot focuses stric
 | **RAM Footprint** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Pure Swift) |
 | **App Launching** | Frequently breaks; requires rebuilds | Reliable | **100% Reliable** (Direct scanning) |
 | **Search Latency** | Debounced (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (instant synchronous) |
-| **Offline Privacy** | Sends Siri telemetry to Apple | Account required for sync | **100% Local, Offline & Telemetry-Free** |
+| **Offline Privacy** | Sends Siri telemetry to Apple | Account required for sync | **100% Local & Telemetry-Free** (only an optional daily update check) |
 
 ---
 
@@ -142,6 +142,12 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 - Export your entire configuration (custom commands, pinned items, snippets, hotkeys) to a clean JSON file.
 - Automatic path sanitization replaces `/Users/username` with `~` so configurations can be shared seamlessly across work and personal Macs.
 
+### 10. 🔄 Built-in Auto-Update
+- Checks GitHub Releases once a day in the background and offers the new version from the menu bar — **Check for Updates...** runs it on demand, and **Automatically Check for Updates** turns the daily check off entirely.
+- Installs in place: Lightspot downloads the release, verifies it, swaps its own bundle and relaunches. **Skip This Version** silences one release without disabling checks.
+- Every download is gated: HTTPS only, GitHub hosts only (re-checked after redirects), the unpacked bundle must carry Lightspot's bundle identifier, a runnable executable and exactly the advertised version, and a build older than the one installed is never accepted.
+- Releases are ad-hoc signed (this project ships no Developer ID), so there is no code signature to verify — the checks above and HTTPS to GitHub are the whole trust model, the same one `install.sh` already asks for.
+
 ---
 
 ## ✨ Additional Built-in Capabilities
@@ -168,7 +174,7 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 
 Lightspot includes built-in automations in the menu bar to disable or re-enable Apple\'s built-in Spotlight:
 
-1. **Spotlight Shortcut (`⌘Space`)**: Disables or restores Apple\'s default `⌘Space` hotkey in macOS symbolic hotkeys without requiring root.
+1. **Spotlight Shortcut (`⌘Space`)**: Disables or restores Apple's default Spotlight hotkeys — both `⌘Space` ("Show Spotlight search") and `⌥⌘Space` ("Show Finder search window") — without requiring root. The change is written through the preferences daemon, verified by reading it back, and applied immediately (no logout), and Lightspot claims `⌘Space` for itself as soon as macOS lets go of it.
 2. **Background Process (`com.apple.Spotlight`)**: Disables or enables the Spotlight GUI background agent via `launchctl`.
 3. **File Indexing (`mdutil`)**: Completely shuts down filesystem metadata indexing (`mds` / `mds_stores`) across all mounted volumes.
 4. **1-Click Master Actions**:
@@ -205,10 +211,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Verification
-Lightspot includes 112 automated test suites and live-system runtime checks:
+Lightspot includes 27 automated test suites and 88 live-system runtime checks:
 ```bash
-# Core logic & engine tests (24 test suites)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# Core logic & engine tests (27 test suites)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 
 # Live system checks (88 verification checks)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -240,4 +246,5 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **RAM-Only Ephemeral Clipboard**: Clipboard history stays exclusively in volatile memory (never written to disk) and actively ignores concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 - **Default Browser Isolation**: Bookmarks and tabs are read solely from your configured default browser, avoiding cross-browser scraping.
 - **Sandboxed Subprocesses**: Commands and scripts run only upon explicit user action (`Return` or `⌘↵`).
-- **Zero Telemetry & 100% Offline**: No network requests, no remote analytics, no tracking.
+- **Zero Telemetry**: No analytics, no tracking, no accounts — nothing is reported about you or what you search for.
+- **One Network Request, and You Can Turn It Off**: The only connection Lightspot makes on its own is the daily update check — an unauthenticated `GET` to GitHub's public releases API that sends nothing but the current version in the `User-Agent`. Switch off **Automatically Check for Updates** in the menu bar and Lightspot makes no network request unless you ask it to. Everything else (search, math, clipboard, projects, history) is computed locally.

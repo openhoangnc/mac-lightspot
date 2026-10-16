@@ -64,7 +64,7 @@ En lugar de rastrear agresivamente todo tu disco duro, Lightspot se centra estri
 | **Huella de RAM** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Swift Puro) |
 | **Lanzamiento de Aplicaciones** | Falla con frecuencia; requiere reconstrucciones | Confiable | **100% Confiable** (Escaneo directo) |
 | **Latencia de Búsqueda** | Retardada (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (síncrono instantáneo) |
-| **Privacidad Offline** | Envía telemetría de Siri a Apple | Requiere cuenta para sincronización | **100% Local, Offline y Libre de Telemetría** |
+| **Privacidad Offline** | Envía telemetría de Siri a Apple | Requiere cuenta para sincronización | **100% Local y Libre de Telemetría** (solo una comprobación diaria de actualizaciones, opcional) |
 
 ---
 
@@ -142,6 +142,12 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
 - Exporta toda tu configuración (comandos personalizados, elementos fijados, fragmentos, teclas de acceso rápido) a un archivo JSON limpio.
 - La sanitización automática de rutas reemplaza `/Users/username` con `~` para que las configuraciones puedan compartirse fluidamente entre Macs de trabajo y personales.
 
+### 10. 🔄 Actualización Automática Integrada
+- Consulta las Releases de GitHub una vez al día en segundo plano y ofrece la nueva versión desde la barra de menús: **`Check for Updates...`** la ejecuta al instante, y **`Automatically Check for Updates`** desactiva por completo la comprobación diaria.
+- Se instala en el sitio: Lightspot descarga la release, la verifica, sustituye su propio paquete y se reinicia. **`Skip This Version`** silencia una release concreta sin desactivar las comprobaciones.
+- Cada descarga pasa por un filtro: solo HTTPS, solo hosts de GitHub (revalidados tras las redirecciones), el paquete descomprimido debe llevar el identificador de paquete de Lightspot, un ejecutable funcional y exactamente la versión anunciada, y nunca se acepta una compilación anterior a la ya instalada.
+- Las releases están firmadas de forma ad-hoc (este proyecto no incluye un Developer ID), por lo que no hay firma de código que verificar: las comprobaciones anteriores y HTTPS hacia GitHub son todo el modelo de confianza, el mismo que `install.sh` ya requiere.
+
 ---
 
 ## ✨ Capacidades Adicionales Integradas
@@ -168,7 +174,7 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
 
 Lightspot incluye automatizaciones integradas en la barra de menú para deshabilitar o rehabilitar el Spotlight integrado de Apple:
 
-1. **Atajo de Spotlight (`⌘Space`)**: Deshabilita o restaura el atajo `⌘Space` predeterminado de Apple en las teclas de acceso rápido simbólicas de macOS sin requerir root.
+1. **Atajo de Spotlight (`⌘Space`)**: Deshabilita o restaura los atajos de Spotlight predeterminados de Apple, tanto `⌘Space` («Mostrar la búsqueda de Spotlight») como `⌥⌘Space` («Mostrar la ventana de búsqueda del Finder»), sin requerir root. El cambio se escribe a través del demonio de preferencias, se verifica releyéndolo y se aplica de inmediato (sin cerrar sesión); además, Lightspot reclama `⌘Space` para sí mismo en cuanto macOS lo libera.
 2. **Proceso en Segundo Plano (`com.apple.Spotlight`)**: Deshabilita o habilita el agente de la GUI en segundo plano de Spotlight a través de `launchctl`.
 3. **Indexación de Archivos (`mdutil`)**: Apaga por completo la indexación de metadatos del sistema de archivos (`mds` / `mds_stores`) en todos los volúmenes montados.
 4. **Acciones Maestras de 1 Clic**:
@@ -205,10 +211,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Pruebas y Verificación
-Lightspot incluye 112 suites de pruebas automatizadas y comprobaciones de tiempo de ejecución del sistema en vivo:
+Lightspot incluye 27 suites de pruebas automatizadas y 88 comprobaciones del sistema en vivo:
 ```bash
-# Pruebas de lógica central y motor (24 suites de pruebas)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# Pruebas de lógica central y motor (27 suites de pruebas)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 
 # Comprobaciones del sistema en vivo (88 comprobaciones de verificación)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -240,4 +246,5 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **Portapapeles Efímero Solo en RAM**: El historial del portapapeles permanece exclusivamente en memoria volátil (nunca se escribe en el disco) e ignora activamente los tipos ocultos/administradores de contraseñas (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 - **Aislamiento del Navegador Predeterminado**: Los marcadores y las pestañas se leen únicamente de tu navegador predeterminado configurado, evitando el raspado entre navegadores.
 - **Subprocesos Aislados (Sandboxed)**: Los comandos y scripts se ejecutan solo tras la acción explícita del usuario (`Return` o `⌘↵`).
-- **Cero Telemetría y 100% Offline**: Sin solicitudes de red, sin analíticas remotas, sin rastreo.
+- **Cero Telemetría**: Sin analíticas, sin rastreo, sin cuentas: no se informa nada sobre ti ni sobre lo que buscas.
+- **Una Sola Solicitud de Red, y Puedes Desactivarla**: La única conexión que Lightspot realiza por su cuenta es la comprobación diaria de actualizaciones: un `GET` sin autenticar a la API pública de releases de GitHub que no envía más que la versión actual en el `User-Agent`. Desactiva **`Automatically Check for Updates`** en la barra de menús y Lightspot no hará ninguna solicitud de red salvo que se lo pidas. Todo lo demás (búsqueda, cálculos, portapapeles, proyectos, historial) se procesa localmente.

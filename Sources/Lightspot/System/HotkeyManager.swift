@@ -47,6 +47,10 @@ final class HotkeyManager {
 
     var onToggle: (() -> Void)?
 
+    /// Whether the key combination is actually ours right now. False means some other
+    /// owner (most often the system Spotlight shortcut) holds it and the hotkey is dead.
+    private(set) var isRegistered = false
+
     private let userDefaultsKey = "lightspot_hotkey_option"
     private let signature: OSType = 0x4C535054 // "LSPT"
 
@@ -99,7 +103,8 @@ final class HotkeyManager {
         registerCurrentKey()
     }
 
-    private func registerCurrentKey() {
+    @discardableResult
+    private func registerCurrentKey() -> Bool {
         let option = currentOption
         let hotKeyID = EventHotKeyID(signature: signature, id: 1)
         let status = RegisterEventHotKey(
@@ -111,12 +116,21 @@ final class HotkeyManager {
             &hotKeyRef
         )
 
-        if status != noErr {
-            print("Notice: RegisterEventHotKey returned \(status) for \(option.shortLabel)")
+        isRegistered = (status == noErr)
+        if !isRegistered {
+            // Carbon hands out a key combination once. While the system Spotlight
+            // shortcut still owns ⌘Space this fails with eventHotKeyExistsErr
+            // (-9878) and the panel simply never opens — so the failure is recorded
+            // and `reRegisterIfNeeded()` retries once the shortcut is freed.
+            hotKeyRef = nil
+            NSLog("HotkeyManager: RegisterEventHotKey returned %d for %@ (already taken?)",
+                  status, option.shortLabel)
         }
+        return isRegistered
     }
 
     func unregister() {
+        isRegistered = false
         if let ref = hotKeyRef {
             UnregisterEventHotKey(ref)
             hotKeyRef = nil
@@ -127,11 +141,20 @@ final class HotkeyManager {
         }
     }
 
-    func reRegister() {
+    @discardableResult
+    func reRegister() -> Bool {
         if let ref = hotKeyRef {
             UnregisterEventHotKey(ref)
             hotKeyRef = nil
         }
-        registerCurrentKey()
+        return registerCurrentKey()
+    }
+
+    /// Retries a registration that lost the race for the key combination. Call after
+    /// freeing a conflicting system shortcut; a no-op when the hotkey is already live.
+    @discardableResult
+    func reRegisterIfNeeded() -> Bool {
+        guard !isRegistered else { return true }
+        return reRegister()
     }
 }

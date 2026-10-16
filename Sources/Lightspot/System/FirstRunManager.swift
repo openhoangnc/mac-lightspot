@@ -5,6 +5,8 @@ import Foundation
 public protocol FirstRunDelegate: AnyObject {
     func rebuildMenu()
     func showAlert(title: String, message: String)
+    /// Claims ⌘Space once the system Spotlight shortcut has let go of it.
+    func reclaimHotkeyIfFreed()
 }
 
 @MainActor
@@ -71,14 +73,16 @@ enum FirstRunManager {
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            SpotlightManager.disableAll(includeIndexing: true) { success in
+            SpotlightManager.disableAll(includeIndexing: true) { result in
+                delegate?.reclaimHotkeyIfFreed()
                 delegate?.rebuildMenu()
-                let summaryMessage = "1. ⌘Space Shortcut: Disabled\n2. Background Process: Terminated & Disabled\n3. File Indexing: " + (success ? "Disabled" : "Unchanged (Admin canceled)") + "\n\nLightspot is now your primary launcher!"
+                let title = result.shortcut ? "Spotlight Fully Disabled" : "Spotlight Partially Disabled"
+                let summaryMessage = summary(for: result)
                 if let del = delegate {
-                    del.showAlert(title: "Spotlight Fully Disabled", message: summaryMessage)
+                    del.showAlert(title: title, message: summaryMessage)
                 } else {
                     let doneAlert = NSAlert()
-                    doneAlert.messageText = "Spotlight Fully Disabled"
+                    doneAlert.messageText = title
                     doneAlert.informativeText = summaryMessage
                     doneAlert.alertStyle = .informational
                     doneAlert.addButton(withTitle: "OK")
@@ -89,5 +93,23 @@ enum FirstRunManager {
                 }
             }
         }
+    }
+
+    /// Per-toggle outcome of the onboarding "Disable Everything" choice. Each flag is
+    /// verified against the system, so a write macOS refused is reported as such
+    /// instead of being announced as a success.
+    nonisolated static func summary(for result: SpotlightManager.ApplyResult) -> String {
+        var lines = [
+            "1. \u{2318}Space Shortcut: " + (result.shortcut ? "Disabled" : "Unchanged (macOS refused)"),
+            "2. Background Process: " + (result.service ? "Terminated & Disabled" : "Unchanged (launchctl refused)"),
+        ]
+        if let indexing = result.indexing {
+            lines.append("3. File Indexing: " + (indexing ? "Disabled" : "Unchanged (Admin canceled)"))
+        }
+        let allDone = result.shortcut && result.service && (result.indexing ?? true)
+        lines.append(allDone
+            ? "\nLightspot is now your primary launcher!"
+            : "\nYou can finish up by hand in Keyboard Shortcuts Settings.")
+        return lines.joined(separator: "\n")
     }
 }

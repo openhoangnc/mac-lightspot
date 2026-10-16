@@ -64,7 +64,7 @@ Lightspot不主动抓取整个硬盘，而是严格关注高级用户实际搜�
 | **RAM占用** | 500 MB – 2 GB+ | 200 MB – 500 MB | **约15 – 25 MB** (纯Swift) |
 | **应用启动** | 经常损坏；需要重建 | 可靠 | **100%可靠** (直接扫描) |
 | **搜索延迟** | 防抖处理 (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬时同步) |
-| **离线隐私** | 发送Siri遥测至Apple | 需要同步账号 | **100%本地、离线且无遥测** |
+| **离线隐私** | 发送Siri遥测至Apple | 需要同步账号 | **100%本地且无遥测**（仅有可选的每日更新检查） |
 
 ---
 
@@ -142,6 +142,12 @@ Lightspot自动监控以下最近工作区：
 - 将整个配置（自定义命令、固定项、代码段、热键）导出到干净的JSON文件中。
 - 自动路径净化会将 `/Users/username` 替换为 `~`，这样配置就可以在工作Mac和个人Mac之间无缝共享。
 
+### 10. 🔄 内置自动更新
+- 每天在后台检查一次GitHub Releases，并从菜单栏提示新版本：**`Check for Updates...`** 可随时手动运行，**`Automatically Check for Updates`** 则可完全关闭每日检查。
+- 原地安装：Lightspot会下载该版本、进行校验、替换自身的应用包并重新启动。**`Skip This Version`** 只会忽略这一个版本，而不会关闭检查。
+- 每次下载都有门槛：仅限HTTPS、仅限GitHub主机（重定向后会再次校验），解压后的应用包必须带有Lightspot的包标识符、可运行的可执行文件，以及与公布版本完全一致的版本号，且绝不接受比已安装版本更旧的构建。
+- 发布版本采用临时（ad-hoc）签名（本项目不附带Developer ID），因此没有可供验证的代码签名——以上检查加上通往GitHub的HTTPS就是全部的信任模型，与 `install.sh` 已经要求的完全相同。
+
 ---
 
 ## ✨ 额外的内置功能
@@ -168,7 +174,7 @@ Lightspot自动监控以下最近工作区：
 
 Lightspot在菜单栏中内置了自动化功能，以禁用或重新启用Apple内置的Spotlight：
 
-1. **Spotlight快捷键 (`⌘Space`)**：在无需root的情况下，禁用或恢复macOS符号热键中Apple默认的 `⌘Space` 快捷键。
+1. **Spotlight快捷键 (`⌘Space`)**：在无需root的情况下，禁用或恢复Apple默认的Spotlight热键——包括 `⌘Space`（「显示Spotlight搜索」）和 `⌥⌘Space`（「显示Finder搜索窗口」）。更改通过偏好设置守护进程写入，并通过回读进行验证，立即生效（无需注销）；而且一旦macOS释放 `⌘Space`，Lightspot便会立即将其收归自用。
 2. **后台进程 (`com.apple.Spotlight`)**：通过 `launchctl` 禁用或启用Spotlight GUI后台代理。
 3. **文件索引 (`mdutil`)**：完全关闭所有挂载卷上的文件系统元数据索引 (`mds` / `mds_stores`)。
 4. **一键主操作**：
@@ -205,10 +211,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. 测试与验证
-Lightspot包含112个自动化测试套件和实时系统运行检查：
+Lightspot包含27个自动化测试套件和88个实时系统检查：
 ```bash
-# 核心逻辑与引擎测试 (24个测试套件)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# 核心逻辑与引擎测试 (27个测试套件)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 
 # 实时系统检查 (88个验证检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -240,4 +246,5 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **纯RAM的临时剪贴板**：剪贴板历史记录仅保留在易失性内存中（从不写入磁盘），并主动忽略隐藏/密码管理器类型（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）。
 - **默认浏览器隔离**：书签和标签页仅从您配置的默认浏览器中读取，避免跨浏览器抓取。
 - **沙盒化子进程**：只有在明确的用户操作（`Return` 或 `⌘↵`）下才会运行命令和脚本。
-- **零遥测 & 100%离线**：没有网络请求、没有远程分析、没有任何追踪。
+- **零遥测**：没有分析、没有追踪、无需账号——不会上报任何关于您或您搜索内容的信息。
+- **仅一个网络请求，且可随时关闭**：Lightspot唯一主动建立的连接就是每日更新检查——一个发往GitHub公共发布API的、未经身份验证的 `GET` 请求，除了 `User-Agent` 中的当前版本号之外不发送任何内容。在菜单栏中关闭 **`Automatically Check for Updates`**，除非您主动要求，Lightspot不会发起任何网络请求。其余一切（搜索、计算、剪贴板、项目、历史记录）均在本地完成。

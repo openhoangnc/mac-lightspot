@@ -3,8 +3,6 @@ import Foundation
 
 @MainActor
 enum SpotlightManager {
-    private nonisolated static let plistPath = ("~/Library/Preferences/com.apple.symbolichotkeys.plist" as NSString).expandingTildeInPath
-
     // MARK: - Cached State
     //
     // Probing the real state costs ~66 ms per call: `launchctl print-disabled` and
@@ -17,6 +15,16 @@ enum SpotlightManager {
         var shortcutEnabled: Bool = true
         var serviceDisabled: Bool = false
         var indexingEnabled: Bool = true
+    }
+
+    /// What `disableAll` / `enableAll` actually managed to change. The shortcut and
+    /// service flags are verified against the system afterwards rather than assumed,
+    /// so the alerts can stop claiming success when nothing moved.
+    struct ApplyResult: Sendable {
+        var shortcut: Bool = false
+        var service: Bool = false
+        /// `nil` when indexing was not part of the request.
+        var indexing: Bool?
     }
 
     // The first refresh takes ~200 ms to land, during which the menus would otherwise
@@ -75,35 +83,143 @@ enum SpotlightManager {
     }
 
     // MARK: - 1. Spotlight Shortcut (⌘Space)
+    //
+    // Three things make this harder than writing a plist key, and getting any of them
+    // wrong looks identical from the outside — "Lightspot says Disabled, ⌘Space still
+    // opens Spotlight":
+    //
+    //  1. The preference has to go through `cfprefsd`. This used to shell out to
+    //     PlistBuddy against ~/Library/Preferences/com.apple.symbolichotkeys.plist,
+    //     but that file is the daemon's backing store, not the API: cfprefsd holds its
+    //     own copy, serves reads from it and flushes it back on its own schedule, so a
+    //     direct file write is read back stale and can be overwritten wholesale.
+    //     `defaults read` does not "sync" it either — it is a read, and if anything it
+    //     re-caches the value we were trying to replace.
+    //  2. A missing entry has to be created, not set. PlistBuddy `Set` fails outright
+    //     with "Does Not Exist" on a Mac where the user never customised the Spotlight
+    //     shortcut, and the failure was swallowed (`try?`, exit status ignored) while
+    //     the cached state optimistically flipped to "disabled".
+    //  3. The window server caches symbolic hotkeys at login. Without `activateSettings
+    //     -u` the new value sits in the preference domain doing nothing until the next
+    //     logout, which is the single most common way this appears broken.
 
-    /// Reads whether the default macOS Spotlight shortcut (hotkey ID 64) is enabled. Blocking.
-    private nonisolated static func probeShortcutEnabled() -> Bool {
-        guard let dict = NSDictionary(contentsOfFile: plistPath) as? [String: Any],
-              let hotkeys = dict["AppleSymbolicHotKeys"] as? [String: Any],
-              let entry64 = hotkeys["64"] as? [String: Any],
-              let enabled = entry64["enabled"] as? Bool else {
-            return true
-        }
-        return enabled
+    // Held as `String`, not `CFString`: a non-Sendable CFString cannot be a static
+    // property under Swift 6 strict concurrency (same constraint as invariant 2).
+    private nonisolated static let hotkeyDomain = "com.apple.symbolichotkeys"
+    private nonisolated static let hotkeyRootKey = "AppleSymbolicHotKeys"
+
+    /// The `AppleSymbolicHotKeys` entries macOS reserves for Spotlight: 64 is
+    /// "Show Spotlight search" (⌘Space by default) and 65 is "Show Finder search
+    /// window" (⌥⌘Space). Only 64 used to be touched, which left half the shortcut
+    /// registered and kept the key combination out of reach for other apps.
+    nonisolated static let spotlightHotkeyIDs = [64, 65]
+
+    /// Apple's factory binding for an entry, written when one is missing so a restore
+    /// produces a working shortcut instead of an inert `enabled`-only stub.
+    /// `parameters` is `[character code, virtual keycode, Cocoa modifier mask]`:
+    /// space is 32 / `kVK_Space` 49, ⌘ is 1048576 and ⌥⌘ is 1572864.
+    nonisolated static func defaultHotkeyParameters(for id: Int) -> [Int] {
+        id == 65 ? [32, 49, 1_572_864] : [32, 49, 1_048_576]
     }
 
-    /// Toggles the default macOS Spotlight shortcut (hotkey ID 64)
-    static func setShortcut(enabled: Bool) {
-        cachedState.shortcutEnabled = enabled // optimistic; refreshState() reconciles
+    private nonisolated static func readHotkeyRoot() -> [String: Any] {
+        CFPreferencesCopyValue(hotkeyRootKey as CFString, hotkeyDomain as CFString,
+                               kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any] ?? [:]
+    }
+
+    /// `enabled` is a CFBoolean when System Settings writes it and a CFNumber when
+    /// `defaults write -int` does, and both bridge in here.
+    nonisolated static func isHotkeyEntryEnabled(_ entry: Any?) -> Bool {
+        // A missing entry means the factory default, and Spotlight ships enabled.
+        guard let entry = entry as? [String: Any] else { return true }
+        guard let raw = entry["enabled"] else { return true }
+        if let flag = raw as? Bool { return flag }
+        if let number = raw as? NSNumber { return number.boolValue }
+        return true
+    }
+
+    /// Builds the replacement root dictionary for a given target state, preserving
+    /// each entry's existing key binding and filling in the default when absent.
+    nonisolated static func hotkeyRoot(_ root: [String: Any], settingEnabled enabled: Bool) -> [String: Any] {
+        var updated = root
+        for id in spotlightHotkeyIDs {
+            let key = String(id)
+            var entry = updated[key] as? [String: Any] ?? [:]
+            entry["enabled"] = enabled
+            if entry["value"] == nil {
+                entry["value"] = [
+                    "type": "standard",
+                    "parameters": defaultHotkeyParameters(for: id),
+                ] as [String: Any]
+            }
+            updated[key] = entry
+        }
+        return updated
+    }
+
+    /// Reads whether either Spotlight shortcut is still live, through cfprefsd rather
+    /// than the plist file so the answer matches what the system will act on.
+    private nonisolated static func probeShortcutEnabled() -> Bool {
+        let root = readHotkeyRoot()
+        return spotlightHotkeyIDs.contains { isHotkeyEntryEnabled(root[String($0)]) }
+    }
+
+    /// Reloads the window server's cached keyboard settings so the change takes effect
+    /// now instead of at the next login. Blocking (~0.4 s) — background queues only.
+    private nonisolated static func activateKeyboardSettings() {
+        let path = "/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings"
+        guard FileManager.default.isExecutableFile(atPath: path) else { return }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["-u"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            NSLog("SpotlightManager: activateSettings failed to launch: %@", error.localizedDescription)
+            return
+        }
+        process.waitUntilExit()
+    }
+
+    /// Writes both Spotlight hotkey entries and verifies the result. Blocking.
+    @discardableResult
+    private nonisolated static func writeShortcut(enabled: Bool) -> Bool {
+        let root = hotkeyRoot(readHotkeyRoot(), settingEnabled: enabled)
+        CFPreferencesSetValue(hotkeyRootKey as CFString, root as CFDictionary, hotkeyDomain as CFString,
+                              kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+
+        guard CFPreferencesAppSynchronize(hotkeyDomain as CFString) else {
+            NSLog("SpotlightManager: cfprefsd refused to synchronize %@", hotkeyDomain)
+            return false
+        }
+
+        activateKeyboardSettings()
+
+        // Read back through the daemon: this is the only honest success signal.
+        let applied = probeShortcutEnabled() == enabled
+        if !applied {
+            NSLog("SpotlightManager: Spotlight shortcut did not reach enabled=%@", enabled ? "true" : "false")
+        }
+        return applied
+    }
+
+    /// Toggles the macOS Spotlight shortcuts (hotkey IDs 64 and 65).
+    /// `completion` reports whether the system actually ended up in the requested
+    /// state, so callers can tell the user the truth.
+    static func setShortcut(enabled: Bool, completion: (@Sendable @MainActor (Bool) -> Void)? = nil) {
+        cachedState.shortcutEnabled = enabled // optimistic; reconciled below
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/libexec/PlistBuddy")
-            process.arguments = ["-c", "Set :AppleSymbolicHotKeys:64:enabled \(enabled)", plistPath]
-            try? process.run()
-            process.waitUntilExit()
-
-            // Sync defaults so macOS picks up preference changes
-            let syncProcess = Process()
-            syncProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-            syncProcess.arguments = ["read", "com.apple.symbolichotkeys"]
-            try? syncProcess.run()
-            syncProcess.waitUntilExit()
+            let success = writeShortcut(enabled: enabled)
+            let actual = probeShortcutEnabled()
+            Task { @MainActor in
+                cachedState.shortcutEnabled = actual
+                persist(cachedState)
+                completion?(success)
+            }
         }
     }
 
@@ -118,7 +234,12 @@ enum SpotlightManager {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        try? process.run()
+        do {
+            try process.run()
+        } catch {
+            NSLog("SpotlightManager: launchctl print-disabled failed to launch: %@", error.localizedDescription)
+            return false
+        }
 
         // Drain before waiting: `print-disabled` output can exceed the pipe buffer
         // and would otherwise deadlock against waitUntilExit().
@@ -129,9 +250,10 @@ enum SpotlightManager {
         return output.contains("\"com.apple.Spotlight\" => disabled")
     }
 
-    /// Enables or disables the Spotlight launchd background process
-    static func setService(enabled: Bool) {
-        cachedState.serviceDisabled = !enabled // optimistic; refreshState() reconciles
+    /// Enables or disables the Spotlight launchd background process.
+    /// `completion` reports the verified outcome.
+    static func setService(enabled: Bool, completion: (@Sendable @MainActor (Bool) -> Void)? = nil) {
+        cachedState.serviceDisabled = !enabled // optimistic; reconciled below
 
         DispatchQueue.global(qos: .userInitiated).async {
             let uid = getuid()
@@ -139,14 +261,33 @@ enum SpotlightManager {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
             process.arguments = [action, "gui/\(uid)/com.apple.Spotlight"]
-            try? process.run()
-            process.waitUntilExit()
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            var launched = false
+            do {
+                try process.run()
+                process.waitUntilExit()
+                launched = process.terminationStatus == 0
+            } catch {
+                NSLog("SpotlightManager: launchctl %@ failed to launch: %@", action, error.localizedDescription)
+            }
 
             if !enabled {
                 let kill = Process()
                 kill.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
                 kill.arguments = ["Spotlight"]
+                kill.standardOutput = FileHandle.nullDevice
+                kill.standardError = FileHandle.nullDevice
                 try? kill.run()
+                kill.waitUntilExit()
+            }
+
+            let disabled = probeServiceDisabled()
+            let success = launched && (disabled == !enabled)
+            Task { @MainActor in
+                cachedState.serviceDisabled = disabled
+                persist(cachedState)
+                completion?(success)
             }
         }
     }
@@ -157,6 +298,8 @@ enum SpotlightManager {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
             process.arguments = ["Spotlight"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
             try? process.run()
         }
     }
@@ -171,7 +314,12 @@ enum SpotlightManager {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        try? process.run()
+        do {
+            try process.run()
+        } catch {
+            NSLog("SpotlightManager: mdutil failed to launch: %@", error.localizedDescription)
+            return true
+        }
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
@@ -209,31 +357,58 @@ enum SpotlightManager {
         !isShortcutEnabled() && isServiceDisabled() && !isIndexingEnabled()
     }
 
-    /// Disables shortcut, launchd service, and optionally initiates indexing disable
-    static func disableAll(includeIndexing: Bool, completion: (@Sendable @MainActor (Bool) -> Void)? = nil) {
-        setShortcut(enabled: false)
-        setService(enabled: false)
+    /// Disables shortcut, launchd service, and optionally file indexing.
+    static func disableAll(includeIndexing: Bool, completion: (@Sendable @MainActor (ApplyResult) -> Void)? = nil) {
+        apply(enabled: false, includeIndexing: includeIndexing, completion: completion)
+    }
 
-        if includeIndexing {
-            setIndexing(enabled: false) { success in
-                completion?(success)
-            }
-        } else {
-            completion?(true)
+    /// Re-enables shortcut, launchd service, and optionally file indexing.
+    static func enableAll(includeIndexing: Bool, completion: (@Sendable @MainActor (ApplyResult) -> Void)? = nil) {
+        apply(enabled: true, includeIndexing: includeIndexing, completion: completion)
+    }
+
+    /// Runs the three toggles and reports each one's verified outcome once they have
+    /// all landed. The shortcut and service writes run concurrently on their own
+    /// queues; indexing is last because it raises an admin prompt.
+    private static func apply(enabled: Bool,
+                              includeIndexing: Bool,
+                              completion: (@Sendable @MainActor (ApplyResult) -> Void)?) {
+        let box = ResultBox()
+
+        setShortcut(enabled: enabled) { success in
+            box.shortcut = success
+            finish(box, includeIndexing: includeIndexing, enabled: enabled, completion: completion)
+        }
+        setService(enabled: enabled) { success in
+            box.service = success
+            finish(box, includeIndexing: includeIndexing, enabled: enabled, completion: completion)
         }
     }
 
-    /// Re-enables shortcut, launchd service, and optionally indexing
-    static func enableAll(includeIndexing: Bool, completion: (@Sendable @MainActor (Bool) -> Void)? = nil) {
-        setShortcut(enabled: true)
-        setService(enabled: true)
+    /// Mutable only on the main actor, so the two completions above cannot race.
+    @MainActor
+    private final class ResultBox {
+        var shortcut: Bool?
+        var service: Bool?
+        var indexingStarted = false
+    }
 
-        if includeIndexing {
-            setIndexing(enabled: true) { success in
-                completion?(success)
-            }
-        } else {
-            completion?(true)
+    @MainActor
+    private static func finish(_ box: ResultBox,
+                               includeIndexing: Bool,
+                               enabled: Bool,
+                               completion: (@Sendable @MainActor (ApplyResult) -> Void)?) {
+        guard let shortcut = box.shortcut, let service = box.service else { return }
+
+        guard includeIndexing else {
+            completion?(ApplyResult(shortcut: shortcut, service: service, indexing: nil))
+            return
+        }
+
+        guard !box.indexingStarted else { return }
+        box.indexingStarted = true
+        setIndexing(enabled: enabled) { indexing in
+            completion?(ApplyResult(shortcut: shortcut, service: service, indexing: indexing))
         }
     }
 

@@ -31,7 +31,8 @@ final class SettingsBackupController {
                 hotkeyOption: hotkey,
                 autoStartEnabled: autoStart,
                 hideMenuBarIcon: hideIcon,
-                browserHistoryDays: historyDays
+                browserHistoryDays: historyDays,
+                autoUpdateEnabled: UpdateManager.shared.isAutomaticEnabled
             ),
             customCommands: customCommands,
             pinnedCommands: pinnedCommands,
@@ -184,7 +185,12 @@ final class SettingsBackupController {
             BrowserIntegrationProvider.shared.historyLimitDays = option
         }
 
-        // 9. Rebuild UI & View Model
+        // 9. Automatic Update Checks
+        if let autoUpdate = backup.preferences.autoUpdateEnabled {
+            UpdateManager.shared.isAutomaticEnabled = autoUpdate
+        }
+
+        // 10. Rebuild UI & View Model
         menuBarController?.rebuildMenu()
         viewModel?.reloadAfterSettingsImport()
     }

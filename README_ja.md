@@ -64,7 +64,7 @@ Lightspotは根本的に異なるアプローチをとることでこれらの�
 | **RAMフットプリント** | 500 MB – 2 GB+ | 200 MB – 500 MB | **約15 – 25 MB** (Pure Swift) |
 | **アプリの起動** | 頻繁に壊れ、再構築が必要 | 信頼できる | **100%の信頼性** (直接スキャン) |
 | **検索レイテンシ** | デバウンス処理あり (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬時の同期処理) |
-| **オフライン・プライバシー** | SiriのテレメトリをAppleに送信 | 同期にはアカウントが必要 | **100%ローカル、オフライン、テレメトリフリー** |
+| **オフライン・プライバシー** | SiriのテレメトリをAppleに送信 | 同期にはアカウントが必要 | **100%ローカル、テレメトリフリー**（オプションの1日1回の更新確認のみ） |
 
 ---
 
@@ -142,6 +142,12 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 - すべての設定（カスタムコマンド、ピン留めされたアイテム、スニペット、ホットキー）をクリーンなJSONファイルにエクスポートします。
 - 自動的なパスのサニタイズにより、`/Users/username` が `~` に置き換えられるため、設定を仕事用と個人用のMac間でシームレスに共有できます。
 
+### 10. 🔄 組み込みの自動アップデート
+- GitHub Releasesを1日1回バックグラウンドで確認し、メニューバーから新しいバージョンを提示します。**`Check for Updates...`** でその場で実行でき、**`Automatically Check for Updates`** で毎日の確認を完全に無効化できます。
+- その場で更新します: Lightspotがリリースをダウンロードして検証し、自身のバンドルを置き換えて再起動します。**`Skip This Version`** を選べば、確認を無効化せずにそのリリースだけを見送れます。
+- すべてのダウンロードには関門があります: HTTPSのみ、GitHubのホストのみ（リダイレクト後に再確認）、展開されたバンドルはLightspotのバンドル識別子・実行可能なバイナリ・公表されたバージョンとの完全一致が必須で、インストール済みより古いビルドは決して受け入れません。
+- リリースはアドホック署名です（このプロジェクトはDeveloper IDを同梱していません）。そのため検証できるコード署名は存在せず、上記のチェックとGitHubへのHTTPSが信頼モデルのすべてです。これは `install.sh` が既に求めているものと同じです。
+
 ---
 
 ## ✨ 追加の組み込み機能
@@ -168,7 +174,7 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 
 Lightspotには、Appleの組み込みSpotlightを無効または再有効化するためのメニューバー内の自動化機能が含まれています：
 
-1. **Spotlightのショートカット (`⌘Space`)**: macOSのシンボリックホットキーにあるAppleのデフォルトの `⌘Space` ホットキーを、root権限なしで無効化または復元します。
+1. **Spotlightのショートカット (`⌘Space`)**: Appleのデフォルトのホットキー、`⌘Space`（「Spotlight検索を表示」）と `⌥⌘Space`（「Finderの検索ウインドウを表示」）の両方を、root権限なしで無効化または復元します。変更は環境設定デーモンを通じて書き込まれ、読み戻して検証され、ログアウトなしで即時に適用されます。さらに、macOSがキーを手放すと同時にLightspotが `⌘Space` を自分のものとして登録します。
 2. **バックグラウンドプロセス (`com.apple.Spotlight`)**: `launchctl` を介してSpotlight GUIのバックグラウンドエージェントを無効化または有効化します。
 3. **ファイルインデックス作成 (`mdutil`)**: マウントされているすべてのボリュームにわたり、ファイルシステムのメタデータインデックス作成（`mds` / `mds_stores`）を完全にシャットダウンします。
 4. **ワンクリックのマスターアクション**:
@@ -205,10 +211,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. テストと検証
-Lightspotには112の自動テストスイートと、ライブシステムでのランタイムチェックが含まれています：
+Lightspotには27の自動テストスイートと88のライブシステムチェックが含まれています：
 ```bash
-# コアロジックとエンジンのテスト (24のテストスイート)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# コアロジックとエンジンのテスト (27のテストスイート)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 
 # ライブシステムチェック (88の検証チェック)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -240,4 +246,5 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **RAM専用の一時的なクリップボード**: クリップボードの履歴は揮発性メモリ内にのみ留まり（ディスクに書き込まれることはありません）、隠蔽されたタイプ/パスワードマネージャー（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）を積極的に無視します。
 - **デフォルトブラウザの分離**: ブックマークとタブは、設定されたデフォルトブラウザからのみ読み取られ、クロスブラウザのスクレイピングを回避します。
 - **サンドボックス化されたサブプロセス**: コマンドとスクリプトは、明示的なユーザーアクション（`Return` または `⌘↵`）があった場合にのみ実行されます。
-- **テレメトリゼロと100%オフライン**: ネットワークリクエスト、リモート分析、トラッキングは一切ありません。
+- **テレメトリゼロ**: 分析もトラッキングもアカウントもありません。あなた自身や検索内容について報告されるものは一切ありません。
+- **ネットワークリクエストは1つだけ、しかも無効化できます**: Lightspotが自ら行う通信は毎日のアップデート確認のみです。GitHubの公開リリースAPIへの認証なしの `GET` で、送信するのは `User-Agent` に含まれる現在のバージョンだけです。メニューバーで **`Automatically Check for Updates`** をオフにすれば、あなたが指示しない限りLightspotはネットワークリクエストを行いません。それ以外（検索、計算、クリップボード、プロジェクト、履歴）はすべてローカルで処理されます。

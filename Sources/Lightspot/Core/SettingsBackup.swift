@@ -196,12 +196,20 @@ struct LightspotPreferencesBackup: Codable, Sendable, Equatable {
     var autoStartEnabled: Bool
     var hideMenuBarIcon: Bool
     var browserHistoryDays: Int?
+    /// Optional like `browserHistoryDays`, so backups written before automatic
+    /// update checks existed still import against schema v1.
+    var autoUpdateEnabled: Bool?
 
-    init(hotkeyOption: String, autoStartEnabled: Bool, hideMenuBarIcon: Bool, browserHistoryDays: Int? = nil) {
+    init(hotkeyOption: String,
+         autoStartEnabled: Bool,
+         hideMenuBarIcon: Bool,
+         browserHistoryDays: Int? = nil,
+         autoUpdateEnabled: Bool? = nil) {
         self.hotkeyOption = hotkeyOption
         self.autoStartEnabled = autoStartEnabled
         self.hideMenuBarIcon = hideMenuBarIcon
         self.browserHistoryDays = browserHistoryDays
+        self.autoUpdateEnabled = autoUpdateEnabled
     }
 }
 

@@ -26,6 +26,9 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             AutoStartManager.refreshState { [weak self] in
                 MainActor.assumeIsolated { self?.rebuildMenu() }
             }
+            UpdateManager.shared.checkAutomaticallyIfDue { [weak self] _ in
+                MainActor.assumeIsolated { self?.rebuildMenu() }
+            }
         }
     }
 
@@ -303,6 +306,34 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             menu.addItem(NSMenuItem.separator())
         }
 
+        // 16. Software Update
+        let updater = UpdateManager.shared
+        if updater.hasPromptableUpdate, let pending = updater.availableUpdate {
+            let updateItem = NSMenuItem(title: "Update to \(pending.displayVersion)...",
+                                        action: #selector(installUpdateAction),
+                                        keyEquivalent: "")
+            updateItem.target = self
+            menu.addItem(updateItem)
+        }
+
+        let checkUpdateItem = NSMenuItem(
+            title: updater.isChecking ? "Checking for Updates..." : "Check for Updates...",
+            action: #selector(checkForUpdatesAction),
+            keyEquivalent: ""
+        )
+        checkUpdateItem.target = self
+        checkUpdateItem.isEnabled = !updater.isChecking && !updater.isInstalling
+        menu.addItem(checkUpdateItem)
+
+        let autoUpdateItem = NSMenuItem(title: "Automatically Check for Updates",
+                                        action: #selector(toggleAutoUpdateAction),
+                                        keyEquivalent: "")
+        autoUpdateItem.target = self
+        autoUpdateItem.state = updater.isAutomaticEnabled ? .on : .off
+        menu.addItem(autoUpdateItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // About Lightspot
         let aboutItem = NSMenuItem(title: "About Lightspot", action: #selector(aboutAction), keyEquivalent: "")
         aboutItem.target = self
@@ -427,29 +458,67 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     }
 
     @objc private func toggleShortcutAction() {
-        let currentlyEnabled = SpotlightManager.isShortcutEnabled()
-        SpotlightManager.setShortcut(enabled: !currentlyEnabled)
-        rebuildMenu()
+        let target = !SpotlightManager.isShortcutEnabled()
 
-        showAlert(
-            title: !currentlyEnabled ? "Spotlight Shortcut Enabled" : "Spotlight Shortcut Disabled",
-            message: !currentlyEnabled
-                ? "The macOS built-in Spotlight shortcut (⌘Space) has been re-enabled."
-                : "The macOS built-in Spotlight shortcut (⌘Space) has been disabled. ⌘Space is now reserved for Lightspot!"
-        )
+        SpotlightManager.setShortcut(enabled: target) { [weak self] success in
+            guard let self = self else { return }
+            self.reclaimHotkeyIfFreed()
+            self.rebuildMenu()
+
+            guard success else {
+                self.showAlert(title: "Could Not Change Spotlight Shortcut",
+                               message: Self.shortcutFailureMessage)
+                return
+            }
+
+            self.showAlert(
+                title: target ? "Spotlight Shortcut Enabled" : "Spotlight Shortcut Disabled",
+                message: target
+                    ? "The macOS built-in Spotlight shortcut (⌘Space and ⌥⌘Space) has been re-enabled."
+                    : "The macOS built-in Spotlight shortcut (⌘Space and ⌥⌘Space) has been disabled. ⌘Space is now reserved for Lightspot!"
+            )
+        }
+    }
+
+    /// Shown whenever a shortcut write does not survive its read-back. The write goes
+    /// through cfprefsd and is verified, so a failure here is a real refusal rather
+    /// than the silent no-op this used to report as success.
+    private static let shortcutFailureMessage = """
+    macOS did not accept the change to its Spotlight shortcut.
+
+    Open Keyboard Shortcuts Settings and clear "Show Spotlight search" and "Show Finder search window" under Spotlight by hand, then choose ⌘Space again here.
+    """
+
+    /// Carbon grants a key combination to one owner. If Lightspot lost ⌘Space at launch
+    /// because the system Spotlight shortcut still held it, claim it now that it is free.
+    func reclaimHotkeyIfFreed() {
+        guard let hotkeyManager = hotkeyManager, !hotkeyManager.isRegistered else { return }
+        guard !SpotlightManager.isShortcutEnabled() else { return }
+        hotkeyManager.reRegisterIfNeeded()
     }
 
     @objc private func toggleServiceAction() {
-        let isCurrentlyDisabled = SpotlightManager.isServiceDisabled()
-        SpotlightManager.setService(enabled: isCurrentlyDisabled)
-        rebuildMenu()
+        let target = SpotlightManager.isServiceDisabled()
 
-        showAlert(
-            title: isCurrentlyDisabled ? "Spotlight Process Enabled" : "Spotlight Process Disabled",
-            message: isCurrentlyDisabled
-                ? "The Spotlight launchd background process has been re-enabled."
-                : "The Spotlight launchd background process has been disabled and terminated."
-        )
+        SpotlightManager.setService(enabled: target) { [weak self] success in
+            guard let self = self else { return }
+            self.rebuildMenu()
+
+            guard success else {
+                self.showAlert(
+                    title: "Could Not Change Spotlight Process",
+                    message: "launchctl refused to \(target ? "enable" : "disable") com.apple.Spotlight for this user."
+                )
+                return
+            }
+
+            self.showAlert(
+                title: target ? "Spotlight Process Enabled" : "Spotlight Process Disabled",
+                message: target
+                    ? "The Spotlight launchd background process has been re-enabled."
+                    : "The Spotlight launchd background process has been disabled and terminated."
+            )
+        }
     }
 
     @objc private func toggleIndexingAction() {
@@ -475,23 +544,52 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     }
 
     @objc private func disableAllAction() {
-        SpotlightManager.disableAll(includeIndexing: true) { [weak self] success in
-            self?.rebuildMenu()
-            self?.showAlert(
-                title: "Spotlight Fully Disabled",
-                message: "1. ⌘Space Shortcut: Disabled\n2. Background Process: Terminated & Disabled\n3. File Indexing: " + (success ? "Disabled" : "Unchanged (Admin canceled)") + "\n\nLightspot is now your primary launcher!"
+        SpotlightManager.disableAll(includeIndexing: true) { [weak self] result in
+            guard let self = self else { return }
+            self.reclaimHotkeyIfFreed()
+            self.rebuildMenu()
+            self.showAlert(
+                title: result.shortcut ? "Spotlight Fully Disabled" : "Spotlight Partially Disabled",
+                message: Self.summary(for: result, disabling: true)
             )
         }
     }
 
     @objc private func enableAllAction() {
-        SpotlightManager.enableAll(includeIndexing: true) { [weak self] _ in
-            self?.rebuildMenu()
-            self?.showAlert(
-                title: "Spotlight Restored",
-                message: "Default macOS Spotlight shortcut, background service, and file indexing have been re-enabled."
+        SpotlightManager.enableAll(includeIndexing: true) { [weak self] result in
+            guard let self = self else { return }
+            self.rebuildMenu()
+            self.showAlert(
+                title: result.shortcut ? "Spotlight Restored" : "Spotlight Partially Restored",
+                message: Self.summary(for: result, disabling: false)
             )
         }
+    }
+
+    /// Reports each toggle's verified outcome. The old copy claimed all three had
+    /// changed whenever the indexing prompt was accepted, which hid a shortcut write
+    /// that never landed.
+    static func summary(for result: SpotlightManager.ApplyResult, disabling: Bool) -> String {
+        let done = disabling ? "Disabled" : "Enabled"
+        var lines = [
+            "1. ⌘Space Shortcut: " + (result.shortcut ? done : "Unchanged (macOS refused)"),
+            "2. Background Process: " + (result.service ? done : "Unchanged (launchctl refused)"),
+        ]
+        if let indexing = result.indexing {
+            lines.append("3. File Indexing: " + (indexing ? done : "Unchanged (Admin canceled)"))
+        }
+
+        let allDone = result.shortcut && result.service && (result.indexing ?? true)
+        if disabling {
+            lines.append(allDone
+                ? "\nLightspot is now your primary launcher!"
+                : "\n" + shortcutFailureMessage)
+        } else {
+            lines.append(allDone
+                ? "\nDefault macOS Spotlight behaviour has been restored."
+                : "\nSome settings could not be restored automatically — check Keyboard Shortcuts Settings.")
+        }
+        return lines.joined(separator: "\n")
     }
 
     @objc private func openKeyboardSettingsAction() {
@@ -513,8 +611,15 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            SpotlightManager.setShortcut(enabled: false)
-            rebuildMenu()
+            SpotlightManager.setShortcut(enabled: false) { [weak self] success in
+                guard let self = self else { return }
+                self.reclaimHotkeyIfFreed()
+                self.rebuildMenu()
+                if !success {
+                    self.showAlert(title: "Could Not Change Spotlight Shortcut",
+                                   message: Self.shortcutFailureMessage)
+                }
+            }
         } else if response == .alertSecondButtonReturn {
             openKeyboardSettingsAction()
         }
@@ -533,6 +638,150 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         alert.runModal()
     }
 
+    /// Called shortly after launch when Carbon refused the key combination. Something
+    /// else already owns it — on a stock Mac that is the system Spotlight shortcut,
+    /// and the symptom is simply that the panel never opens.
+    func presentHotkeyConflictIfNeeded() {
+        guard let hotkeyManager = hotkeyManager else { return }
+
+        // The owner may have gone away since launch; a retry is free.
+        if hotkeyManager.reRegisterIfNeeded() {
+            rebuildMenu()
+            return
+        }
+
+        let combination = hotkeyManager.currentOption.shortLabel
+        let spotlightHoldsIt = SpotlightManager.isShortcutEnabled()
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "\(combination) Is Already Taken"
+        alert.informativeText = spotlightHoldsIt
+            ? "macOS still has its own Spotlight shortcut registered, so Lightspot could not claim \(combination).\n\nDisable the system Spotlight shortcut to hand \(combination) to Lightspot."
+            : "Another app has registered \(combination), so Lightspot could not claim it.\n\nQuit that app or pick a different shortcut from the Lightspot menu."
+        alert.alertStyle = .warning
+        if spotlightHoldsIt {
+            alert.addButton(withTitle: "Disable System Spotlight Shortcut")
+        }
+        alert.addButton(withTitle: "Open Keyboard Shortcuts Settings")
+        alert.addButton(withTitle: "Later")
+        alert.window.level = .floating
+        alert.window.center()
+        alert.window.orderFrontRegardless()
+
+        let response = alert.runModal()
+        if spotlightHoldsIt, response == .alertFirstButtonReturn {
+            SpotlightManager.setShortcut(enabled: false) { [weak self] success in
+                guard let self = self else { return }
+                let claimed = self.hotkeyManager?.reRegisterIfNeeded() ?? false
+                self.rebuildMenu()
+                if !success {
+                    self.showAlert(title: "Could Not Change Spotlight Shortcut",
+                                   message: Self.shortcutFailureMessage)
+                } else if !claimed {
+                    self.showAlert(
+                        title: "\(combination) Still Unavailable",
+                        message: "The system Spotlight shortcut is off, but another app is holding \(combination). Pick a different shortcut from the Lightspot menu."
+                    )
+                }
+            }
+        } else if response == (spotlightHoldsIt ? .alertSecondButtonReturn : .alertFirstButtonReturn) {
+            openKeyboardSettingsAction()
+        }
+    }
+
+    // MARK: - Software Update
+
+    @objc private func toggleAutoUpdateAction() {
+        let updater = UpdateManager.shared
+        updater.isAutomaticEnabled.toggle()
+        rebuildMenu()
+        if updater.isAutomaticEnabled {
+            updater.checkAutomaticallyIfDue { [weak self] _ in
+                self?.rebuildMenu()
+            }
+        }
+    }
+
+    @objc private func checkForUpdatesAction() {
+        let updater = UpdateManager.shared
+        rebuildMenu() // paint "Checking for Updates..." right away
+
+        updater.checkForUpdates(userInitiated: true) { [weak self] outcome in
+            guard let self = self else { return }
+            self.rebuildMenu()
+
+            switch outcome {
+            case .available(let release):
+                self.presentUpdatePrompt(for: release)
+            case .upToDate(let current):
+                self.showAlert(title: "You're Up to Date",
+                               message: "Lightspot \(current) is the latest version.")
+            case .failed(let message):
+                self.showAlert(title: "Could Not Check for Updates", message: message)
+            }
+        }
+    }
+
+    @objc private func installUpdateAction() {
+        guard let release = UpdateManager.shared.availableUpdate else { return }
+        presentUpdatePrompt(for: release)
+    }
+
+    /// Offers the update. "Install and Relaunch" replaces the bundle and restarts;
+    /// "Skip This Version" silences this one release without turning checks off.
+    func presentUpdatePrompt(for release: ReleaseInfo) {
+        let updater = UpdateManager.shared
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Lightspot \(release.displayVersion) is available"
+        var details = "You are running \(updater.currentVersion)."
+        if let size = release.assetSize {
+            let formatted = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+            details += " The download is \(formatted)."
+        }
+        if let notes = release.notes, !notes.isEmpty {
+            details += "\n\n" + String(notes.prefix(600))
+        }
+        details += "\n\nLightspot will quit and reopen to finish installing."
+        alert.informativeText = details
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Install and Relaunch")
+        alert.addButton(withTitle: "Release Notes")
+        alert.addButton(withTitle: "Skip This Version")
+        alert.addButton(withTitle: "Later")
+        alert.window.level = .floating
+        alert.window.center()
+        alert.window.orderFrontRegardless()
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            beginInstall(release)
+        case .alertSecondButtonReturn:
+            if let page = release.pageURL { NSWorkspace.shared.open(page) }
+        case .alertThirdButtonReturn:
+            updater.skip(release)
+            rebuildMenu()
+        default:
+            break
+        }
+    }
+
+    private func beginInstall(_ release: ReleaseInfo) {
+        rebuildMenu()
+        UpdateManager.shared.install(release) { [weak self] outcome in
+            switch outcome {
+            case .relaunching:
+                // The helper is waiting on this PID; quitting is what starts the swap.
+                NSApp.terminate(nil)
+            case .failed(let message):
+                self?.rebuildMenu()
+                self?.showAlert(title: "Update Failed", message: message)
+            }
+        }
+    }
+
     @objc func aboutAction() {
         showAbout()
     }
@@ -546,13 +795,15 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         let processStatus = SpotlightManager.isServiceDisabled() ? "Disabled" : "Active"
 
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        let updateSuffix = UpdateManager.shared.availableUpdate
+            .map { " (\($0.displayVersion) available)" } ?? ""
 
         let alert = NSAlert()
         alert.messageText = "Lightspot"
         alert.informativeText = """
         A lightweight Spotlight replacement for macOS.
 
-        Version: \(appVersion)
+        Version: \(appVersion)\(updateSuffix)
         Hotkey: \(currentOption)
 
         macOS Spotlight Status:

@@ -7,6 +7,7 @@ import Foundation
 //       Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift \
 //       Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift \
 //       Sources/Lightspot/System/FirstRunManager.swift \
+//       Sources/Lightspot/System/UpdateManager.swift \
 //       && /tmp/test_engine
 
 @main
@@ -174,6 +175,8 @@ struct TestRunner {
         testCustomCommandsStore()
         testVSCodeProjectsProvider()
         testSettingsBackup()
+        testSpotlightShortcutState()
+        testUpdateManager()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -1368,6 +1371,11 @@ struct TestRunner {
                 alertTitle = title
                 alertMessage = message
             }
+
+            var reclaimHotkeyCallCount = 0
+            func reclaimHotkeyIfFreed() {
+                reclaimHotkeyCallCount += 1
+            }
         }
 
         let originalFirstRun = UserDefaults.standard.object(forKey: FirstRunManager.userDefaultsKey)
@@ -1404,5 +1412,299 @@ struct TestRunner {
             UserDefaults.standard.removeObject(forKey: "lightspot_auto_start_enabled")
         }
         print("✅ FirstRunManager passed all tests!\n")
+    }
+
+    // MARK: - Test 26: Spotlight symbolic-hotkey entry handling
+    //
+    // Guards the three ways disabling ⌘Space used to fail silently: only hotkey 64
+    // being touched, a missing entry being `Set` (which errors) instead of created,
+    // and an existing custom key binding being destroyed on the way through.
+
+    static func testSpotlightShortcutState() {
+        print("Testing SpotlightManager shortcut state...")
+
+        assertEqual(SpotlightManager.spotlightHotkeyIDs, [64, 65],
+                    "Both Spotlight hotkey IDs are managed (65 is ⌥⌘Space)")
+        assertEqual(SpotlightManager.defaultHotkeyParameters(for: 64), [32, 49, 1_048_576],
+                    "Hotkey 64 defaults to ⌘Space")
+        assertEqual(SpotlightManager.defaultHotkeyParameters(for: 65), [32, 49, 1_572_864],
+                    "Hotkey 65 defaults to ⌥⌘Space")
+
+        // An absent entry means the factory default, and Spotlight ships enabled.
+        assertTrue(SpotlightManager.isHotkeyEntryEnabled(nil), "Missing entry reads as enabled")
+        assertTrue(SpotlightManager.isHotkeyEntryEnabled([String: Any]()), "Empty entry reads as enabled")
+        assertTrue(SpotlightManager.isHotkeyEntryEnabled(["enabled": true]), "CFBoolean true")
+        assertTrue(!SpotlightManager.isHotkeyEntryEnabled(["enabled": false]), "CFBoolean false")
+        // `defaults write -int 0` stores a number, not a boolean.
+        assertTrue(!SpotlightManager.isHotkeyEntryEnabled(["enabled": NSNumber(value: 0)]),
+                   "CFNumber 0 reads as disabled")
+        assertTrue(SpotlightManager.isHotkeyEntryEnabled(["enabled": NSNumber(value: 1)]),
+                   "CFNumber 1 reads as enabled")
+
+        // Disabling writes both IDs, not just 64.
+        let fromEmpty = SpotlightManager.hotkeyRoot([:], settingEnabled: false)
+        for id in SpotlightManager.spotlightHotkeyIDs {
+            let entry = fromEmpty[String(id)] as? [String: Any]
+            assertTrue(entry != nil, "Entry \(id) is created when absent")
+            assertTrue(!SpotlightManager.isHotkeyEntryEnabled(entry), "Entry \(id) is disabled")
+            // A missing `value` has to be filled in: an `enabled`-only entry is inert,
+            // so a later restore would produce a shortcut that does nothing.
+            let value = entry?["value"] as? [String: Any]
+            assertTrue(value != nil, "Entry \(id) gets a key binding")
+            assertEqual(value?["type"] as? String, "standard", "Entry \(id) binding type")
+            assertEqual(value?["parameters"] as? [Int],
+                        SpotlightManager.defaultHotkeyParameters(for: id),
+                        "Entry \(id) binding parameters")
+        }
+
+        // A user's own key binding must survive the toggle untouched. Someone who
+        // remapped Spotlight to ⌥Space should get ⌥Space back when they restore.
+        let custom: [String: Any] = [
+            "64": ["enabled": true,
+                   "value": ["type": "standard", "parameters": [32, 49, 524_288]] as [String: Any]] as [String: Any],
+            "32": ["enabled": true] as [String: Any],
+        ]
+        let disabled = SpotlightManager.hotkeyRoot(custom, settingEnabled: false)
+        let keptBinding = (disabled["64"] as? [String: Any])?["value"] as? [String: Any]
+        assertEqual(keptBinding?["parameters"] as? [Int], [32, 49, 524_288],
+                    "An existing custom key binding is preserved")
+        assertTrue(!SpotlightManager.isHotkeyEntryEnabled(disabled["64"]), "Custom entry still gets disabled")
+
+        // Unrelated hotkeys (Mission Control, screenshots, …) must not be rewritten.
+        assertTrue(SpotlightManager.isHotkeyEntryEnabled(disabled["32"]), "Unrelated hotkey 32 untouched")
+        assertEqual(disabled.count, 3, "Only the Spotlight IDs are added")
+
+        // Re-enabling is symmetric and keeps the binding.
+        let reEnabled = SpotlightManager.hotkeyRoot(disabled, settingEnabled: true)
+        for id in SpotlightManager.spotlightHotkeyIDs {
+            assertTrue(SpotlightManager.isHotkeyEntryEnabled(reEnabled[String(id)]),
+                       "Entry \(id) is enabled again")
+        }
+        assertEqual(((reEnabled["64"] as? [String: Any])?["value"] as? [String: Any])?["parameters"] as? [Int],
+                    [32, 49, 524_288], "Restore keeps the custom binding")
+
+        // The onboarding summary must not announce a change macOS refused.
+        let refused = SpotlightManager.ApplyResult(shortcut: false, service: true, indexing: true)
+        let refusedSummary = FirstRunManager.summary(for: refused)
+        assertTrue(refusedSummary.contains("Unchanged"), "A refused shortcut write is reported as unchanged")
+        assertTrue(!refusedSummary.contains("primary launcher"),
+                   "A refused shortcut write is not reported as full success")
+
+        let allDone = SpotlightManager.ApplyResult(shortcut: true, service: true, indexing: true)
+        let doneSummary = FirstRunManager.summary(for: allDone)
+        assertTrue(!doneSummary.contains("Unchanged"), "A fully applied change reports no leftovers")
+        assertTrue(doneSummary.contains("primary launcher"), "A fully applied change reports success")
+
+        // Indexing left out of the request is left out of the summary.
+        let noIndexing = SpotlightManager.ApplyResult(shortcut: true, service: true, indexing: nil)
+        assertTrue(!FirstRunManager.summary(for: noIndexing).contains("File Indexing"),
+                   "Indexing is omitted when it was not attempted")
+
+        print("✅ SpotlightManager shortcut state passed all tests!\n")
+    }
+
+    // MARK: - Test 27: UpdateManager (version maths, release parsing, install gate)
+
+    static func testUpdateManager() {
+        print("Testing UpdateManager...")
+
+        // --- Version parsing & ordering ---
+        assertEqual(SemanticVersion("1.2.3")?.description, "1.2.3", "Plain version")
+        assertEqual(SemanticVersion("v1.2.3")?.description, "1.2.3", "Leading v is stripped")
+        assertEqual(SemanticVersion("V2.0.0")?.description, "2.0.0", "Capital V is stripped")
+        assertTrue(SemanticVersion("")?.description == nil, "Empty string is not a version")
+        assertTrue(SemanticVersion("v")?.description == nil, "Bare v is not a version")
+        assertTrue(SemanticVersion("nightly")?.description == nil, "Words are not versions")
+        assertTrue(SemanticVersion("1.2.x")?.description == nil, "Non-numeric components are rejected")
+
+        assertTrue(SemanticVersion("1.2.3")! < SemanticVersion("1.2.4")!, "Patch ordering")
+        assertTrue(SemanticVersion("1.2.9")! < SemanticVersion("1.10.0")!, "Minor compares numerically, not as text")
+        assertTrue(SemanticVersion("1.9.0")! < SemanticVersion("2.0.0")!, "Major ordering")
+        assertTrue(SemanticVersion("1.2")! == SemanticVersion("1.2.0")!, "Missing components count as zero")
+        assertTrue(SemanticVersion("1.2.0")! == SemanticVersion("1.2.0.0")!, "Trailing zeros are equal")
+        assertTrue(!(SemanticVersion("1.2.3")! < SemanticVersion("1.2.3")!), "A version is not newer than itself")
+        // A pre-release precedes its final release, so 1.3.0-beta must not beat 1.3.0.
+        assertTrue(SemanticVersion("1.3.0-beta.1")! < SemanticVersion("1.3.0")!, "Pre-release sorts below release")
+        assertTrue(SemanticVersion("1.2.9")! < SemanticVersion("1.3.0-beta.1")!, "Pre-release still beats an older release")
+
+        // --- Download host allowlist ---
+        assertTrue(UpdateManager.isAllowedDownloadHost(URL(string: "https://github.com/openhoangnc/mac-lightspot/releases/download/v1/Lightspot.zip")!),
+                   "github.com over HTTPS is allowed")
+        assertTrue(UpdateManager.isAllowedDownloadHost(URL(string: "https://objects.githubusercontent.com/x")!),
+                   "GitHub's object store is allowed")
+        assertTrue(!UpdateManager.isAllowedDownloadHost(URL(string: "http://github.com/x.zip")!),
+                   "Plain HTTP is refused")
+        assertTrue(!UpdateManager.isAllowedDownloadHost(URL(string: "https://evil.example.com/Lightspot.zip")!),
+                   "An unrelated host is refused")
+        // Suffix matching would wave this through; the check is on the whole host.
+        assertTrue(!UpdateManager.isAllowedDownloadHost(URL(string: "https://github.com.evil.example/x.zip")!),
+                   "A look-alike host is refused")
+
+        // --- Release payload parsing ---
+        let payload = """
+        {
+          "tag_name": "v1.4.0",
+          "html_url": "https://github.com/openhoangnc/mac-lightspot/releases/tag/v1.4.0",
+          "body": "Fixes the Spotlight shortcut.",
+          "assets": [
+            {"name": "Lightspot.zip", "size": 2411724,
+             "browser_download_url": "https://github.com/openhoangnc/mac-lightspot/releases/download/v1.4.0/Lightspot.zip"}
+          ]
+        }
+        """.data(using: .utf8)!
+
+        guard let release = try? UpdateManager.parseRelease(from: payload) else {
+            print("❌ FAIL: parseRelease rejected a valid payload")
+            exit(1)
+        }
+        assertEqual(release.displayVersion, "1.4.0", "Version read from the tag")
+        assertEqual(release.tagName, "v1.4.0", "Tag kept verbatim for skip bookkeeping")
+        assertEqual(release.assetSize, 2411724, "Asset size parsed")
+        assertEqual(release.notes, "Fixes the Spotlight shortcut.", "Release notes parsed")
+        assertTrue(release.pageURL?.absoluteString.hasSuffix("tag/v1.4.0") == true, "Release page parsed")
+
+        // A release whose asset points off-GitHub must be refused outright.
+        let offsiteAsset = """
+        {"tag_name": "v9.9.9", "assets": [
+          {"name": "Lightspot.zip", "browser_download_url": "https://evil.example.com/Lightspot.zip"}]}
+        """.data(using: .utf8)!
+        assertTrue((try? UpdateManager.parseRelease(from: offsiteAsset)) == nil,
+                   "An off-GitHub download URL is refused")
+
+        let noAsset = #"{"tag_name": "v1.5.0", "assets": []}"#.data(using: .utf8)!
+        assertTrue((try? UpdateManager.parseRelease(from: noAsset)) == nil, "A release with no asset is refused")
+
+        let badTag = #"{"tag_name": "nightly", "assets": []}"#.data(using: .utf8)!
+        assertTrue((try? UpdateManager.parseRelease(from: badTag)) == nil, "A non-version tag is refused")
+
+        assertTrue((try? UpdateManager.parseRelease(from: Data("not json".utf8))) == nil, "Garbage is refused")
+
+        // --- Check outcome ---
+        let ok = HTTPURLResponse(url: URL(string: "https://api.github.com/x")!,
+                                 statusCode: 200, httpVersion: nil, headerFields: nil)!
+
+        switch UpdateManager.evaluate(data: payload, response: ok, error: nil, current: "1.3.0") {
+        case .available(let found): assertEqual(found.displayVersion, "1.4.0", "A newer release is offered")
+        default: print("❌ FAIL: expected an available update"); exit(1)
+        }
+
+        switch UpdateManager.evaluate(data: payload, response: ok, error: nil, current: "1.4.0") {
+        case .upToDate(let current): assertEqual(current, "1.4.0", "An equal version is up to date")
+        default: print("❌ FAIL: expected upToDate for an equal version"); exit(1)
+        }
+
+        // Never walk backwards: a newer local build must not be "updated" to an older release.
+        switch UpdateManager.evaluate(data: payload, response: ok, error: nil, current: "2.0.0") {
+        case .upToDate: break
+        default: print("❌ FAIL: a downgrade was offered as an update"); exit(1)
+        }
+
+        let rateLimited = HTTPURLResponse(url: URL(string: "https://api.github.com/x")!,
+                                          statusCode: 403, httpVersion: nil, headerFields: nil)!
+        switch UpdateManager.evaluate(data: payload, response: rateLimited, error: nil, current: "1.0.0") {
+        case .failed(let message): assertTrue(message.contains("rate-limited"), "403 is reported as rate limiting")
+        default: print("❌ FAIL: expected a failure for HTTP 403"); exit(1)
+        }
+
+        let missing = HTTPURLResponse(url: URL(string: "https://api.github.com/x")!,
+                                      statusCode: 404, httpVersion: nil, headerFields: nil)!
+        switch UpdateManager.evaluate(data: payload, response: missing, error: nil, current: "1.0.0") {
+        case .failed: break
+        default: print("❌ FAIL: expected a failure for HTTP 404"); exit(1)
+        }
+
+        switch UpdateManager.evaluate(data: nil, response: ok, error: nil, current: "1.0.0") {
+        case .failed: break
+        default: print("❌ FAIL: expected a failure for an empty body"); exit(1)
+        }
+
+        // --- Bundle validation gate ---
+        // Releases carry no Developer ID signature, so these checks are the whole gate.
+        let fm = FileManager.default
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("lightspot-update-test-\(UUID().uuidString)")
+
+        func makeBundle(identifier: String, version: String, withExecutable: Bool) -> URL {
+            let bundle = sandbox.appendingPathComponent("\(UUID().uuidString)/Lightspot.app")
+            let macos = bundle.appendingPathComponent("Contents/MacOS")
+            try? fm.createDirectory(at: macos, withIntermediateDirectories: true)
+            let info: [String: Any] = [
+                "CFBundleIdentifier": identifier,
+                "CFBundleExecutable": "Lightspot",
+                "CFBundleShortVersionString": version,
+            ]
+            (info as NSDictionary).write(to: bundle.appendingPathComponent("Contents/Info.plist"),
+                                         atomically: true)
+            if withExecutable {
+                let binary = macos.appendingPathComponent("Lightspot")
+                fm.createFile(atPath: binary.path, contents: Data("#!/bin/sh\n".utf8))
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+            }
+            return bundle
+        }
+
+        let expected = SemanticVersion("1.4.0")!
+        let good = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", withExecutable: true)
+        assertTrue(UpdateManager.validate(bundle: good, expected: expected, fileManager: fm) == nil,
+                   "A matching Lightspot bundle is accepted")
+
+        let imposter = makeBundle(identifier: "com.example.evil", version: "1.4.0", withExecutable: true)
+        assertTrue(UpdateManager.validate(bundle: imposter, expected: expected, fileManager: fm) != nil,
+                   "A bundle with a different identifier is refused")
+
+        let wrongVersion = makeBundle(identifier: "com.lightspot.app", version: "1.3.0", withExecutable: true)
+        assertTrue(UpdateManager.validate(bundle: wrongVersion, expected: expected, fileManager: fm) != nil,
+                   "A bundle whose version differs from the release is refused")
+
+        let noBinary = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", withExecutable: false)
+        assertTrue(UpdateManager.validate(bundle: noBinary, expected: expected, fileManager: fm) != nil,
+                   "A bundle with no runnable executable is refused")
+
+        assertTrue(UpdateManager.validate(bundle: sandbox.appendingPathComponent("Nope.app"),
+                                          expected: expected, fileManager: fm) != nil,
+                   "A missing bundle is refused")
+
+        // findAppBundle copes with the archive layout `ditto` produces.
+        let nested = sandbox.appendingPathComponent("nested", isDirectory: true)
+        try? fm.createDirectory(at: nested.appendingPathComponent("Lightspot.app"), withIntermediateDirectories: true)
+        assertEqual(UpdateManager.findAppBundle(in: nested, fileManager: fm)?.lastPathComponent,
+                    "Lightspot.app", "The app bundle is found at the archive root")
+
+        // --- Swap helper script ---
+        assertEqual(UpdateManager.shellQuote("/Applications/Lightspot.app"),
+                    "'/Applications/Lightspot.app'", "Ordinary paths are single-quoted")
+        // A quote in a path must not be able to break out of the script.
+        assertEqual(UpdateManager.shellQuote("/tmp/it's here"), "'/tmp/it'\\''s here'",
+                    "An embedded quote is escaped")
+
+        let script = UpdateManager.installerScript(pid: 4242,
+                                                   stagedBundle: "/tmp/stage/Lightspot.app",
+                                                   destination: "/Applications/Lightspot.app",
+                                                   workDirectory: "/tmp/stage",
+                                                   uid: 501,
+                                                   privileged: false)
+        assertTrue(script.contains("kill -0 4242"), "The helper waits for the running app to exit")
+        assertTrue(script.contains("/usr/bin/ditto '/tmp/stage/Lightspot.app' '/Applications/Lightspot.app'"),
+                   "The helper copies the staged bundle over the installed one")
+        assertTrue(script.contains("mv '/Applications/Lightspot.app' '/Applications/Lightspot.app.lightspot-old'"),
+                   "The helper keeps the old bundle for rollback")
+        assertTrue(script.contains("codesign --force --deep --sign -"),
+                   "The helper re-signs ad-hoc, which a plain copy does not preserve")
+        assertTrue(script.contains("xattr -dr com.apple.quarantine"), "The helper clears quarantine")
+        assertTrue(script.contains("/usr/bin/open '/Applications/Lightspot.app'"), "The helper relaunches the app")
+        assertTrue(!script.contains("launchctl asuser"), "The unprivileged helper relaunches directly")
+
+        let privileged = UpdateManager.installerScript(pid: 4242,
+                                                       stagedBundle: "/tmp/stage/Lightspot.app",
+                                                       destination: "/Applications/Lightspot.app",
+                                                       workDirectory: "/tmp/stage",
+                                                       uid: 501,
+                                                       privileged: true)
+        // Relaunching from a root shell would start Lightspot as root.
+        assertTrue(privileged.contains("/bin/launchctl asuser 501 /usr/bin/open '/Applications/Lightspot.app'"),
+                   "The privileged helper relaunches back in the user's session")
+        assertTrue(privileged.contains("chown -R 501"), "The privileged helper hands the bundle back to the user")
+
+        try? fm.removeItem(at: sandbox)
+        print("✅ UpdateManager passed all tests!\n")
     }
 }

@@ -27,11 +27,11 @@ The app is a singleton by hotkey registration: a second instance fails to grab t
 There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` and `System/TerminalLauncher` sources:
 
 ```bash
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 25 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, and first-run onboarding.
+- `test_engine.swift`: 27 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, Spotlight symbolic-hotkey entry handling, and the updater (version maths, release parsing, download allowlist, bundle validation, swap script).
 - `deep_verify.swift`: 88 live system checks verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
@@ -94,7 +94,8 @@ mac-lightspot/
         │   ├── MenuBarController.swift  # Menu bar status item & preferences
         │   ├── SettingsBackupController.swift # Settings import/export controller
         │   ├── SpotlightManager.swift   # macOS Spotlight disable/restore automations
-        │   └── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
+        │   ├── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
+        │   └── UpdateManager.swift      # GitHub release check, verified download & self-replacement
         └── UI/
             ├── AppGridView.swift        # Compact 5-column app launcher grid
             ├── CustomCommandsView.swift # Custom command manager overlay
@@ -243,9 +244,74 @@ candidate per keystroke across every provider, so the difference is the search.
    - `lightspot_snippets`
    - `lightspot_auto_start_enabled`
    - `lightspot_first_run_completed`
+   - `lightspot_spotlight_state` (cached Spotlight snapshot, see §0)
+   - `lightspot_auto_update_enabled`
+   - `lightspot_last_update_check`
+   - `lightspot_skipped_version`
 7. **Privileged Commands & Headless Touch ID Execution**:
    Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.
-8. **Input-method composition (marked text) is searched live**:
+8. **Changing a system symbolic hotkey takes three things, not one**:
+   Disabling Spotlight's ⌘Space is `SpotlightManager.setShortcut`, and every part of it
+   is load-bearing. Earlier versions wrote the plist directly and the shortcut kept
+   working, which is indistinguishable from the app doing nothing:
+   - **Write through `cfprefsd`**, i.e. `CFPreferencesSetValue` +
+     `CFPreferencesAppSynchronize` against `com.apple.symbolichotkeys`.
+     `~/Library/Preferences/com.apple.symbolichotkeys.plist` is the daemon's backing
+     store, not the API: it serves reads from its own copy and flushes on its own
+     schedule, so a PlistBuddy write reads back stale and can be overwritten wholesale.
+     Measured: right after a write through the daemon, the file still showed the old
+     value. `defaults read` is **not** a sync — it is a read, and it re-caches the very
+     value you were replacing.
+   - **Create a missing entry, don't `Set` it.** On a Mac where the user never
+     customised the shortcut there is no `64` entry, and PlistBuddy `Set` fails with
+     "Does Not Exist". Write `enabled` *and* a `value` dict (`type: standard`,
+     `parameters: [32, 49, modifierMask]`); an `enabled`-only entry is inert, so a later
+     restore yields a shortcut that does nothing. An entry that already has a `value`
+     keeps it — users remap Spotlight (⌥Space is `524288`, ⌘Space `1048576`,
+     ⌥⌘Space `1572864`), and clobbering that loses their binding.
+   - **Reload the window server** with
+     `/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u`
+     (~0.4 s, background queues only). Symbolic hotkeys are cached at login; without
+     this the preference is correct and the keystroke still opens Spotlight until the
+     next logout.
+
+   Both IDs must change together: **64** is "Show Spotlight search", **65** is "Show
+   Finder search window" (⌥⌘Space). Touching only 64 leaves half the shortcut
+   registered. Every write is read back through the daemon and the verified result is
+   what reaches the UI — `ApplyResult` exists so an alert can never again report a
+   refused write as success.
+
+9. **Carbon grants a key combination to exactly one owner**:
+   `RegisterEventHotKey` fails with `eventHotKeyExistsErr` (-9878) while the system
+   Spotlight shortcut still holds ⌘Space, and the only symptom is that the panel never
+   opens. `HotkeyManager.isRegistered` records that, `reRegisterIfNeeded()` retries, and
+   it is called after anything frees the shortcut (the menu toggle, "Disable
+   Everything", first-run onboarding). Freeing the shortcut without re-registering is
+   the same bug wearing a different hat: the preference is right and ⌘Space still does
+   nothing. `AppDelegate` surfaces an unclaimed hotkey as an alert at launch rather
+   than failing silently.
+
+10. **The updater replaces the bundle from outside the process**:
+   A running `.app` cannot overwrite itself, so `UpdateManager.install` stages the new
+   bundle in a temp directory, writes a `/bin/sh` helper **outside** that directory (the
+   helper deletes it), launches it detached and quits — the helper waits on the old PID,
+   moves the current bundle aside as `.lightspot-old` for rollback, copies with `ditto`
+   (not `cp`: bundle metadata), clears quarantine, **re-signs ad-hoc** (an ad-hoc
+   signature does not survive a copy), relaunches and cleans up. When the destination's
+   parent is not user-writable the helper runs through
+   `QuickActionsProvider.executePrivilegedWithTouchID`, backgrounded inside the
+   privileged shell so `sudo` returns and this process can exit, and relaunches via
+   `launchctl asuser <uid>` so Lightspot does not come back as root.
+
+   **Trust model, stated plainly:** releases are ad-hoc signed — the project ships no
+   Developer ID — so there is no signature to verify. The gate is HTTPS, a GitHub host
+   allowlist checked before the request *and* against the post-redirect response URL, a
+   `CFBundleIdentifier` + executable + exact-version check on the unpacked bundle, and a
+   refusal to install anything that is not strictly newer. That is the same trust
+   `install.sh` already asks for, and no more. If the project ever gets a Developer ID,
+   verify the signature here first.
+
+11. **Input-method composition (marked text) is searched live**:
    `SpotlightFieldEditor.setMarkedText` calls `didChangeText()`. AppKit sends no text-change
    notification for marked text (measured: 0 `controlTextDidChange` over 5 compositions), so
    with an underlining input method (JOKey without Accessibility, Japanese, Chinese, Korean) the

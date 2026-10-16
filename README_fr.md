@@ -64,7 +64,7 @@ Au lieu d'analyser agressivement l'intégralité de votre disque dur, Lightspot 
 | **Empreinte RAM** | 500 Mo – 2 Go+ | 200 Mo – 500 Mo | **~15 – 25 Mo** (Pur Swift) |
 | **Lancement d'App** | Se casse fréquemment ; requiert des reconstructions | Fiable | **100% Fiable** (Analyse directe) |
 | **Latence de Recherche** | Temporisée (50 – 200 ms) | 10 – 30 ms | **< 1,0 ms** (Synchrone instantané) |
-| **Confidentialité Hors Ligne** | Envoie la télémétrie de Siri à Apple | Compte requis pour la synchro | **100% Local, Hors Ligne & Sans Télémétrie** |
+| **Confidentialité Hors Ligne** | Envoie la télémétrie de Siri à Apple | Compte requis pour la synchro | **100% Local & Sans Télémétrie** (uniquement une vérification quotidienne des mises à jour, optionnelle) |
 
 ---
 
@@ -142,6 +142,12 @@ Exécutez des actions de maintenance privilégiées (`Vider le Cache DNS`, `Purg
 - Exportez l'intégralité de votre configuration (commandes personnalisées, éléments épinglés, extraits, raccourcis) vers un fichier JSON propre.
 - La désinfection automatique des chemins remplace `/Users/username` par `~` afin que les configurations puissent être partagées sans heurts entre les Mac de travail et personnels.
 
+### 10. 🔄 Mise à Jour Automatique Intégrée
+- Consulte les Releases GitHub une fois par jour en arrière-plan et propose la nouvelle version depuis la barre de menus : **`Check for Updates...`** (Rechercher les mises à jour) la lance à la demande, et **`Automatically Check for Updates`** désactive entièrement la vérification quotidienne.
+- Installation sur place : Lightspot télécharge la release, la vérifie, remplace son propre bundle et redémarre. **`Skip This Version`** met en sourdine une release précise sans désactiver les vérifications.
+- Chaque téléchargement est filtré : HTTPS uniquement, hôtes GitHub uniquement (revérifiés après les redirections), le bundle décompressé doit porter l'identifiant de bundle de Lightspot, un exécutable fonctionnel et exactement la version annoncée, et une version antérieure à celle déjà installée n'est jamais acceptée.
+- Les releases sont signées en ad-hoc (ce projet ne fournit aucun Developer ID), il n'y a donc aucune signature de code à vérifier : les contrôles ci-dessus et HTTPS vers GitHub constituent tout le modèle de confiance, celui-là même que `install.sh` exige déjà.
+
 ---
 
 ## ✨ Capacités Intégrées Supplémentaires
@@ -168,7 +174,7 @@ Exécutez des actions de maintenance privilégiées (`Vider le Cache DNS`, `Purg
 
 Lightspot inclut des automatisations intégrées dans la barre de menus pour désactiver ou réactiver le Spotlight intégré d'Apple :
 
-1. **Raccourci Spotlight (`⌘Space`)** : Désactive ou restaure le raccourci `⌘Space` par défaut d'Apple dans les raccourcis symboliques macOS sans nécessiter d'accès root.
+1. **Raccourci Spotlight (`⌘Space`)** : Désactive ou restaure les raccourcis Spotlight par défaut d'Apple, à la fois `⌘Space` (« Afficher la recherche Spotlight ») et `⌥⌘Space` (« Afficher la fenêtre de recherche du Finder »), sans nécessiter d'accès root. La modification est écrite via le démon de préférences, vérifiée par relecture et appliquée immédiatement (sans déconnexion) ; de plus, Lightspot revendique `⌘Space` dès que macOS le libère.
 2. **Processus d'Arrière-plan (`com.apple.Spotlight`)** : Désactive ou active l'agent d'arrière-plan GUI de Spotlight via `launchctl`.
 3. **Indexation de Fichiers (`mdutil`)** : Arrête complètement l'indexation des métadonnées du système de fichiers (`mds` / `mds_stores`) sur tous les volumes montés.
 4. **Actions Maîtresses en 1 Clic** :
@@ -205,10 +211,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Vérification
-Lightspot inclut 112 suites de tests automatisés et des vérifications d'exécution sur système en direct :
+Lightspot inclut 27 suites de tests automatisés et 88 vérifications sur système en direct :
 ```bash
-# Tests de logique de base & moteur (24 suites de tests)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# Tests de logique de base & moteur (27 suites de tests)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift && /tmp/test_engine
 
 # Vérifications du système en direct (88 vérifications)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -240,4 +246,5 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 - **Presse-papiers Éphémère Uniquement en RAM** : L'historique du presse-papiers reste exclusivement dans la mémoire volatile (jamais écrit sur le disque) et ignore activement les types dissimulés/gestionnaires de mots de passe (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 - **Isolation du Navigateur par Défaut** : Les signets et les onglets sont lus uniquement depuis votre navigateur par défaut configuré, évitant le grattage (scraping) inter-navigateurs.
 - **Sous-processus Sandboxés** : Les commandes et les scripts ne s'exécutent qu'après une action explicite de l'utilisateur (`Return` ou `⌘↵`).
-- **Zéro Télémétrie & 100% Hors Ligne** : Aucune requête réseau, aucune analyse à distance, aucun suivi.
+- **Zéro Télémétrie** : Aucune analyse, aucun suivi, aucun compte — rien n'est rapporté à votre sujet ni sur ce que vous recherchez.
+- **Une Seule Requête Réseau, et Vous Pouvez la Désactiver** : La seule connexion que Lightspot établit de lui-même est la vérification quotidienne des mises à jour : un `GET` non authentifié vers l'API publique des releases de GitHub, qui n'envoie que la version actuelle dans le `User-Agent`. Désactivez **`Automatically Check for Updates`** dans la barre de menus et Lightspot n'effectue aucune requête réseau sauf si vous le lui demandez. Tout le reste (recherche, calculs, presse-papiers, projets, historique) est calculé localement.
