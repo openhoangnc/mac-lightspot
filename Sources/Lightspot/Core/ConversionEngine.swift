@@ -120,6 +120,43 @@ public enum ConversionEngine: Sendable {
     private static func convertNumberBase(_ input: String) -> ConversionResult? {
         let lower = input.lowercased()
 
+        // Pattern: <number> (in|to) (hex|bin|binary|oct|octal|dec|decimal)
+        // Checked before the bare literals below: they claim anything starting with 0x/0b,
+        // so "0xFF in dec" was parsed as the hex number "ff in dec", failed, and returned nil.
+        let parts = input.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+        if parts.count >= 3 && (parts[1].lowercased() == "in" || parts[1].lowercased() == "to") {
+            let numStr = parts[0]
+            let numLower = numStr.lowercased()
+
+            var parsedVal: UInt64?
+            if numLower.hasPrefix("0x") {
+                parsedVal = UInt64(numLower.dropFirst(2), radix: 16)
+            } else if numLower.hasPrefix("0b") {
+                parsedVal = UInt64(numLower.dropFirst(2), radix: 2)
+            } else {
+                parsedVal = UInt64(numLower)
+            }
+
+            guard let val = parsedVal else { return nil }
+
+            switch parts[2].lowercased() {
+            case "hex":
+                let hex = "0x" + String(val, radix: 16).uppercased()
+                return ConversionResult(value: hex, subtitle: "\(numStr) in hex = \(hex)")
+            case "bin", "binary":
+                let bin = "0b" + String(val, radix: 2)
+                return ConversionResult(value: bin, subtitle: "\(numStr) in binary = \(bin)")
+            case "oct", "octal":
+                let oct = "0o" + String(val, radix: 8)
+                return ConversionResult(value: oct, subtitle: "\(numStr) in octal = \(oct)")
+            case "dec", "decimal":
+                let dec = String(val)
+                return ConversionResult(value: dec, subtitle: "\(numStr) in decimal = \(dec)")
+            default:
+                break
+            }
+        }
+
         // Explicit hex literal: 0x...
         if lower.hasPrefix("0x") {
             let hexStr = String(lower.dropFirst(2))
@@ -144,41 +181,6 @@ public enum ConversionEngine: Sendable {
                 value: dec,
                 subtitle: "\(input) = \(dec) (dec) · 0x\(hex) · oct: \(oct)"
             )
-        }
-
-        // Pattern: <number> (in|to) (hex|bin|binary|oct|dec|decimal)
-        let parts = lower.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-        if parts.count >= 3 && (parts[1] == "in" || parts[1] == "to") {
-            let numStr = parts[0]
-            let targetBase = parts[2]
-
-            var parsedVal: UInt64?
-            if numStr.hasPrefix("0x") {
-                parsedVal = UInt64(numStr.dropFirst(2), radix: 16)
-            } else if numStr.hasPrefix("0b") {
-                parsedVal = UInt64(numStr.dropFirst(2), radix: 2)
-            } else {
-                parsedVal = UInt64(numStr)
-            }
-
-            guard let val = parsedVal else { return nil }
-
-            switch targetBase {
-            case "hex":
-                let hex = "0x" + String(val, radix: 16).uppercased()
-                return ConversionResult(value: hex, subtitle: "\(numStr) in hex = \(hex)")
-            case "bin", "binary":
-                let bin = "0b" + String(val, radix: 2)
-                return ConversionResult(value: bin, subtitle: "\(numStr) in binary = \(bin)")
-            case "oct", "octal":
-                let oct = "0o" + String(val, radix: 8)
-                return ConversionResult(value: oct, subtitle: "\(numStr) in octal = \(oct)")
-            case "dec", "decimal":
-                let dec = String(val)
-                return ConversionResult(value: dec, subtitle: "\(numStr) in decimal = \(dec)")
-            default:
-                break
-            }
         }
 
         return nil

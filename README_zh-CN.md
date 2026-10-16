@@ -120,12 +120,12 @@ Lightspot自动监控以下最近工作区：
 ### 6. 🛠️ 内置离线开发者工具 (DevTools)
 在毫秒内执行常见的开发者操作，无需打开Web实用工具或安装CLI包：
 - **`uuid`**：生成具有密码学安全性的随机UUID v4。
-- **`b64 <text>`** / **`b64d <hash>`**：Base64编码与解码。
+- **`b64 <text>`** / **`b64d <base64>`**（或 **`b64 decode <base64>`**）：Base64编码与解码。
 - **`urlencode <url>`** / **`urldecode <url>`**：URL百分号编码。
-- **`hash sha256 <text>`** / **`sha1`** / **`md5`**：即时加密校验和。
+- **`hash <text>`** / **`hash sha256|sha1|md5 <text>`**：即时加密校验和——一次显示全部三种，或只显示指定的算法。
 - **`jwt <token>`**：解码并漂亮地打印JWT头部和负载。
 - **`json <raw>`**：格式化、缩进和验证压缩JSON。
-- **`epoch`** / **`now`**：Unix时间戳与人类日期之间的相互转换。
+- **`epoch`** / **`now`**：当前Unix时间戳；**`epoch <时间戳>`** 转换为人类可读的日期，**`epoch 2024-01-15 10:30`** 则反向转换为时间戳（按本地时间，或带时区的ISO 8601）。
 - **`#3498db`**：实时颜色预览色板，支持一键复制Hex、RGB和HSL。
 
 ### 7. 🔐 Sudo及特权操作的无头Touch ID

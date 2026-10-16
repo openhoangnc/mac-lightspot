@@ -120,12 +120,12 @@ Terminez rapidement les serveurs de développement persistants, les tâches d'ar
 ### 6. 🛠️ Utilitaires de Développeur Hors Ligne Intégrés (DevTools)
 Effectuez les opérations de développement courantes en quelques millisecondes sans ouvrir d'utilitaires web ni installer de paquets CLI :
 - **`uuid`** : Génère un UUID v4 cryptographiquement aléatoire.
-- **`b64 <text>`** / **`b64d <hash>`** : Encodage et décodage Base64.
+- **`b64 <text>`** / **`b64d <base64>`** (ou **`b64 decode <base64>`**) : Encodage et décodage Base64.
 - **`urlencode <url>`** / **`urldecode <url>`** : Encodage URL (pourcentage).
-- **`hash sha256 <text>`** / **`sha1`** / **`md5`** : Sommes de contrôle cryptographiques instantanées.
+- **`hash <text>`** / **`hash sha256|sha1|md5 <text>`** : Sommes de contrôle cryptographiques instantanées — les trois à la fois, ou seulement l'algorithme indiqué.
 - **`jwt <token>`** : Décode et affiche de manière formatée les en-têtes et le payload JWT.
 - **`json <raw>`** : Formate, indente, et valide le JSON minifié.
-- **`epoch`** / **`now`** : Conversion d'horodatage Unix en dates humaines et vice-versa.
+- **`epoch`** / **`now`** : Horodatage Unix actuel ; **`epoch <horodatage>`** le convertit en date lisible et **`epoch 2024-01-15 10:30`** fait l'inverse (heure locale, ou ISO 8601 avec fuseau horaire).
 - **`#3498db`** : Nuancier d'aperçu de couleur en direct avec copie en 1 clic au format Hex, RGB, et HSL.
 
 ### 7. 🔐 Touch ID sans Interface pour Sudo & Actions Privilégiées
