@@ -64,7 +64,7 @@ En lugar de rastrear agresivamente todo tu disco duro, Lightspot se centra estri
 | **Huella de RAM** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Swift Puro) |
 | **Lanzamiento de Aplicaciones** | Falla con frecuencia; requiere reconstrucciones | Confiable | **100% Confiable** (Escaneo directo) |
 | **Latencia de Búsqueda** | Retardada (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (síncrono instantáneo) |
-| **Privacidad Offline** | Envía telemetría de Siri a Apple | Requiere cuenta para sincronización | **100% Local, Offline y Libre de Telemetría** |
+| **Privacidad Offline** | Envía telemetría de Siri a Apple | Requiere cuenta para sincronización | **Local y Libre de Telemetría** (única llamada de red: una consulta de IP pública que tú solicitas) |
 
 ---
 
@@ -237,7 +237,12 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 ## 🔒 Garantías de Privacidad y Seguridad
 
 - **Cero Indexación de Archivos**: Lightspot nunca indexa tus archivos personales, documentos, descargas o repositorios de código.
-- **Portapapeles Efímero Solo en RAM**: El historial del portapapeles permanece exclusivamente en memoria volátil (nunca se escribe en el disco) e ignora activamente los tipos ocultos/administradores de contraseñas (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
-- **Aislamiento del Navegador Predeterminado**: Los marcadores y las pestañas se leen únicamente de tu navegador predeterminado configurado, evitando el raspado entre navegadores.
-- **Subprocesos Aislados (Sandboxed)**: Los comandos y scripts se ejecutan solo tras la acción explícita del usuario (`Return` o `⌘↵`).
-- **Cero Telemetría y 100% Offline**: Sin solicitudes de red, sin analíticas remotas, sin rastreo.
+- **Portapapeles Efímero Solo en RAM**: El historial del portapapeles permanece exclusivamente en memoria volátil e ignora activamente los tipos ocultos/administradores de contraseñas (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`). Nunca se escribe en el disco, ni siquiera en el historial de búsqueda, que tampoco guarda el texto que copias de resultados de la calculadora, las herramientas de desarrollo o los fragmentos.
+- **Aislamiento del Navegador Predeterminado**: Los marcadores, las pestañas abiertas y el historial reciente se leen localmente y únicamente de tu navegador predeterminado configurado, evitando el raspado entre navegadores.
+- **Comandos Iniciados por el Usuario**: Tus comandos, scripts y acciones rápidas se ejecutan solo tras la acción explícita del usuario (`Return` o `⌘↵`).
+- **Cero Telemetría, Una Sola Solicitud de Red Bajo Demanda**: Sin analíticas, sin rastreo, sin cuentas, sin conexiones en segundo plano. La única solicitud que envía Lightspot es `GET https://api.ipify.org` (un servicio de terceros) para conocer tu IP pública, y solo cuando la pides: al escribir una consulta que la nombra (`ip`, `my ip`, `public ip`, `ipv4`) o al pulsar `Return` en la fila **IP Address**. ipify ve tu dirección IP y un user agent estándar de macOS, como cualquier servidor web. La respuesta se guarda en memoria durante 15 minutos y nunca se escribe en el disco. Las búsquedas web, las URL y los marcadores los abre tu navegador, y solo cuando pulsas `Return`.
+- **Lo Que Se Escribe en el Disco**: Solo las preferencias propias de Lightspot (`UserDefaults`, en `~/Library/Preferences/com.lightspot.app.plist`):
+  - Ajustes: `lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state` (último estado conocido de Spotlight, para las etiquetas del menú).
+  - Lo que creas: `lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`.
+  - Uso: `lightspot_recent_app_bundle_ids` (apps abiertas recientemente) y `lightspot_search_history`: las consultas que escribiste y los resultados que abriste (títulos, rutas de apps y proyectos, URL, comandos de shell), más los recuentos de selección para la clasificación. Revísalo o bórralo en el gestor del historial de búsqueda (`⌘Y`). Las selecciones del portapapeles, la calculadora y las herramientas de desarrollo nunca se registran; las de fragmentos y del informe de hardware solo conservan la consulta y un recuento, nunca el texto copiado.
+  - **Export Settings** escribe una copia de seguridad JSON, con el historial de búsqueda incluido, solo en el archivo que elijas.

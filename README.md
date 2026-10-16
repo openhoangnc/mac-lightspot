@@ -64,7 +64,7 @@ Instead of aggressively crawling your entire hard drive, Lightspot focuses stric
 | **RAM Footprint** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Pure Swift) |
 | **App Launching** | Frequently breaks; requires rebuilds | Reliable | **100% Reliable** (Direct scanning) |
 | **Search Latency** | Debounced (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (instant synchronous) |
-| **Offline Privacy** | Sends Siri telemetry to Apple | Account required for sync | **100% Local, Offline & Telemetry-Free** |
+| **Offline Privacy** | Sends Siri telemetry to Apple | Account required for sync | **Local & Telemetry-Free** (only network call: a public-IP lookup you ask for) |
 
 ---
 
@@ -237,7 +237,12 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 ## 🔒 Privacy & Security Guarantees
 
 - **Zero File Indexing**: Lightspot never indexes your personal files, documents, downloads, or code repositories.
-- **RAM-Only Ephemeral Clipboard**: Clipboard history stays exclusively in volatile memory (never written to disk) and actively ignores concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
-- **Default Browser Isolation**: Bookmarks and tabs are read solely from your configured default browser, avoiding cross-browser scraping.
-- **Sandboxed Subprocesses**: Commands and scripts run only upon explicit user action (`Return` or `⌘↵`).
-- **Zero Telemetry & 100% Offline**: No network requests, no remote analytics, no tracking.
+- **RAM-Only Ephemeral Clipboard**: Clipboard history stays exclusively in volatile memory and actively ignores concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`). It is never written to disk, not even into search history, which also never keeps the text you copy from calculator, dev-tool or snippet results.
+- **Default Browser Isolation**: Bookmarks, open tabs and recent history are read locally and solely from your configured default browser, avoiding cross-browser scraping.
+- **User-Triggered Commands**: Your commands, scripts and quick actions run only upon explicit user action (`Return` or `⌘↵`).
+- **No Telemetry, One On-Demand Network Request**: No analytics, no tracking, no accounts, no background connections. The only request Lightspot itself sends is `GET https://api.ipify.org` (a third-party service) to learn your public IP, and only when you ask for it: by typing a query that names it (`ip`, `my ip`, `public ip`, `ipv4`) or by pressing `Return` on the **IP Address** row. ipify sees your IP address and a standard macOS user agent, as any web server would. The answer is kept in memory for 15 minutes and never written to disk. Web searches, URLs and bookmarks are opened by your browser, and only when you press `Return`.
+- **What Is Written to Disk**: Only Lightspot's own preferences (`UserDefaults`, in `~/Library/Preferences/com.lightspot.app.plist`):
+  - Settings: `lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state` (last known Spotlight status, for the menu labels).
+  - What you create: `lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`.
+  - Usage: `lightspot_recent_app_bundle_ids` (recently launched apps) and `lightspot_search_history`: the queries you typed and the results you opened (titles, app and project paths, URLs, shell commands), plus selection counts for ranking. Review or clear it in the search history manager (`⌘Y`). Clipboard, calculator and dev-tool selections are never recorded; snippet and hardware-report selections keep only the query and a count, never the copied text.
+  - **Export Settings** writes a JSON backup, search history included, only to a file you choose.

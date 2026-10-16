@@ -64,7 +64,7 @@ Lightspot不主动抓取整个硬盘，而是严格关注高级用户实际搜�
 | **RAM占用** | 500 MB – 2 GB+ | 200 MB – 500 MB | **约15 – 25 MB** (纯Swift) |
 | **应用启动** | 经常损坏；需要重建 | 可靠 | **100%可靠** (直接扫描) |
 | **搜索延迟** | 防抖处理 (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬时同步) |
-| **离线隐私** | 发送Siri遥测至Apple | 需要同步账号 | **100%本地、离线且无遥测** |
+| **离线隐私** | 发送Siri遥测至Apple | 需要同步账号 | **本地运行且无遥测**（唯一的网络请求：由您主动发起的公网IP查询） |
 
 ---
 
@@ -237,7 +237,12 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 ## 🔒 隐私与安全保证
 
 - **零文件索引**：Lightspot绝不会对您的个人文件、文档、下载或代码库进行索引。
-- **纯RAM的临时剪贴板**：剪贴板历史记录仅保留在易失性内存中（从不写入磁盘），并主动忽略隐藏/密码管理器类型（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）。
-- **默认浏览器隔离**：书签和标签页仅从您配置的默认浏览器中读取，避免跨浏览器抓取。
-- **沙盒化子进程**：只有在明确的用户操作（`Return` 或 `⌘↵`）下才会运行命令和脚本。
-- **零遥测 & 100%离线**：没有网络请求、没有远程分析、没有任何追踪。
+- **纯RAM的临时剪贴板**：剪贴板历史记录仅保留在易失性内存中，并主动忽略隐藏/密码管理器类型（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）。它从不写入磁盘，也不会进入搜索历史；搜索历史同样不会保存您从计算器、开发者工具或代码段结果中复制的文本。
+- **默认浏览器隔离**：书签、已打开的标签页和近期浏览历史仅在本机从您配置的默认浏览器中读取，避免跨浏览器抓取。
+- **由用户触发的命令**：您的命令、脚本和快捷操作只有在明确的用户操作（`Return` 或 `⌘↵`）下才会运行。
+- **零遥测，仅一个按需网络请求**：没有分析统计、没有追踪、无需账号、没有后台连接。Lightspot 自身唯一会发出的请求是 `GET https://api.ipify.org`（第三方服务），用于获取您的公网IP，并且只在您主动查询时发出：输入明确指向它的查询（`ip`, `my ip`, `public ip`, `ipv4`），或在 **IP Address** 行上按下 `Return`。与任何网站一样，ipify 会看到您的IP地址和一个标准的 macOS User-Agent。查询结果仅在内存中缓存 15 分钟，从不写入磁盘。网页搜索、URL 和书签由您的浏览器打开，且仅在您按下 `Return` 时才会打开。
+- **写入磁盘的内容**：仅有 Lightspot 自身的偏好设置（`UserDefaults`，位于 `~/Library/Preferences/com.lightspot.app.plist`）：
+  - 设置：`lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state`（最近一次检测到的 Spotlight 状态，用于菜单显示）。
+  - 您创建的内容：`lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`。
+  - 使用记录：`lightspot_recent_app_bundle_ids`（最近启动的应用）和 `lightspot_search_history`：您输入的查询和打开的结果（标题、应用与项目路径、URL、Shell 命令），以及用于排序的选择次数。可在搜索历史管理器（`⌘Y`）中查看或清除。剪贴板、计算器和开发者工具的选择从不记录；代码段和硬件报告的选择只保留查询词和次数，绝不保存复制的文本。
+  - **Export Settings** 只会将 JSON 备份（包含搜索历史）写入您选择的文件。

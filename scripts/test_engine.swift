@@ -67,6 +67,9 @@ struct TestRunner {
     static func main() {
         print("🧪 Running Lightspot Core Tests...\n")
 
+        // No test may reach api.ipify.org: any lookup a search triggers gets a fixed answer.
+        NetworkInfoProvider.shared.resetPublicIPState(fetcher: { completion in completion("203.0.113.7") })
+
         // Test 1: Calculator Arithmetic
         print("Testing CalculatorEngine...")
         assertEqual(CalculatorEngine.evaluate("2+2"), "4", "2+2")
@@ -174,6 +177,8 @@ struct TestRunner {
         testCustomCommandsStore()
         testVSCodeProjectsProvider()
         testSettingsBackup()
+        testPublicIPLookupIsOnDemand()
+        testHistoryDoesNotPersistCopiedContent()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -428,6 +433,219 @@ struct TestRunner {
         assertEqual(manager.rankingBoost(for: testAppId, query: SearchQuery("term"), now: now), 0.0, "clearHistory resets ranking boosts to 0")
 
         print("✅ SearchRanking and SearchHistoryManager passed all tests!\n")
+    }
+
+    // MARK: - Test 26: public IP lookup only when asked for
+
+    /// Polls until `condition` holds or two seconds pass; lookups finish on a background queue.
+    static func waitUntil(_ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        while !condition() && Date() < deadline {
+            usleep(1_000)
+        }
+        return condition()
+    }
+
+    static func testPublicIPLookupIsOnDemand() {
+        print("Testing public IP lookup is on demand...")
+        let network = NetworkInfoProvider.shared
+        let qa = QuickActionsProvider.shared
+        let ipId = "action-ip-address"
+
+        let gate = DispatchSemaphore(value: 0)
+        network.resetPublicIPState(fetcher: { completion in
+            gate.wait()
+            completion("203.0.113.7")
+        })
+        assertEqual(network.publicIPState(), .notRequested, "Nothing is looked up before it is asked for")
+
+        // The decision itself: the query must name the IP and match strongly.
+        assertTrue(QuickActionsProvider.queryAsksForPublicIP(SearchQuery("ip"), score: 95), "'ip' asks for the IP")
+        assertTrue(QuickActionsProvider.queryAsksForPublicIP(SearchQuery("My IP"), score: 95), "'My IP' asks for the IP")
+        assertTrue(QuickActionsProvider.queryAsksForPublicIP(SearchQuery("ipv4"), score: 95), "'ipv4' asks for the IP")
+        assertTrue(!QuickActionsProvider.queryAsksForPublicIP(SearchQuery("ip s"), score: 40), "A subsequence match is not enough")
+        assertTrue(!QuickActionsProvider.queryAsksForPublicIP(SearchQuery("lo"), score: 90.25), "A keyword prefix without 'ip' is not enough")
+        assertTrue(!QuickActionsProvider.queryAsksForPublicIP(SearchQuery("local ip"), score: 95), "'local ip' does not ask for the public IP")
+
+        // Loose matches still show the row with the local IP, but send nothing.
+        for query in ["i", "lo", "loc", "ad", "address", "network", "my", "pu", "public", "local ip", "ipa"] {
+            let row = qa.search(SearchQuery(query)).first { $0.id == ipId }
+            if let row {
+                assertTrue(row.subtitle.hasPrefix("Local: "), "'\(query)' shows the local IP")
+                assertTrue(!row.subtitle.contains("Fetching"), "'\(query)' does not claim a lookup")
+            }
+        }
+        for query in ["i", "lo", "ad", "network", "local ip"] {
+            assertTrue(qa.search(SearchQuery(query)).contains { $0.id == ipId }, "'\(query)' matches the IP row, so the check above is meaningful")
+        }
+        _ = SearchEngine.shared.searchImmediate(SearchQuery("lo"))
+        assertEqual(network.lookupCount, 0, "Loose matches never contact the network")
+
+        // A query that names the IP starts one background lookup; the row says so.
+        let fetching = qa.search(SearchQuery("my ip")).first { $0.id == ipId }
+        assertTrue(fetching?.subtitle.contains("Public: Fetching...") == true, "Strong match shows Fetching...")
+        assertTrue(fetching?.subtitle.hasPrefix("Local: ") == true, "Local IP shows while the lookup runs")
+        assertEqual(network.lookupCount, 1, "Strong match starts a lookup")
+        if case .runQuickAction(let script, _)? = fetching?.action {
+            assertEqual(script, "internal:copy-ip", "IP row action carries no address")
+        } else {
+            assertTrue(false, "IP row action is the internal:copy-ip quick action")
+        }
+
+        _ = qa.search(SearchQuery("ip"))
+        _ = qa.search(SearchQuery("ip address"))
+        assertEqual(network.lookupCount, 1, "Keystrokes during a lookup share it")
+
+        gate.signal()
+        assertTrue(waitUntil { network.cachedPublicIPv4Address() != nil }, "Lookup completes")
+        let done = qa.search(SearchQuery("ip")).first { $0.id == ipId }
+        assertTrue(done?.subtitle.contains("Public: 203.0.113.7") == true, "Row shows the looked-up address")
+        let loose = qa.search(SearchQuery("lo")).first { $0.id == ipId }
+        assertTrue(loose?.subtitle.contains("Public: 203.0.113.7") == true, "A cached address is shown without a lookup")
+        assertEqual(network.lookupCount, 1, "A fresh address is not looked up again")
+
+        // Failure: the row says so, typing does not retry, ↵ (force) does.
+        network.resetPublicIPState(fetcher: { completion in completion(nil) })
+        _ = qa.search(SearchQuery("ip"))
+        assertTrue(waitUntil { network.publicIPState() == .unavailable }, "Failed lookup is reported")
+        let failed = qa.search(SearchQuery("ip")).first { $0.id == ipId }
+        assertTrue(failed?.subtitle.contains("Public: Unavailable") == true, "Row shows Unavailable after a failure")
+        assertEqual(network.lookupCount, 1, "Typing does not retry inside the backoff")
+        let retried = DispatchSemaphore(value: 0)
+        network.requestPublicIPv4Address(force: true) { _ in retried.signal() }
+        assertTrue(retried.wait(timeout: .now() + 2) == .success, "Forced lookup reports back")
+        assertEqual(network.lookupCount, 2, "↵ retries despite the backoff")
+
+        assertTrue(NetworkInfoProvider.isPlausibleIPAddress("203.0.113.7"), "IPv4 is accepted")
+        assertTrue(NetworkInfoProvider.isPlausibleIPAddress("2001:db8::1"), "IPv6 is accepted")
+        assertTrue(!NetworkInfoProvider.isPlausibleIPAddress("<html>login</html>"), "A captive portal page is rejected")
+        assertTrue(!NetworkInfoProvider.isPlausibleIPAddress(""), "Empty body is rejected")
+
+        network.resetPublicIPState(fetcher: { completion in completion("203.0.113.7") })
+        print("✅ Public IP lookup passed all tests!\n")
+    }
+
+    // MARK: - Test 27: search history never stores copied content
+
+    static func testHistoryDoesNotPersistCopiedContent() {
+        print("Testing search history does not persist copied content...")
+        let history = SearchHistoryManager.shared
+        history.reset()
+        let secret = "eyJhbGciOiJIUzI1NiJ9.c2VjcmV0LXBheWxvYWQ.signature"
+
+        // Clipboard history: not recorded at all.
+        let clip = ClipboardHistoryManager.shared
+        clip.clearHistory()
+        clip.addEntry(content: secret)
+        let clipResult = clip.search(SearchQuery("clip eyj")).first
+        assertEqual(clipResult?.category, .clipboard, "Clipboard search yields a clipboard result")
+        if let clipResult {
+            history.recordSelection(result: clipResult, query: "clip eyj")
+            assertTrue(history.itemRecord(for: clipResult.id) == nil, "Clipboard selection leaves no ranking stats")
+        }
+        clip.clearHistory()
+
+        // Dev tools and calculator: derived from the query, not recorded at all.
+        let devResults = DevToolsProvider.shared.search(SearchQuery("sha256 \(secret)"))
+            + DevToolsProvider.shared.search(SearchQuery("b64 \(secret)"))
+        assertTrue(!devResults.isEmpty, "Dev tools produce results to select")
+        for result in devResults {
+            history.recordSelection(result: result, query: "sha256 \(secret)")
+            assertTrue(history.itemRecord(for: result.id) == nil, "\(result.id) leaves no ranking stats")
+        }
+        if let dev = devResults.first {
+            let promoted = SearchResult(
+                id: "top-\(dev.id)", title: dev.title, subtitle: dev.subtitle, iconType: dev.iconType,
+                category: .topHit, score: dev.score, action: dev.action, promotedFrom: .devTools
+            )
+            history.recordSelection(result: promoted, query: secret)
+            assertTrue(history.itemRecord(for: dev.id) == nil, "A dev tool promoted to Top Hit is not recorded either")
+        }
+        let calc = SearchEngine.shared.searchImmediate(SearchQuery("1337*42"))[.calculator]?.first
+        assertTrue(calc != nil, "Calculator produces a result to select")
+        if let calc {
+            history.recordSelection(result: calc, query: "1337*42")
+            assertTrue(history.itemRecord(for: calc.id) == nil, "Calculator selection leaves no ranking stats")
+        }
+        assertTrue(history.entries().isEmpty, "Clipboard, dev tools and calculator leave no history entries")
+
+        // Other copy results keep ranking stats, but no entry holding the copied text.
+        history.recordSelection(
+            itemId: "snippet-test",
+            title: "Signature",
+            subtitle: secret,
+            category: .snippets,
+            iconType: .systemSymbol(name: "text.quote"),
+            action: .copyToClipboard(secret),
+            query: "sig"
+        )
+        assertEqual(history.itemRecord(for: "snippet-test")?.totalCount, 1, "Snippet selection keeps ranking stats")
+        assertTrue(history.rankingBoost(for: "snippet-test", query: SearchQuery("sig")) > 0, "Snippet still gets its ranking boost")
+        assertTrue(history.entries().isEmpty, "Snippet selection stores no replayable entry")
+        assertEqual(SearchHistoryManager.retention(itemId: "system-hud", category: .quickActions, action: .copyToClipboard("CPU ...")),
+                    .statsOnly, "Hardware HUD keeps stats only")
+
+        // The IP row is replayable, but stored without the addresses in its live subtitle.
+        let ipRow = SearchResult(
+            id: "top-action-ip-address", title: "IP Address",
+            subtitle: "Local: 192.0.2.10 · Public: 203.0.113.7 · Press ↵ to copy",
+            iconType: .systemSymbol(name: "network"), category: .topHit, score: 95,
+            action: .runQuickAction(script: "internal:copy-ip", usesOsascript: false), promotedFrom: .quickActions
+        )
+        history.recordSelection(result: ipRow, query: "ip")
+        let ipEntry = history.entries().first
+        assertEqual(ipEntry?.itemId, "action-ip-address", "IP Address selection is recorded")
+        assertTrue(ipEntry?.subtitle.contains("203.0.113.7") == false, "History subtitle omits the public IP")
+        assertTrue(ipEntry?.subtitle.contains("192.0.2.10") == false, "History subtitle omits the local IP")
+
+        // What reached UserDefaults (persisted asynchronously) holds none of it.
+        let key = "lightspot_search_history"
+        assertTrue(waitUntil {
+            UserDefaults.standard.data(forKey: key).map { String(decoding: $0, as: UTF8.self).contains("action-ip-address") } ?? false
+        }, "History was persisted")
+        let stored = UserDefaults.standard.data(forKey: key).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        assertTrue(!stored.contains("eyJhbGciOiJIUzI1NiJ9"), "Persisted history holds no copied secret")
+        assertTrue(!stored.contains("1337"), "Persisted history holds no calculator input")
+        if let calcTitle = calc?.title {
+            assertTrue(!stored.contains(calcTitle), "Persisted history holds no calculator output")
+        }
+        assertTrue(!stored.contains("203.0.113.7"), "Persisted history holds no public IP")
+
+        // History written by an earlier version (or restored from its backup) is scrubbed.
+        let legacyCopy = SearchHistoryEntry(
+            itemId: "dev-jwt-abc", query: "jwt \(secret)", title: secret, subtitle: "JWT",
+            category: .devTools, iconType: .systemSymbol(name: "key"), action: .copyToClipboard(secret)
+        )
+        let legacySnippet = SearchHistoryEntry(
+            itemId: "snippet-old", query: "sig", title: "Signature", subtitle: "Signature",
+            category: .snippets, iconType: .systemSymbol(name: "text.quote"), action: .copyToClipboard(secret)
+        )
+        let legacyIP = SearchHistoryEntry(
+            itemId: "action-ip-address", query: "ip", title: "IP Address",
+            subtitle: "Local: 192.0.2.10 · Public: 203.0.113.7 · Press ↵ to copy",
+            category: .quickActions, iconType: .systemSymbol(name: "network"),
+            action: .runQuickAction(script: "internal:copy-ip", usesOsascript: false)
+        )
+        let legacyApp = SearchHistoryEntry(
+            itemId: "app-com.apple.Terminal", query: "term", title: "Terminal", subtitle: "Application",
+            category: .applications, iconType: .systemSymbol(name: "terminal"), action: .launchApp(path: "/System/Applications/Utilities/Terminal.app")
+        )
+        let usage = ItemUsageRecord(totalCount: 1, lastSelected: Date())
+        history.restore(
+            entries: [legacyCopy, legacySnippet, legacyIP, legacyApp],
+            stats: ["calc-1337*42": usage, "dev-jwt-abc": usage, "clip-123": usage, "snippet-old": usage, "app-com.apple.Terminal": usage]
+        )
+        let restored = history.entries()
+        assertEqual(restored.map(\.itemId), ["action-ip-address", "app-com.apple.Terminal"], "Only replayable, content-free entries survive")
+        assertTrue(restored.first?.subtitle.contains("203.0.113.7") == false, "Legacy IP subtitle is rewritten")
+        assertTrue(history.itemRecord(for: "calc-1337*42") == nil, "Legacy calculator stats are dropped")
+        assertTrue(history.itemRecord(for: "dev-jwt-abc") == nil, "Legacy dev-tools stats are dropped")
+        assertTrue(history.itemRecord(for: "clip-123") == nil, "Legacy clipboard stats are dropped")
+        assertTrue(history.itemRecord(for: "snippet-old") != nil, "Snippet ranking stats are kept")
+        assertTrue(history.itemRecord(for: "app-com.apple.Terminal") != nil, "App ranking stats are kept")
+
+        history.reset()
+        print("✅ Search history privacy passed all tests!\n")
     }
 
     // MARK: - Test 14: Custom Commands Store & Engine Integration

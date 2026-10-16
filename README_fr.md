@@ -64,7 +64,7 @@ Au lieu d'analyser agressivement l'intégralité de votre disque dur, Lightspot 
 | **Empreinte RAM** | 500 Mo – 2 Go+ | 200 Mo – 500 Mo | **~15 – 25 Mo** (Pur Swift) |
 | **Lancement d'App** | Se casse fréquemment ; requiert des reconstructions | Fiable | **100% Fiable** (Analyse directe) |
 | **Latence de Recherche** | Temporisée (50 – 200 ms) | 10 – 30 ms | **< 1,0 ms** (Synchrone instantané) |
-| **Confidentialité Hors Ligne** | Envoie la télémétrie de Siri à Apple | Compte requis pour la synchro | **100% Local, Hors Ligne & Sans Télémétrie** |
+| **Confidentialité Hors Ligne** | Envoie la télémétrie de Siri à Apple | Compte requis pour la synchro | **Local & Sans Télémétrie** (seul appel réseau : une recherche d'IP publique que vous demandez) |
 
 ---
 
@@ -237,7 +237,12 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 ## 🔒 Garanties de Confidentialité & de Sécurité
 
 - **Zéro Indexation de Fichiers** : Lightspot n'indexe jamais vos fichiers personnels, documents, téléchargements, ou dépôts de code.
-- **Presse-papiers Éphémère Uniquement en RAM** : L'historique du presse-papiers reste exclusivement dans la mémoire volatile (jamais écrit sur le disque) et ignore activement les types dissimulés/gestionnaires de mots de passe (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
-- **Isolation du Navigateur par Défaut** : Les signets et les onglets sont lus uniquement depuis votre navigateur par défaut configuré, évitant le grattage (scraping) inter-navigateurs.
-- **Sous-processus Sandboxés** : Les commandes et les scripts ne s'exécutent qu'après une action explicite de l'utilisateur (`Return` ou `⌘↵`).
-- **Zéro Télémétrie & 100% Hors Ligne** : Aucune requête réseau, aucune analyse à distance, aucun suivi.
+- **Presse-papiers Éphémère Uniquement en RAM** : L'historique du presse-papiers reste exclusivement dans la mémoire volatile et ignore activement les types dissimulés/gestionnaires de mots de passe (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`). Il n'est jamais écrit sur le disque, pas même dans l'historique de recherche, qui ne conserve pas non plus le texte que vous copiez depuis les résultats de la calculatrice, des outils développeur ou des extraits.
+- **Isolation du Navigateur par Défaut** : Les signets, les onglets ouverts et l'historique récent sont lus localement et uniquement depuis votre navigateur par défaut configuré, évitant le grattage (scraping) inter-navigateurs.
+- **Commandes Déclenchées par l'Utilisateur** : Vos commandes, scripts et actions rapides ne s'exécutent qu'après une action explicite de l'utilisateur (`Return` ou `⌘↵`).
+- **Zéro Télémétrie, Une Seule Requête Réseau à la Demande** : Aucune analyse, aucun suivi, aucun compte, aucune connexion en arrière-plan. La seule requête qu'envoie Lightspot est `GET https://api.ipify.org` (un service tiers) pour connaître votre IP publique, et uniquement lorsque vous la demandez : en tapant une requête qui la nomme (`ip`, `my ip`, `public ip`, `ipv4`) ou en appuyant sur `Return` sur la ligne **IP Address**. ipify voit votre adresse IP et un user agent macOS standard, comme n'importe quel serveur web. La réponse est gardée en mémoire 15 minutes et n'est jamais écrite sur le disque. Les recherches web, les URL et les signets sont ouverts par votre navigateur, et seulement lorsque vous appuyez sur `Return`.
+- **Ce Qui Est Écrit sur le Disque** : Uniquement les préférences de Lightspot (`UserDefaults`, dans `~/Library/Preferences/com.lightspot.app.plist`) :
+  - Réglages : `lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state` (dernier état connu de Spotlight, pour les libellés du menu).
+  - Ce que vous créez : `lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`.
+  - Utilisation : `lightspot_recent_app_bundle_ids` (apps lancées récemment) et `lightspot_search_history` : les requêtes saisies et les résultats ouverts (titres, chemins d'apps et de projets, URL, commandes shell), plus les compteurs de sélection pour le classement. Consultez-le ou effacez-le dans le gestionnaire d'historique de recherche (`⌘Y`). Les sélections du presse-papiers, de la calculatrice et des outils développeur ne sont jamais enregistrées ; celles des extraits et du rapport matériel ne gardent que la requête et un compteur, jamais le texte copié.
+  - **Export Settings** écrit une sauvegarde JSON, historique de recherche compris, uniquement dans le fichier que vous choisissez.

@@ -75,6 +75,18 @@ private struct PersistedHistoryData: Codable {
     var itemStats: [String: ItemUsageRecord]
 }
 
+/// How much of a selection may be written to disk. History lives in UserDefaults
+/// (`lightspot_search_history`), and a replayable entry stores the result's action, so a
+/// copy result would put the copied text itself on disk.
+enum HistoryRetention: Equatable, Sendable {
+    /// Nothing at all.
+    case none
+    /// Ranking stats under the item's id, but no replayable entry.
+    case statsOnly
+    /// Ranking stats and an entry the history manager can re-run.
+    case full
+}
+
 // MARK: - Search History Manager
 
 final class SearchHistoryManager: @unchecked Sendable {
@@ -94,8 +106,17 @@ final class SearchHistoryManager: @unchecked Sendable {
     private init() {
         if let data = UserDefaults.standard.data(forKey: defaultsKey),
            let decoded = try? JSONDecoder().decode(PersistedHistoryData.self, from: data) {
-            cachedEntries = decoded.entries
-            cachedItemStats = decoded.itemStats
+            let entries = Self.retainedEntries(decoded.entries)
+            let stats = Self.retainedStats(decoded.itemStats)
+            cachedEntries = entries
+            cachedItemStats = stats
+            // Earlier versions stored copied text; rewrite the file without it. Entry
+            // equality is by id only, so a rewritten subtitle is compared explicitly.
+            let entriesChanged = entries.count != decoded.entries.count
+                || zip(entries, decoded.entries).contains { $0.subtitle != $1.subtitle }
+            if entriesChanged || stats.count != decoded.itemStats.count {
+                persist(entries: entries, stats: stats)
+            }
         } else {
             cachedEntries = []
             cachedItemStats = [:]
@@ -217,6 +238,8 @@ final class SearchHistoryManager: @unchecked Sendable {
     ) {
         let canonical = canonicalId(for: itemId)
         guard !canonical.isEmpty else { return }
+        let retention = Self.retention(itemId: canonical, category: category, action: action)
+        guard retention != .none else { return }
         let normQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         lock.lock()
@@ -247,30 +270,32 @@ final class SearchHistoryManager: @unchecked Sendable {
         }
 
         // 2. Add or update chronological history entry
-        let existingIndex = cachedEntries.firstIndex {
-            $0.itemId == canonical && $0.query == normQuery
-        }
+        if retention == .full {
+            let existingIndex = cachedEntries.firstIndex {
+                $0.itemId == canonical && $0.query == normQuery
+            }
 
-        let newCount = stat.totalCount
-        if let idx = existingIndex {
-            cachedEntries.remove(at: idx)
-        }
+            let newCount = stat.totalCount
+            if let idx = existingIndex {
+                cachedEntries.remove(at: idx)
+            }
 
-        let newEntry = SearchHistoryEntry(
-            itemId: canonical,
-            query: normQuery,
-            title: title,
-            subtitle: subtitle,
-            category: category,
-            iconType: iconType,
-            action: action,
-            selectedAt: date,
-            selectionCount: newCount
-        )
-        cachedEntries.insert(newEntry, at: 0)
+            let newEntry = SearchHistoryEntry(
+                itemId: canonical,
+                query: normQuery,
+                title: title,
+                subtitle: Self.persistableSubtitle(itemId: canonical, subtitle: subtitle),
+                category: category,
+                iconType: iconType,
+                action: action,
+                selectedAt: date,
+                selectionCount: newCount
+            )
+            cachedEntries.insert(newEntry, at: 0)
 
-        if cachedEntries.count > Self.maxEntries {
-            cachedEntries.removeLast(cachedEntries.count - Self.maxEntries)
+            if cachedEntries.count > Self.maxEntries {
+                cachedEntries.removeLast(cachedEntries.count - Self.maxEntries)
+            }
         }
 
         let snapshotEntries = cachedEntries
@@ -312,6 +337,9 @@ final class SearchHistoryManager: @unchecked Sendable {
 
     /// Restore history entries and ranking statistics from a backup.
     func restore(entries: [SearchHistoryEntry], stats: [String: ItemUsageRecord]) {
+        // A backup made by an earlier version can still carry copied text.
+        let entries = Self.retainedEntries(entries)
+        let stats = Self.retainedStats(stats)
         lock.lock()
         cachedEntries = Array(entries.prefix(Self.maxEntries))
         cachedItemStats = stats
@@ -320,6 +348,76 @@ final class SearchHistoryManager: @unchecked Sendable {
         lock.unlock()
 
         persist(entries: snapshotEntries, stats: snapshotStats)
+    }
+
+    // MARK: - Retention
+
+    /// Id prefixes of results that are never recorded (see `retention`). Stats carry no
+    /// category, so this is how stored stats are matched when scrubbing.
+    private static let unretainedIdPrefixes = ["clip-", "calc-", "dev-"]
+
+    /// Decides what a selection may leave on disk.
+    /// - Clipboard entries are never recorded: clipboard history is RAM-only by design.
+    /// - Calculator and dev-tools results are derived from the query, and their ids
+    ///   (`calc-<expression>`, `dev-jwt-<token hash>`) and the query itself embed the input
+    ///   (a JWT, the text being hashed). SearchEngine never boosts them, so there is
+    ///   nothing worth keeping.
+    /// - Any other result that copies text (snippets, whose expansion can include the
+    ///   clipboard; the hardware HUD) keeps ranking stats under its stable id, but no
+    ///   replayable entry, since that would store the copied text.
+    static func retention(itemId: String, category: ResultCategory, action: SearchAction) -> HistoryRetention {
+        switch category {
+        case .clipboard, .calculator, .devTools:
+            return .none
+        default:
+            break
+        }
+        if unretainedIdPrefixes.contains(where: { itemId.hasPrefix($0) }) {
+            return .none
+        }
+        if case .copyToClipboard = action {
+            return .statsOnly
+        }
+        return .full
+    }
+
+    /// Built-in quick actions are stored with their fixed subtitle: the live one can embed
+    /// the local and public IP or the frontmost Finder folder.
+    private static let quickActionSubtitles: [String: String] = Dictionary(
+        QuickActionsProvider.defaultActions.map { ($0.id, $0.subtitle) },
+        uniquingKeysWith: { first, _ in first }
+    )
+
+    static func persistableSubtitle(itemId: String, subtitle: String) -> String {
+        quickActionSubtitles[itemId] ?? subtitle
+    }
+
+    private static func retainedEntries(_ entries: [SearchHistoryEntry]) -> [SearchHistoryEntry] {
+        entries.compactMap { entry in
+            guard retention(itemId: entry.itemId, category: entry.category, action: entry.action) == .full else {
+                return nil
+            }
+            let subtitle = persistableSubtitle(itemId: entry.itemId, subtitle: entry.subtitle)
+            guard subtitle != entry.subtitle else { return entry }
+            return SearchHistoryEntry(
+                id: entry.id,
+                itemId: entry.itemId,
+                query: entry.query,
+                title: entry.title,
+                subtitle: subtitle,
+                category: entry.category,
+                iconType: entry.iconType,
+                action: entry.action,
+                selectedAt: entry.selectedAt,
+                selectionCount: entry.selectionCount
+            )
+        }
+    }
+
+    private static func retainedStats(_ stats: [String: ItemUsageRecord]) -> [String: ItemUsageRecord] {
+        stats.filter { key, _ in
+            !unretainedIdPrefixes.contains(where: { key.hasPrefix($0) })
+        }
     }
 
     // MARK: - Helpers & Persistence
