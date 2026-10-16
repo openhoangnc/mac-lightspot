@@ -24,15 +24,15 @@ The app is a singleton by hotkey registration: a second instance fails to grab t
 
 ### Tests
 
-There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` and `System/TerminalLauncher` sources:
+There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` sources plus the few `System/` files each one needs (`test_engine` needs `AutoStartManager`, `SpotlightManager` and `FirstRunManager` too):
 
 ```bash
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift && /tmp/test_engine
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 25 automated test suites verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, and first-run onboarding.
-- `deep_verify.swift`: 88 live system checks verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
+- `test_engine.swift`: 26 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, and first-run onboarding.
+- `deep_verify.swift`: 10 sections of live system checks (88 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code) verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
@@ -57,8 +57,8 @@ mac-lightspot/
 │   └── AppIcon.icns              # Multi-size macOS application icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (24 test suites)
-│   └── deep_verify.swift         # Live-system verification (88 checks)
+│   ├── test_engine.swift         # Automated test runner (26 test blocks)
+│   └── deep_verify.swift         # Live-system verification (10 sections, 88 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -81,7 +81,7 @@ mac-lightspot/
         │   ├── SearchEngine.swift       # Synchronous search aggregator & ranking
         │   ├── SearchHistoryManager.swift # Search query & selection history
         │   ├── SettingsBackup.swift     # Settings export & import backup
-        │   ├── SettingsProvider.swift   # 35+ macOS System Settings deep links
+        │   ├── SettingsProvider.swift   # 35 macOS System Settings deep links
         │   ├── ShellHistoryProvider.swift # zsh history parser & pinned commands
         │   ├── SnippetsStore.swift      # Text expansion snippets with variable interpolation
         │   ├── SystemInfoProvider.swift # Zero-subprocess Mach/IOKit hardware dashboard

@@ -4,7 +4,7 @@
 
 > **Un reemplazo ligero y perfecto para Spotlight de macOS, construido en Swift puro, diseñado para desarrolladores y usuarios avanzados que desean velocidad instantánea sin la sobrecarga de la indexación de archivos.**
 
-Lightspot reproduce fielmente el moderno diseño de píldora flotante y la estética de cristal translúcido de Spotlight de macOS (`NSVisualEffectView`). Bajo el capó, ofrece una capacidad de respuesta por debajo del milisegundo (< 1.0 ms de búsqueda) con **cero indexación de archivos en segundo plano**, consumiendo **0.0% de CPU en reposo** y menos de **25 MB de RAM**.
+Lightspot reproduce fielmente el moderno diseño de píldora flotante y la estética de cristal translúcido de Spotlight de macOS (`NSVisualEffectView`). Bajo el capó, ofrece una capacidad de respuesta por debajo del milisegundo (< 1.0 ms de búsqueda) con **cero indexación de archivos en segundo plano**. En reposo, su único trabajo periódico es una comprobación ligera del portapapeles cada 0.6 s, y usa menos de **25 MB de RAM**.
 
 ![Captura de pantalla de Lightspot](screenshot.png)
 
@@ -52,15 +52,15 @@ Spotlight integrado de Apple fue diseñado para la búsqueda casual de archivos.
 
 Lightspot soluciona estos problemas adoptando un enfoque fundamentalmente diferente: **Cero indexación de archivos en segundo plano.**
 
-En lugar de rastrear agresivamente todo tu disco duro, Lightspot se centra estrictamente en lo que los usuarios avanzados realmente buscan: Aplicaciones, Proyectos IDE, Pestañas del Navegador, Utilidades para Desarrolladores y Comandos Personalizados.
+En lugar de rastrear agresivamente todo tu disco duro, Lightspot se centra estrictamente en lo que los usuarios avanzados realmente buscan: Aplicaciones, Proyectos IDE, Pestañas del Navegador, Marcadores e Historial, Utilidades para Desarrolladores y Comandos Personalizados.
 
 ### Matriz de Comparación
 
 | Métrica | Spotlight de Apple | Raycast / Alfred | Lightspot 🔍 |
 |:---|:---|:---|:---|
 | **Indexación de Archivos** | Rastreo incontrolado en segundo plano | Opcional / Configurable | **Nunca** (Por garantía arquitectónica) |
-| **Uso de CPU en Reposo** | Picos de 100%+ durante operaciones | 1% – 5% en segundo plano | **0.0%** (duerme por completo) |
-| **Almacenamiento en Disco** | 10 GB – 200 GB+ en caché oculta | 100 MB – 1 GB | **0 KB** (Huella de disco cero) |
+| **Uso de CPU en Reposo** | Picos de 100%+ durante operaciones | 1% – 5% en segundo plano | **Mínimo** (sin indexación; solo una comprobación del portapapeles cada 0.6 s) |
+| **Almacenamiento en Disco** | 10 GB – 200 GB+ en caché oculta | 100 MB – 1 GB | **Sin índice ni caché** (solo tus ajustes en `UserDefaults`) |
 | **Huella de RAM** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Swift Puro) |
 | **Lanzamiento de Aplicaciones** | Falla con frecuencia; requiere reconstrucciones | Confiable | **100% Confiable** (Escaneo directo) |
 | **Latencia de Búsqueda** | Retardada (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (síncrono instantáneo) |
@@ -82,19 +82,19 @@ Abre el Editor de Comandos Personalizados interactivo con **`⌘⇧C`** para cre
 - **Expansión Dinámica de Parámetros**:
   - Usa `{query}`, `%s` o `%@` para sustituir cualquier argumento que escribas después del comando.
 - **Disparadores de Prefijo**:
-  - Asigna prefijos personalizados de 1-3 letras (ej. `dlog <contenedor>` para seguir logs de docker, `c <url>` para headers de curl, `png <host>` para hacer ping).
+  - Asigna a un comando tu propio prefijo y escribe `<prefijo> <consulta>` (ej. `c <url>` para headers de curl, `png <host>` para hacer ping). El menú **Presets** del editor ofrece nueve comandos listos para usar: `gh`, `g`, `yt`, `so`, `ddg`, `wiki`, `npm`, `png` y `c`.
 - **Palabras Clave Personalizadas e Íconos**:
-  - Agrega palabras clave difusas (fuzzy) para descubrimiento instantáneo y personaliza íconos usando SF Symbols o íconos de aplicaciones en base64.
+  - Agrega palabras clave difusas (fuzzy) para descubrimiento instantáneo. El ícono de un comando es por defecto el de su aplicación ejecutora (tu navegador, terminal o Script Editor); puedes cambiar al símbolo integrado del ejecutor o elegir tu propia imagen o archivo de aplicación.
 
-### 2. 💬 Fragmentos de Texto Dinámicos (`⌘P` / `snippets`)
-Define fragmentos de texto reutilizables (snippets) con expansión automática de variables dinámicas:
+### 2. 💬 Fragmentos de Texto Dinámicos
+Lightspot incluye cinco fragmentos de texto (snippets) — `date`, `iso`, `uuid`, `shrug` y `flip` — y expande variables dinámicas en el momento de copiarlos:
 - `{{date}}`: Fecha actual (`YYYY-MM-DD`)
 - `{{time}}`: Hora actual (`HH:mm:ss`)
 - `{{iso}}`: Marca de tiempo ISO 8601 UTC (`2026-09-05T14:30:00Z`)
 - `{{uuid}}`: UUID v4 aleatorio
 - `{{clipboard}}`: Contenido actual de tu portapapeles
 
-Escribe cualquier palabra clave de snippet (ej. `iso`, `uuid`, `date`) y presiona **`↵`** para copiar la cadena evaluada directamente a tu portapapeles.
+Escribe una palabra clave de snippet (ej. `iso`, `uuid`, `date`) o parte de su nombre y presiona **`↵`** para copiar la cadena evaluada directamente a tu portapapeles.
 
 ### 3. 💻 Elige Entre 7 Emuladores de Terminal Modernos
 Lightspot se integra con tu emulador de terminal favorito. Cambia en cualquier momento a través de la barra de menú:
@@ -131,7 +131,7 @@ Realiza operaciones comunes de desarrollador en milisegundos sin abrir utilidade
 ### 7. 🔐 Touch ID sin Interfaz para Sudo y Acciones Privilegiadas
 Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inactive Memory`) con autenticación biométrica de huellas dactilares:
 - **Sin Ventanas Emergentes de Terminal**: Se ejecuta a través de una pseudo-terminal (PTY) en segundo plano invocando `pam_tid.so` de macOS para una autenticación instantánea con Touch ID.
-- **Alternar Touch ID para Sudo en Terminal**: Acción de menú con un clic para configurar `/etc/pam.d/sudo_local` para que tus comandos `sudo` habituales en la terminal también puedan usar Touch ID.
+- **Alternar Touch ID para Sudo en Terminal**: Una Acción Rápida con búsqueda (escribe `touch id` o `sudo`) que edita `/etc/pam.d/sudo_local`, tras una solicitud de autorización de administrador, para que tus comandos `sudo` habituales en la terminal también puedan usar Touch ID. Su subtítulo indica si Touch ID para sudo está habilitado actualmente.
 
 ### 8. 📜 Historial de zsh y Comandos Fijados (`⌘P` / `⌘⇧P`)
 - Busca en tu `~/.zsh_history` local (o `$HISTFILE` personalizado) con clasificación instantánea en menos de un milisegundo.
@@ -139,7 +139,7 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
 - Presiona **`⌘⇧P`** para administrar, reordenar o eliminar comandos fijados.
 
 ### 9. 📦 Copia de Seguridad de Ajustes y Sincronización entre Máquinas
-- Exporta toda tu configuración (comandos personalizados, elementos fijados, fragmentos, teclas de acceso rápido) a un archivo JSON limpio.
+- Usa **Export Settings…** / **Import Settings…** en la barra de menús para guardar tu configuración en un archivo JSON limpio y restaurarla después. Incluye comandos personalizados, comandos de shell fijados, historial de búsqueda y ranking, aplicaciones recientes y preferencias (tecla de acceso rápido global, inicio al iniciar sesión, visibilidad del ícono de la barra de menús, ventana del historial del navegador). No se incluyen los fragmentos de texto, tu terminal preferida ni tu motor de búsqueda web predeterminado.
 - La sanitización automática de rutas reemplaza `/Users/username` con `~` para que las configuraciones puedan compartirse fluidamente entre Macs de trabajo y personales.
 
 ---
@@ -157,10 +157,10 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
   - Unidades: `100km in mi`, `72F in C`, `16GB in MB`
   - Moneda: `$100 in EUR`, `50 GBP in USD`
   - Bases numéricas: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
-- **Marcadores y Pestañas del Navegador Predeterminado**: Integración de marcadores y pestañas abiertas sin redundancia solo para tu navegador predeterminado activo (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**).
+- **Marcadores, Historial y Pestañas del Navegador Predeterminado**: Integración sin redundancia solo para tu navegador predeterminado activo (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**). Los marcadores y el historial reciente se leen de los propios archivos del navegador (el historial abarca los últimos 3 o 7 días, 7 por defecto, o se puede desactivar en **Browser History** de la barra de menús); las pestañas abiertas se consultan en Safari y en navegadores basados en Chromium.
 - **Portapapeles Efímero en Memoria**: Búfer de anillo volátil solo en RAM (hasta 50 elementos) al que se accede mediante `clip <query>`. Nunca escribe en el disco y filtra estrictamente los administradores de contraseñas (`1Password`, `Bitwarden`).
-- **Enlaces Profundos de Ajustes del Sistema de macOS**: Más de 35 enlaces profundos directos que abren paneles de ajustes específicos de macOS (`x-apple.systempreferences:...`).
-- **Búsqueda Web Multimotor**: Atajos de prefijo integrados: `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `brew`, `yt`, `ddg`.
+- **Enlaces Profundos de Ajustes del Sistema de macOS**: 35 enlaces profundos directos que abren paneles de ajustes específicos de macOS (`x-apple.systempreferences:...`).
+- **Búsqueda Web Multimotor**: Atajos de prefijo integrados: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`, además de `brew <fórmula>`, que abre la página de esa fórmula en formulae.brew.sh en lugar de ejecutar una búsqueda.
 
 ---
 
@@ -205,12 +205,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Pruebas y Verificación
-Lightspot incluye 112 suites de pruebas automatizadas y comprobaciones de tiempo de ejecución del sistema en vivo:
+Lightspot no tiene un target de XCTest. Dos scripts independientes en `scripts/` se compilan al vuelo junto con las fuentes: un ejecutor de pruebas de lógica y motor (26 bloques de pruebas) y un verificador del sistema en vivo (10 secciones, 88 comprobaciones en una máquina completamente equipada; algunas se omiten si, por ejemplo, no hay historial de zsh o VS Code instalado):
 ```bash
-# Pruebas de lógica central y motor (24 suites de pruebas)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# Pruebas de lógica central y motor (26 bloques de pruebas)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift && /tmp/test_engine
 
-# Comprobaciones del sistema en vivo (88 comprobaciones de verificación)
+# Comprobaciones del sistema en vivo (10 secciones, 88 comprobaciones en una máquina completamente equipada)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 

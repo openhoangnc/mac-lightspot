@@ -4,7 +4,7 @@
 
 > **A lightweight, pixel-perfect replacement for macOS Spotlight built in pure Swift — designed for developers and power users who want instant speed without the file indexing bloat.**
 
-Lightspot faithfully reproduces the modern floating pill design and translucent glass aesthetic of macOS Spotlight (`NSVisualEffectView`). Under the hood, it delivers sub-millisecond responsiveness (< 1.0 ms search) with **zero background file indexing**, consuming **0.0% idle CPU** and under **25 MB of RAM**.
+Lightspot faithfully reproduces the modern floating pill design and translucent glass aesthetic of macOS Spotlight (`NSVisualEffectView`). Under the hood, it delivers sub-millisecond responsiveness (< 1.0 ms search) with **zero background file indexing**. While idle its only recurring work is a lightweight clipboard check every 0.6 s, and it uses under **25 MB of RAM**.
 
 ![Lightspot Screenshot](screenshot.png)
 
@@ -52,15 +52,15 @@ Apple's built-in Spotlight was designed for casual file searching. But for devel
 
 Lightspot fixes these problems by taking a fundamentally different approach: **Zero background file indexing.** 
 
-Instead of aggressively crawling your entire hard drive, Lightspot focuses strictly on what power users actually search for: Applications, IDE Projects, Browser Tabs, Developer Utilities, and Custom Commands.
+Instead of aggressively crawling your entire hard drive, Lightspot focuses strictly on what power users actually search for: Applications, IDE Projects, Browser Tabs, Bookmarks & History, Developer Utilities, and Custom Commands.
 
 ### Comparison Matrix
 
 | Metric | Apple Spotlight | Raycast / Alfred | Lightspot 🔍 |
 |:---|:---|:---|:---|
 | **File Indexing** | Uncontrolled background crawling | Optional / Configurable | **Never** (By architectural guarantee) |
-| **Idle CPU Usage** | Spikes to 100%+ during operations | 1% – 5% background | **0.0%** (sleeps completely) |
-| **Disk Storage** | 10 GB – 200 GB+ hidden cache | 100 MB – 1 GB | **0 KB** (Zero disk footprint) |
+| **Idle CPU Usage** | Spikes to 100%+ during operations | 1% – 5% background | **Minimal** (no indexing; only a 0.6 s clipboard check) |
+| **Disk Storage** | 10 GB – 200 GB+ hidden cache | 100 MB – 1 GB | **No index or cache** (only your settings in `UserDefaults`) |
 | **RAM Footprint** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Pure Swift) |
 | **App Launching** | Frequently breaks; requires rebuilds | Reliable | **100% Reliable** (Direct scanning) |
 | **Search Latency** | Debounced (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (instant synchronous) |
@@ -82,19 +82,19 @@ Open the interactive Custom Command Editor with **`⌘⇧C`** to create and orga
 - **Dynamic Parameter Expansion**:
   - Use `{query}`, `%s`, or `%@` to substitute whatever arguments you type after the command.
 - **Prefix Triggers**:
-  - Bind custom 1-3 letter prefixes (e.g. `dlog <container>` to follow docker logs, `c <url>` to curl headers, `png <host>` to ping).
+  - Give a command your own prefix, then type `<prefix> <query>` (e.g. `c <url>` to curl headers, `png <host>` to ping). The editor's **Presets** menu offers nine ready-made commands: `gh`, `g`, `yt`, `so`, `ddg`, `wiki`, `npm`, `png` and `c`.
 - **Custom Keywords & Icons**:
-  - Add fuzzy keywords for instant discovery and customize icons using SF Symbols or base64 app icons.
+  - Add fuzzy keywords for instant discovery. A command's icon defaults to its runner's app icon (your browser, terminal or Script Editor); you can switch to the runner's built-in symbol or pick your own image or app file.
 
-### 2. 💬 Dynamic Text Snippets (`⌘P` / `snippets`)
-Define reusable text snippets with automatic dynamic variable expansion:
+### 2. 💬 Dynamic Text Snippets
+Lightspot ships with five text snippets — `date`, `iso`, `uuid`, `shrug` and `flip` — and expands dynamic variables at the moment you copy one:
 - `{{date}}`: Current date (`YYYY-MM-DD`)
 - `{{time}}`: Current time (`HH:mm:ss`)
 - `{{iso}}`: ISO 8601 UTC timestamp (`2026-09-05T14:30:00Z`)
 - `{{uuid}}`: Random UUID v4
 - `{{clipboard}}`: Current contents of your clipboard
 
-Type any snippet keyword (e.g. `iso`, `uuid`, `date`) and press **`↵`** to copy the evaluated string straight to your clipboard.
+Type a snippet keyword (e.g. `iso`, `uuid`, `date`) or part of its name and press **`↵`** to copy the evaluated string straight to your clipboard.
 
 ### 3. 💻 Choose From 7 Modern Terminal Emulators
 Lightspot integrates with your favorite terminal emulator. Switch anytime via the menu bar:
@@ -131,7 +131,7 @@ Perform common developer operations in milliseconds without opening web utilitie
 ### 7. 🔐 Headless Touch ID for Sudo & Privileged Actions
 Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memory`) with biometric fingerprint authentication:
 - **No Terminal Popups**: Runs via a background pseudo-terminal (PTY) invoking macOS `pam_tid.so` for instant Touch ID authentication.
-- **Toggle Touch ID for Sudo in Terminal**: 1-click menu action to configure `/etc/pam.d/sudo_local` so your regular terminal `sudo` commands can also use Touch ID.
+- **Toggle Touch ID for Sudo in Terminal**: A searchable Quick Action (type `touch id` or `sudo`) that edits `/etc/pam.d/sudo_local`, after an administrator authorization prompt, so your regular terminal `sudo` commands can also use Touch ID. Its subtitle shows whether Touch ID for sudo is currently enabled.
 
 ### 8. 📜 zsh History & Pinned Commands (`⌘P` / `⌘⇧P`)
 - Search your local `~/.zsh_history` (or custom `$HISTFILE`) with instant sub-millisecond ranking.
@@ -139,7 +139,7 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 - Press **`⌘⇧P`** to manage, reorder, or delete pinned commands.
 
 ### 9. 📦 Settings Backup & Cross-Machine Sync
-- Export your entire configuration (custom commands, pinned items, snippets, hotkeys) to a clean JSON file.
+- Use **Export Settings…** / **Import Settings…** in the menu bar to move your configuration to a clean JSON file and back. It covers custom commands, pinned shell commands, search history and ranking, recent apps, and preferences (global hotkey, launch at login, menu bar icon visibility, browser history window). Text snippets, your preferred terminal and your default web search engine are not included.
 - Automatic path sanitization replaces `/Users/username` with `~` so configurations can be shared seamlessly across work and personal Macs.
 
 ---
@@ -157,10 +157,10 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
   - Units: `100km in mi`, `72F in C`, `16GB in MB`
   - Currency: `$100 in EUR`, `50 GBP in USD`
   - Number bases: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
-- **Default Browser Bookmarks & Tabs**: Zero-redundancy bookmark and open tab integration for your active default browser only (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**).
+- **Default Browser Bookmarks, History & Tabs**: Zero-redundancy integration for your active default browser only (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**). Bookmarks and recent history are read from the browser's own files (history covers the last 3 or 7 days, 7 by default, or can be turned off via **Browser History** in the menu bar); open tabs are queried from Safari and Chromium-based browsers.
 - **In-Memory Ephemeral Clipboard**: Volatile RAM-only ring buffer (up to 50 items) accessed via `clip <query>`. Never writes to disk and strictly filters password managers (`1Password`, `Bitwarden`).
-- **macOS System Settings Deep Links**: 35+ direct deep links opening specific macOS settings panes (`x-apple.systempreferences:...`).
-- **Multi-Engine Web Search**: Built-in prefix shortcuts: `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `brew`, `yt`, `ddg`.
+- **macOS System Settings Deep Links**: 35 direct deep links opening specific macOS settings panes (`x-apple.systempreferences:...`).
+- **Multi-Engine Web Search**: Built-in prefix shortcuts: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`, plus `brew <formula>`, which opens that formula's page on formulae.brew.sh rather than running a search.
 
 ---
 
@@ -205,12 +205,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Verification
-Lightspot includes 112 automated test suites and live-system runtime checks:
+Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources: a logic and engine test runner (26 test blocks) and a live-system verifier (10 sections, 88 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation):
 ```bash
-# Core logic & engine tests (24 test suites)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/test_engine
+# Core logic & engine tests (26 test blocks)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift && /tmp/test_engine
 
-# Live system checks (88 verification checks)
+# Live system checks (10 sections, 88 checks on a fully equipped machine)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 

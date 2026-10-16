@@ -194,8 +194,10 @@ final class ShellHistoryProvider: @unchecked Sendable {
     /// sorts every category by score alone. The recency bonus stays below 5 so it
     /// can only reorder entries *within* a `FuzzyMatcher` tier, never across one.
     private static let maxRecencyBonus: Double = 4.5
-    /// Pinned matches always sort above unpinned ones. This cannot leak into the
-    /// Top Hit: `SearchEngine` excludes `.shellHistory` from promotion entirely.
+    /// Pinned matches always sort above unpinned ones. Unpinned history is kept out
+    /// of the Top Hit: `SearchEngine` promotes a `.shellHistory` row only when it is
+    /// pinned or was already selected for this exact query, and a pinned row's boost
+    /// then outranks every other Top Hit candidate.
     private static let pinnedBoost: Double = 200
     private static let maxResults = 12
 
