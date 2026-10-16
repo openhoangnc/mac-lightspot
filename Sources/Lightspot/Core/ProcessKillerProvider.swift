@@ -6,7 +6,7 @@ import Foundation
 public final class ProcessKillerProvider: @unchecked Sendable {
     public static let shared = ProcessKillerProvider()
 
-    private struct CachedProcess: Sendable {
+    struct CachedProcess: Sendable {
         let pid: Int32
         let name: String
         let cpu: String
@@ -17,14 +17,31 @@ public final class ProcessKillerProvider: @unchecked Sendable {
     private var cachedCLIProcesses: [CachedProcess] = []
     private var lastProcessScan: Date = .distantPast
     private var isScanningProcesses = false
+    private var cachedListeningPorts: [UInt16: [PortListener]] = [:]
+    private var lastPortScan: Date = .distantPast
+    private var isScanningPorts = false
     private let processQueue = DispatchQueue(label: "com.lightspot.processkiller", qos: .utility)
 
     private init() {}
 
-    /// Primes the process snapshot without blocking, so the first `kill ...` keystroke
-    /// already has CLI processes to match against.
+    /// Primes the process and listening-port snapshots without blocking, so the first
+    /// `kill ...` keystroke already has something to match against.
     public func warmUp() {
         _ = getCLIProcesses()
+        _ = getListeningPorts()
+    }
+
+    // MARK: - Protected Processes
+
+    /// Never offered, whatever the query: killing these ends the login session or
+    /// panics the machine, and a root-owned target is escalated through Touch ID by
+    /// `terminateProcess`, so nothing downstream would stop it.
+    static let protectedProcessNames: Set<String> = ["kernel_task", "launchd", "WindowServer", "loginwindow"]
+
+    /// PID 0 (kernel_task), PID 1 (launchd), Lightspot itself, and the session
+    /// processes in `protectedProcessNames`.
+    static func isProtected(pid: Int32, name: String) -> Bool {
+        pid <= 1 || pid == getpid() || protectedProcessNames.contains(name)
     }
 
     func search(_ query: SearchQuery) -> [SearchResult] {
@@ -58,41 +75,47 @@ public final class ProcessKillerProvider: @unchecked Sendable {
         var results: [SearchResult] = []
 
         // 1. Check for port-based kill: e.g. ":3000" or "3000"
-        let portString: String? = {
+        let port: UInt16? = {
             if target.hasPrefix(":") {
-                let p = String(target.dropFirst())
-                return UInt16(p) != nil ? p : nil
+                return UInt16(target.dropFirst())
             } else if let portNum = UInt16(target), portNum > 80 && portNum < 65535 {
-                return target
+                return portNum
             }
             return nil
         }()
 
-        if let port = portString, let portResults = findProcessesOnPort(port) {
-            results.append(contentsOf: portResults)
+        let cliProcs = getCLIProcesses()
+
+        if let port {
+            results.append(contentsOf: processesListening(on: port))
         }
 
         // 2. Check for exact PID: e.g. "kill 14205"
-        if let pid = Int32(target), pid > 1 {
+        if let pid = Int32(target) {
             let runningApp = NSRunningApplication(processIdentifier: pid)
-            let name = runningApp?.localizedName ?? "Process \(pid)"
-            let icon: ResultIconType = runningApp?.bundleURL?.path != nil ? .app(path: runningApp!.bundleURL!.path) : .systemSymbol(name: "gearshape.2.fill")
+            let name = runningApp?.localizedName
+                ?? cliProcs.first(where: { $0.pid == pid })?.name
+                ?? "Process \(pid)"
+            if !Self.isProtected(pid: pid, name: name) {
+                let icon: ResultIconType = runningApp?.bundleURL?.path != nil ? .app(path: runningApp!.bundleURL!.path) : .systemSymbol(name: "gearshape.2.fill")
 
-            results.append(SearchResult(
-                id: "kill-pid-\(pid)",
-                title: "Terminate \(name) (PID: \(pid))",
-                subtitle: "Press ↵ to terminate gracefully · ⌥↵ to force kill",
-                iconType: icon,
-                category: .quickActions,
-                score: 95,
-                action: .killProcess(pid: pid, name: name, force: false)
-            ))
+                results.append(SearchResult(
+                    id: "kill-pid-\(pid)",
+                    title: "Terminate \(name) (PID: \(pid))",
+                    subtitle: "Press ↵ to terminate gracefully · ⌥↵ to force kill",
+                    iconType: icon,
+                    category: .quickActions,
+                    score: 95,
+                    action: .killProcess(pid: pid, name: name, force: false)
+                ))
+            }
         }
 
         // 3. Match running GUI Applications
         let runningApps = NSWorkspace.shared.runningApplications
         for app in runningApps {
-            guard let name = app.localizedName, !name.isEmpty else { continue }
+            guard let name = app.localizedName, !name.isEmpty,
+                  !Self.isProtected(pid: app.processIdentifier, name: name) else { continue }
             let lowerName = name.lowercased()
             let lowerTarget = target.lowercased()
 
@@ -122,9 +145,8 @@ public final class ProcessKillerProvider: @unchecked Sendable {
         }
 
         // 4. Background / CLI processes (matching node, python, etc.)
-        let cliProcs = getCLIProcesses()
         let lowerTarget = target.lowercased()
-        for proc in cliProcs {
+        for proc in cliProcs where !Self.isProtected(pid: proc.pid, name: proc.name) {
             if proc.name.lowercased().contains(lowerTarget) {
                 // Avoid duplicating already matched GUI apps
                 if !results.contains(where: { $0.id == "kill-app-\(proc.pid)" || $0.id == "kill-pid-\(proc.pid)" }) {
@@ -147,43 +169,132 @@ public final class ProcessKillerProvider: @unchecked Sendable {
 
     // MARK: - Port Resolution
 
-    private func findProcessesOnPort(_ port: String) -> [SearchResult]? {
+    /// A process listening on a port, as `lsof` reports it.
+    struct PortListener: Equatable, Sendable {
+        let pid: Int32
+        /// The executable name (`node`, `python3.12`). Only GUI apps have an
+        /// `NSRunningApplication` name, and a CLI dev server is the usual target here.
+        let command: String
+    }
+
+    /// Results for the processes listening on `port`, from the cached snapshot.
+    private func processesListening(on port: UInt16) -> [SearchResult] {
+        let listeners = getListeningPorts()[port] ?? []
+        return listeners.compactMap { listener in
+            let pid = listener.pid
+            let runningApp = NSRunningApplication(processIdentifier: pid)
+            let name = runningApp?.localizedName
+                ?? (listener.command.isEmpty ? nil : listener.command)
+                ?? "Port :\(port) Process"
+            guard !Self.isProtected(pid: pid, name: name) else { return nil }
+            let icon: ResultIconType = runningApp?.bundleURL?.path != nil ? .app(path: runningApp!.bundleURL!.path) : .systemSymbol(name: "network.badge.shield.half.filled")
+
+            return SearchResult(
+                id: "kill-port-\(port)-\(pid)",
+                title: "Kill \(name) on Port :\(port)",
+                subtitle: "PID: \(pid) · ↵ Terminate · ⌥↵ Force Kill",
+                iconType: icon,
+                category: .quickActions,
+                score: 98,
+                action: .killProcess(pid: pid, name: name, force: false)
+            )
+        }
+    }
+
+    /// `lsof` arguments listing every listening TCP socket as `-F` fields.
+    /// `-sTCP:LISTEN` keeps out clients merely connected to a port — without it,
+    /// `kill :3000` also offered the browser tab talking to the dev server. `-nP`
+    /// skips host and service name lookups; `+c 0` reports command names untruncated.
+    static let listeningPortsArguments = ["+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"]
+
+    /// Parses `lsof -F pcn` output (`p<pid>` and `c<command>` lines, each followed by
+    /// `f<fd>` and `n<address>:<port>` lines) into port → listeners.
+    static func parseListeningPorts(_ output: String) -> [UInt16: [PortListener]] {
+        var ports: [UInt16: [PortListener]] = [:]
+        var currentPID: Int32?
+        var currentCommand = ""
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let tag = line.first else { continue }
+            let value = line.dropFirst()
+            switch tag {
+            case "p":
+                currentPID = Int32(value)
+                currentCommand = ""
+            case "c":
+                currentCommand = String(value)
+            case "n":
+                // A connected socket reads `local->remote`; only listeners belong here.
+                guard let pid = currentPID,
+                      !value.contains("->"),
+                      let colon = value.lastIndex(of: ":"),
+                      let port = UInt16(value[value.index(after: colon)...]) else { continue }
+                if ports[port]?.contains(where: { $0.pid == pid }) != true {
+                    ports[port, default: []].append(PortListener(pid: pid, command: currentCommand))
+                }
+            default:
+                continue
+            }
+        }
+        return ports
+    }
+
+    /// Non-blocking: returns the cached port → listeners snapshot and schedules a refresh
+    /// when it is stale. `lsof` costs ~55-110 ms and this runs from `search()` on every
+    /// keystroke of a `kill <port>` query, so it used to be the one blocking call left
+    /// on the keystroke path.
+    private func getListeningPorts() -> [UInt16: [PortListener]] {
+        lock.lock()
+        let cached = cachedListeningPorts
+        let isStale = Date().timeIntervalSince(lastPortScan) > 2.0
+        let shouldRefresh = isStale && !isScanningPorts
+        if shouldRefresh {
+            // Claim the slot now so a burst of keystrokes queues one scan, not one each.
+            isScanningPorts = true
+            lastPortScan = Date()
+        }
+        lock.unlock()
+
+        if shouldRefresh {
+            processQueue.async { [weak self] in self?.scanListeningPorts() }
+        }
+        return cached
+    }
+
+    /// Blocking `lsof` snapshot. Only ever called on `processQueue` (and by
+    /// scripts/test_engine.swift, which needs a fresh scan).
+    @discardableResult
+    func scanListeningPorts() -> [UInt16: [PortListener]] {
+        defer {
+            lock.lock()
+            isScanningPorts = false
+            lock.unlock()
+        }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-ti", ":\(port)"]
+        process.arguments = Self.listeningPortsArguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
 
+        var ports: [UInt16: [PortListener]] = [:]
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty else {
-                return nil
+            if let output = String(data: data, encoding: .utf8) {
+                ports = Self.parseListeningPorts(output)
             }
+        } catch {}
 
-            let pids = output.components(separatedBy: .newlines).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-            return pids.map { pid in
-                let runningApp = NSRunningApplication(processIdentifier: pid)
-                let name = runningApp?.localizedName ?? "Port :\(port) Process"
-                let icon: ResultIconType = runningApp?.bundleURL?.path != nil ? .app(path: runningApp!.bundleURL!.path) : .systemSymbol(name: "network.badge.shield.half.filled")
+        lock.lock()
+        cachedListeningPorts = ports
+        lastPortScan = Date()
+        lock.unlock()
 
-                return SearchResult(
-                    id: "kill-port-\(port)-\(pid)",
-                    title: "Kill \(name) on Port :\(port)",
-                    subtitle: "PID: \(pid) · ↵ Terminate · ⌥↵ Force Kill",
-                    iconType: icon,
-                    category: .quickActions,
-                    score: 98,
-                    action: .killProcess(pid: pid, name: name, force: false)
-                )
-            }
-        } catch {
-            return nil
-        }
+        return ports
     }
 
     // MARK: - CLI Processes Snapshot
@@ -210,9 +321,10 @@ public final class ProcessKillerProvider: @unchecked Sendable {
         return cached
     }
 
-    /// Blocking `ps` snapshot. Only ever called on `processQueue`.
+    /// Blocking `ps` snapshot. Only ever called on `processQueue` (and by
+    /// scripts/test_engine.swift, which needs a fresh scan).
     @discardableResult
-    private func scanCLIProcesses() -> [CachedProcess] {
+    func scanCLIProcesses() -> [CachedProcess] {
         defer {
             lock.lock()
             isScanningProcesses = false

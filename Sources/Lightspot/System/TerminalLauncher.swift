@@ -122,58 +122,101 @@ public enum TerminalLauncher {
         """
     }
 
+    /// The terminal `run(_:)` actually uses. Warp has no reliable way to start a
+    /// command from outside the app (see `run(_:)`), and a terminal that is no longer
+    /// installed falls back too, so both run commands in Apple Terminal.
+    public static var commandTerminal: TerminalAppOption {
+        let terminal = currentTerminal
+        if terminal == .terminal || terminal == .warp || !terminal.isInstalled {
+            return .terminal
+        }
+        return terminal
+    }
+
+    /// The user's login shell, the one Terminal and iTerm2 would open.
+    public static var loginShell: String {
+        if let entry = getpwuid(getuid()), let shell = entry.pointee.pw_shell {
+            let path = String(cString: shell)
+            if !path.isEmpty, FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return "/bin/zsh"
+    }
+
+    /// argv that runs `command` the way Terminal's `do script` does: in an interactive
+    /// login shell (so aliases and PATH from the rc files apply), then hands the window
+    /// over to a fresh shell so it stays open once the command exits.
+    ///
+    /// The terminals below exec their `-e` program directly, without a shell, so passing
+    /// `git status` as one argument would look for a binary named "git status". The
+    /// command is joined to the `exec` with a newline rather than `;` so a trailing
+    /// `# comment` in a history entry cannot swallow it.
+    public static func shellCommandArguments(for command: String, shell: String) -> [String] {
+        [shell, "-l", "-i", "-c", "\(command)\nexec \(shellQuoted(shell)) -l"]
+    }
+
+    /// Single-quotes `text` for POSIX shells.
+    static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// `/usr/bin/open` arguments that start `terminal` running `command`, for the
+    /// terminals driven by command-line flags; nil for the ones scripted another way.
+    ///
+    /// `-n` is required: when the app is already running, plain `open -a … --args`
+    /// only activates it and silently drops the arguments, so the command never ran.
+    /// `-b` targets the bundle ID that `isInstalled` checked, not a display name.
+    public static func openArguments(for terminal: TerminalAppOption, command: String, shell: String) -> [String]? {
+        let program = shellCommandArguments(for: command, shell: shell)
+        let launch = ["-n", "-b", terminal.bundleIdentifier, "--args"]
+        switch terminal {
+        case .ghostty, .alacritty:
+            // Everything after -e is the program and its arguments.
+            return launch + ["-e"] + program
+        case .kitty:
+            // kitty takes the program positionally and stops parsing its own options there.
+            return launch + program
+        case .wezterm:
+            return launch + ["start", "--"] + program
+        case .terminal, .iterm2, .warp:
+            return nil
+        }
+    }
+
+    /// `warp://action/new_tab?path=…` for `path`. `.urlQueryAllowed` leaves `&`, `=`
+    /// and `+` alone, which would split or rewrite a folder name containing them.
+    public static func warpNewTabURL(path: String) -> URL? {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+?#")
+        guard let encoded = path.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+        return URL(string: "warp://action/new_tab?path=\(encoded)")
+    }
+
     /// Runs `command` in the user's preferred terminal emulator.
     public static func run(_ command: String) {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let terminal = currentTerminal
+        let terminal = commandTerminal
         DispatchQueue.global(qos: .userInitiated).async {
             switch terminal {
-            case .terminal:
+            case .terminal, .warp:
+                // Warp exposes no AppleScript dictionary and no CLI for running a
+                // command. Its only documented route is a launch configuration opened
+                // via warp://launch/<name>, which matches the YAML `name:` field rather
+                // than a path (warpdotdev/warp#15003) and does not reliably pick up a
+                // file written by another program (warpdotdev/warp#3780) — so the URI
+                // could open nothing, or a stale command. `commandTerminal` therefore
+                // maps Warp to Apple Terminal; opening folders in Warp still works.
                 runAppleScript(script(for: trimmed))
 
             case .iterm2:
-                if terminal.isInstalled {
-                    runAppleScript(itermScript(for: trimmed))
-                } else {
-                    runAppleScript(script(for: trimmed))
-                }
+                runAppleScript(itermScript(for: trimmed))
 
-            case .ghostty:
-                if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-na", "Ghostty", "--args", "-e", trimmed])
-                } else {
-                    runAppleScript(script(for: trimmed))
-                }
-
-            case .warp:
-                if terminal.isInstalled,
-                   let url = URL(string: "warp://action/new_tab?path=~") {
-                    NSWorkspace.shared.open(url)
-                } else {
-                    runAppleScript(script(for: trimmed))
-                }
-
-            case .kitty:
-                if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-a", "kitty", "--args", "-e", trimmed])
-                } else {
-                    runAppleScript(script(for: trimmed))
-                }
-
-            case .wezterm:
-                if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-a", "WezTerm", "--args", "start", "--", trimmed])
-                } else {
-                    runAppleScript(script(for: trimmed))
-                }
-
-            case .alacritty:
-                if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-a", "Alacritty", "--args", "-e", trimmed])
-                } else {
-                    runAppleScript(script(for: trimmed))
+            case .ghostty, .kitty, .wezterm, .alacritty:
+                if let arguments = openArguments(for: terminal, command: trimmed, shell: loginShell) {
+                    runSubprocess(executable: "/usr/bin/open", arguments: arguments)
                 }
             }
         }
@@ -217,15 +260,13 @@ public enum TerminalLauncher {
 
             case .ghostty:
                 if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-na", "Ghostty", "--args", "--working-directory=\(trimmed)"])
+                    runSubprocess(executable: "/usr/bin/open", arguments: ["-n", "-b", terminal.bundleIdentifier, "--args", "--working-directory=\(trimmed)"])
                 } else {
                     openFolderInAppleTerminal(folderURL: folderURL, path: trimmed)
                 }
 
             case .warp:
-                if terminal.isInstalled,
-                   let encodedPath = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-                   let url = URL(string: "warp://action/new_tab?path=\(encodedPath)") {
+                if terminal.isInstalled, let url = warpNewTabURL(path: trimmed) {
                     NSWorkspace.shared.open(url)
                 } else if let warpURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "dev.warp.Warp-Stable") {
                     let config = NSWorkspace.OpenConfiguration()
@@ -237,21 +278,21 @@ public enum TerminalLauncher {
 
             case .kitty:
                 if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-a", "kitty", "--args", "--directory", trimmed])
+                    runSubprocess(executable: "/usr/bin/open", arguments: ["-n", "-b", terminal.bundleIdentifier, "--args", "--directory", trimmed])
                 } else {
                     openFolderInAppleTerminal(folderURL: folderURL, path: trimmed)
                 }
 
             case .wezterm:
                 if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-a", "WezTerm", "--args", "start", "--cwd", trimmed])
+                    runSubprocess(executable: "/usr/bin/open", arguments: ["-n", "-b", terminal.bundleIdentifier, "--args", "start", "--cwd", trimmed])
                 } else {
                     openFolderInAppleTerminal(folderURL: folderURL, path: trimmed)
                 }
 
             case .alacritty:
                 if terminal.isInstalled {
-                    runSubprocess(executable: "/usr/bin/open", arguments: ["-a", "Alacritty", "--args", "--working-directory", trimmed])
+                    runSubprocess(executable: "/usr/bin/open", arguments: ["-n", "-b", terminal.bundleIdentifier, "--args", "--working-directory", trimmed])
                 } else {
                     openFolderInAppleTerminal(folderURL: folderURL, path: trimmed)
                 }

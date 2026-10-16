@@ -98,12 +98,12 @@ Type any snippet keyword (e.g. `iso`, `uuid`, `date`) and press **`↵`** to cop
 
 ### 3. 💻 Choose From 7 Modern Terminal Emulators
 Lightspot integrates with your favorite terminal emulator. Switch anytime via the menu bar:
-- **Ghostty**, **Warp**, **Alacritty**, **iTerm2**, **Kitty**, **WezTerm**, and **Apple Terminal**.
+- **Ghostty**, **Warp**, **Alacritty**, **iTerm2**, **Kitty**, **WezTerm**, and **Apple Terminal**. (Warp opens folders, but it cannot be handed a command from another app, so with Warp selected, history, pinned and custom terminal commands run in Apple Terminal.)
 - **"Terminal in Finder Folder"**: Type `term` or press the action to instantly launch your preferred terminal inside the directory currently open in Finder.
 
 ### 4. 📂 Multi-IDE Recent Projects Discovery
 Lightspot automatically monitors recent workspaces across:
-- **VS Code**, **Cursor**, **Zed**, **JetBrains Suite** (IntelliJ IDEA, WebStorm, PyCharm, CLion, GoLand, Rider, etc.), and **Sublime Text**.
+- **VS Code**, **Cursor**, **Zed**, **JetBrains IDEs** (IntelliJ IDEA, PyCharm — Community editions included — WebStorm, GoLand, CLion, RustRover, Rider, PhpStorm, DataGrip, RubyMine, DataSpell), **Android Studio**, and **Sublime Text**.
 - **Keyboard Modifiers**:
   - `↵` (Return): Open workspace in its associated IDE.
   - `⌘↵` (Command + Return): Launch your preferred terminal at the project root directory.
@@ -111,8 +111,8 @@ Lightspot automatically monitors recent workspaces across:
 
 ### 5. 🔌 Process Killer & Port Terminator (`kill`)
 Quickly terminate lingering dev servers, stuck background tasks, or rogue processes:
-- **Kill by port:** `kill :3000`, `kill :8080`, `kill :5173` (automatically resolves the listening PID via `lsof`).
-- **Kill by process name or PID:** `kill node`, `kill python`, `kill 14205`.
+- **Kill by port:** `kill :3000`, `kill :8080`, `kill :5173` (resolves the process *listening* on the port via `lsof`; clients merely connected to it are not listed).
+- **Kill by process name or PID:** `kill node`, `kill python`, `kill 14205`. System processes (`launchd`, `kernel_task`, `WindowServer`, `loginwindow`) and Lightspot itself are never offered.
 - **Termination levels:**
   - `↵` (Return): Graceful termination (`SIGTERM`).
   - `⌥↵` (Option + Return): Force kill (`SIGKILL`).

@@ -227,11 +227,11 @@ public final class RecentProjectsProvider: @unchecked Sendable {
             sig += "zed:\(mtime);"
         }
 
-        // JetBrains options directory
-        let jetbrainsDir = "\(home)/Library/Application Support/JetBrains"
-        if let contents = try? fm.contentsOfDirectory(atPath: jetbrainsDir) {
+        // JetBrains (and Android Studio) options directories
+        for root in jetBrainsConfigRoots(home: home) {
+            guard let contents = try? fm.contentsOfDirectory(atPath: root) else { continue }
             for item in contents {
-                let xml = "\(jetbrainsDir)/\(item)/options/recentProjects.xml"
+                let xml = "\(root)/\(item)/options/recentProjects.xml"
                 if let attrs = try? fm.attributesOfItem(atPath: xml) {
                     let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
                     sig += "jb-\(item):\(mtime);"
@@ -465,23 +465,34 @@ public final class RecentProjectsProvider: @unchecked Sendable {
 
     public static func loadJetBrainsProjects() -> [RecentProject] {
         let home = NSHomeDirectory()
-        let jetbrainsDir = "\(home)/Library/Application Support/JetBrains"
         let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: jetbrainsDir) else { return [] }
+
+        // (root, config folder) pairs. The Google root also holds Chrome and friends,
+        // so only folders naming a known product are read from it.
+        var folders: [(root: String, item: String)] = []
+        for root in jetBrainsConfigRoots(home: home) {
+            guard let items = try? fm.contentsOfDirectory(atPath: root) else { continue }
+            let isJetBrainsRoot = root.hasSuffix("/JetBrains")
+            for item in items where isJetBrainsRoot || jetBrainsProduct(forFolder: item) != nil {
+                folders.append((root, item))
+            }
+        }
 
         var results: [RecentProject] = []
         var seen = Set<String>()
 
-        for item in items {
-            let xmlPath = "\(jetbrainsDir)/\(item)/options/recentProjects.xml"
+        for (root, item) in folders {
+            let xmlPath = "\(root)/\(item)/options/recentProjects.xml"
             guard fm.fileExists(atPath: xmlPath),
                   let content = try? String(contentsOfFile: xmlPath, encoding: .utf8) else {
                 continue
             }
 
-            // Determine JetBrains product display name and bundle ID
-            let (productName, bundleID) = jetBrainsProductInfo(for: item)
-            let appPath = bundleID != nil ? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID!)?.path : nil
+            // Determine JetBrains product display name and the bundle ID actually installed
+            let product = jetBrainsProduct(forFolder: item)
+            let productName = product?.name ?? "JetBrains"
+            let bundleID = product.flatMap { resolveInstalledBundleID($0.bundleIDs) }
+            let appPath = bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.path }
 
             // Parse <entry key="$USER_HOME$/..." or <entry key="/..."
             let lines = content.components(separatedBy: .newlines)
@@ -526,22 +537,66 @@ public final class RecentProjectsProvider: @unchecked Sendable {
         return results
     }
 
-    private static func jetBrainsProductInfo(for folderName: String) -> (name: String, bundleID: String?) {
-        let lower = folderName.lowercased()
-        if lower.contains("intellij") || lower.contains("idea") {
-            return ("IntelliJ IDEA", "com.jetbrains.intellij")
-        } else if lower.contains("pycharm") {
-            return ("PyCharm", "com.jetbrains.pycharm")
-        } else if lower.contains("webstorm") {
-            return ("WebStorm", "com.jetbrains.webstorm")
-        } else if lower.contains("goland") {
-            return ("GoLand", "com.jetbrains.goland")
-        } else if lower.contains("clion") {
-            return ("CLion", "com.jetbrains.CLion")
-        } else if lower.contains("rustrover") {
-            return ("RustRover", "com.jetbrains.rustrover")
-        }
-        return ("JetBrains", nil)
+    /// An IntelliJ-platform IDE, identified by the prefix of its per-version config
+    /// folder (`PyCharmCE2024.1` → `pycharmce`).
+    public struct JetBrainsProduct: Equatable, Sendable {
+        public let name: String
+        /// Stable-build bundle IDs in preference order. A config folder does not say
+        /// which edition is installed — since 2025.1 IntelliJ IDEA and PyCharm ship as
+        /// one app that reads the old Ultimate/Professional folders — so the first
+        /// installed candidate wins (see `resolveInstalledBundleID`).
+        public let bundleIDs: [String]
+    }
+
+    /// Keyed by `jetBrainsFolderPrefix`. Bundle IDs and folder names are the ones the
+    /// Homebrew casks record; note the mixed case (`WebStorm`, `CLion`, `PhpStorm`).
+    static let jetBrainsProducts: [String: JetBrainsProduct] = [
+        "intellijidea": JetBrainsProduct(name: "IntelliJ IDEA", bundleIDs: ["com.jetbrains.intellij", "com.jetbrains.intellij.ce"]),
+        "ideaic": JetBrainsProduct(name: "IntelliJ IDEA CE", bundleIDs: ["com.jetbrains.intellij.ce", "com.jetbrains.intellij"]),
+        "pycharm": JetBrainsProduct(name: "PyCharm", bundleIDs: ["com.jetbrains.pycharm", "com.jetbrains.pycharm.ce"]),
+        "pycharmce": JetBrainsProduct(name: "PyCharm CE", bundleIDs: ["com.jetbrains.pycharm.ce", "com.jetbrains.pycharm"]),
+        "webstorm": JetBrainsProduct(name: "WebStorm", bundleIDs: ["com.jetbrains.WebStorm"]),
+        "goland": JetBrainsProduct(name: "GoLand", bundleIDs: ["com.jetbrains.goland"]),
+        "clion": JetBrainsProduct(name: "CLion", bundleIDs: ["com.jetbrains.CLion"]),
+        "rustrover": JetBrainsProduct(name: "RustRover", bundleIDs: ["com.jetbrains.rustrover"]),
+        "rider": JetBrainsProduct(name: "Rider", bundleIDs: ["com.jetbrains.rider"]),
+        "phpstorm": JetBrainsProduct(name: "PhpStorm", bundleIDs: ["com.jetbrains.PhpStorm"]),
+        "datagrip": JetBrainsProduct(name: "DataGrip", bundleIDs: ["com.jetbrains.datagrip"]),
+        "rubymine": JetBrainsProduct(name: "RubyMine", bundleIDs: ["com.jetbrains.rubymine"]),
+        "dataspell": JetBrainsProduct(name: "DataSpell", bundleIDs: ["com.jetbrains.dataspell"]),
+        "androidstudio": JetBrainsProduct(name: "Android Studio", bundleIDs: ["com.google.android.studio"]),
+        "androidstudiopreview": JetBrainsProduct(name: "Android Studio Preview", bundleIDs: ["com.google.android.studio-EAP", "com.google.android.studio"]),
+    ]
+
+    /// Where IntelliJ-platform IDEs keep their per-version config folders. Android
+    /// Studio is built on the same platform but files them under Google.
+    static func jetBrainsConfigRoots(home: String) -> [String] {
+        [
+            "\(home)/Library/Application Support/JetBrains",
+            "\(home)/Library/Application Support/Google",
+        ]
+    }
+
+    /// The product part of a config folder name, lowercased: the letters before the
+    /// version (`IntelliJIdea2024.3` → `intellijidea`, `AndroidStudio2026.2.1` →
+    /// `androidstudio`).
+    static func jetBrainsFolderPrefix(_ folderName: String) -> String {
+        String(folderName.prefix { $0.isLetter }).lowercased()
+    }
+
+    public static func jetBrainsProduct(forFolder folderName: String) -> JetBrainsProduct? {
+        jetBrainsProducts[jetBrainsFolderPrefix(folderName)]
+    }
+
+    /// The first of `bundleIDs` that is installed, trying each one's EAP build
+    /// (`<id>-EAP`) after the stable ones. nil when none is, so ↵ falls back to the
+    /// default opener instead of naming an IDE that is not there.
+    static func resolveInstalledBundleID(
+        _ bundleIDs: [String],
+        isInstalled: (String) -> Bool = { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }
+    ) -> String? {
+        let candidates = bundleIDs + bundleIDs.map { "\($0)-EAP" }
+        return candidates.first(where: isInstalled)
     }
 
     // MARK: - Sublime Text Parser

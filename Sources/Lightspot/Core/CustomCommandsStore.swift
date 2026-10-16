@@ -137,7 +137,7 @@ struct CustomCommand: Identifiable, Codable, Sendable, Hashable {
                 ?? NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://apple.com")!)?.path
                 ?? "/Applications/Safari.app"
         case .terminal, .shell:
-            let term = TerminalLauncher.currentTerminal
+            let term = TerminalLauncher.commandTerminal
             return NSWorkspace.shared.urlForApplication(withBundleIdentifier: term.bundleIdentifier)?.path
                 ?? "/System/Applications/Utilities/Terminal.app"
         case .appleScript:
@@ -151,7 +151,7 @@ struct CustomCommand: Identifiable, Codable, Sendable, Hashable {
         case .url:
             return BrowserIntegrationProvider.defaultBrowser()?.name ?? "Default Browser"
         case .terminal, .shell:
-            return TerminalLauncher.currentTerminal.displayName
+            return TerminalLauncher.commandTerminal.displayName
         case .appleScript:
             return "Script Editor"
         }
