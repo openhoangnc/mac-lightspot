@@ -98,12 +98,12 @@ Tapez n'importe quel mot-clé d'extrait (par exemple `iso`, `uuid`, `date`) et a
 
 ### 3. 💻 Choisissez Parmi 7 Émulateurs de Terminal Modernes
 Lightspot s'intègre à votre émulateur de terminal préféré. Changez à tout moment via la barre de menus :
-- **Ghostty**, **Warp**, **Alacritty**, **iTerm2**, **Kitty**, **WezTerm**, et **Apple Terminal**.
+- **Ghostty**, **Warp**, **Alacritty**, **iTerm2**, **Kitty**, **WezTerm**, et **Apple Terminal**. (Warp ouvre les dossiers, mais n'accepte pas de commande envoyée par une autre app : lorsque Warp est sélectionné, les commandes de l'historique, épinglées et personnalisées de terminal s'exécutent dans Apple Terminal.)
 - **"Terminal dans le Dossier du Finder"** : Tapez `term` ou appuyez sur l'action pour lancer instantanément votre terminal préféré dans le répertoire actuellement ouvert dans le Finder.
 
 ### 4. 📂 Découverte Multi-IDE de Projets Récents
 Lightspot surveille automatiquement les espaces de travail récents sur :
-- **VS Code**, **Cursor**, **Zed**, **Suite JetBrains** (IntelliJ IDEA, WebStorm, PyCharm, CLion, GoLand, Rider, etc.), et **Sublime Text**.
+- **VS Code**, **Cursor**, **Zed**, **IDE JetBrains** (IntelliJ IDEA, PyCharm — éditions Community comprises —, WebStorm, GoLand, CLion, RustRover, Rider, PhpStorm, DataGrip, RubyMine, DataSpell), **Android Studio**, et **Sublime Text**.
 - **Modificateurs de Clavier** :
   - `↵` (Retour) : Ouvrir l'espace de travail dans son IDE associé.
   - `⌘↵` (Commande + Retour) : Lancer votre terminal préféré dans le répertoire racine du projet.
@@ -111,8 +111,8 @@ Lightspot surveille automatiquement les espaces de travail récents sur :
 
 ### 5. 🔌 Tueur de Processus & Terminateur de Port (`kill`)
 Terminez rapidement les serveurs de développement persistants, les tâches d'arrière-plan bloquées ou les processus malveillants :
-- **Tuer par port :** `kill :3000`, `kill :8080`, `kill :5173` (résout automatiquement le PID en écoute via `lsof`).
-- **Tuer par nom de processus ou PID :** `kill node`, `kill python`, `kill 14205`.
+- **Tuer par port :** `kill :3000`, `kill :8080`, `kill :5173` (résout via `lsof` le processus qui *écoute* sur le port ; les clients qui y sont simplement connectés ne sont pas proposés).
+- **Tuer par nom de processus ou PID :** `kill node`, `kill python`, `kill 14205`. Les processus système (`launchd`, `kernel_task`, `WindowServer`, `loginwindow`) et Lightspot lui-même ne sont jamais proposés.
 - **Niveaux de terminaison :**
   - `↵` (Retour) : Terminaison gracieuse (`SIGTERM`).
   - `⌥↵` (Option + Retour) : Force l'arrêt (`SIGKILL`).

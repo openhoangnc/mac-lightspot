@@ -296,6 +296,76 @@ struct TestRunner {
         assertTrue(script.contains("do script \"\(literal)\""), "The command is embedded as one escaped literal")
         assertTrue(script.hasSuffix("end tell"), "Script is well formed")
 
+        // Flag-driven terminals exec their program directly, so a multi-word command
+        // must reach them wrapped in a shell, as one argument.
+        let program = TerminalLauncher.shellCommandArguments(for: "git status # mine", shell: "/bin/zsh")
+        assertEqual(program, ["/bin/zsh", "-l", "-i", "-c", "git status # mine\nexec '/bin/zsh' -l"],
+                    "Command runs in an interactive login shell, then the window keeps a shell")
+        assertEqual(TerminalLauncher.shellQuoted("it's"), "'it'\\''s'", "Single quotes survive shell quoting")
+
+        assertEqual(TerminalLauncher.openArguments(for: .ghostty, command: "git status", shell: "/bin/zsh"),
+                    ["-n", "-b", "com.mitchellh.ghostty", "--args", "-e"] + TerminalLauncher.shellCommandArguments(for: "git status", shell: "/bin/zsh"),
+                    "Ghostty: -e then the shell argv")
+        assertEqual(TerminalLauncher.openArguments(for: .alacritty, command: "git status", shell: "/bin/zsh"),
+                    ["-n", "-b", "org.alacritty", "--args", "-e"] + TerminalLauncher.shellCommandArguments(for: "git status", shell: "/bin/zsh"),
+                    "Alacritty: -e then the shell argv")
+        assertEqual(TerminalLauncher.openArguments(for: .kitty, command: "git status", shell: "/bin/zsh"),
+                    ["-n", "-b", "net.kovidgoyal.kitty", "--args"] + TerminalLauncher.shellCommandArguments(for: "git status", shell: "/bin/zsh"),
+                    "kitty: the program is positional (kitty documents no -e)")
+        assertEqual(TerminalLauncher.openArguments(for: .wezterm, command: "git status", shell: "/bin/zsh"),
+                    ["-n", "-b", "com.github.wez.wezterm", "--args", "start", "--"] + TerminalLauncher.shellCommandArguments(for: "git status", shell: "/bin/zsh"),
+                    "WezTerm: start -- then the shell argv")
+        for option in [TerminalAppOption.terminal, .iterm2, .warp] {
+            assertEqual(TerminalLauncher.openArguments(for: option, command: "ls", shell: "/bin/zsh"), nil,
+                        "\(option.displayName) is not driven through open --args")
+        }
+        for option in TerminalAppOption.allCases {
+            if let arguments = TerminalLauncher.openArguments(for: option, command: "ls", shell: "/bin/zsh") {
+                // Without -n, `open` only activates a running app and drops --args.
+                assertEqual(arguments.first, "-n", "\(option.displayName) launches a new instance so its arguments arrive")
+            }
+        }
+
+        // Run the wrapper for real: the multi-word command executes, and the trailing
+        // `# comment` does not swallow the hand-off to the follow-up shell, which then
+        // reads its commands from stdin here.
+        let shellRun = Process()
+        shellRun.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shellRun.arguments = Array(TerminalLauncher.shellCommandArguments(for: "echo lightspot ran # trailing", shell: "/bin/sh").dropFirst())
+        let shellIn = Pipe()
+        let shellOut = Pipe()
+        shellRun.standardInput = shellIn
+        shellRun.standardOutput = shellOut
+        shellRun.standardError = FileHandle.nullDevice
+        do {
+            try shellRun.run()
+            shellIn.fileHandleForWriting.write("echo lightspot after\n".data(using: .utf8)!)
+            try? shellIn.fileHandleForWriting.close()
+            let output = String(data: shellOut.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            shellRun.waitUntilExit()
+            assertTrue(output.contains("lightspot ran"), "The multi-word command ran (got: \(output))")
+            assertTrue(output.contains("lightspot after"), "The window's follow-up shell started after the command (got: \(output))")
+        } catch {
+            print("❌ FAIL: could not run /bin/sh: \(error)")
+            exit(1)
+        }
+
+        // Warp cannot be told to run a command, so commands go to Apple Terminal.
+        let terminalKey = "lightspot_terminal_app"
+        let savedTerminal = UserDefaults.standard.string(forKey: terminalKey)
+        TerminalLauncher.currentTerminal = .warp
+        assertEqual(TerminalLauncher.commandTerminal, .terminal, "Warp runs commands in Apple Terminal")
+        TerminalLauncher.currentTerminal = .terminal
+        assertEqual(TerminalLauncher.commandTerminal, .terminal, "Apple Terminal runs its own commands")
+        if let savedTerminal {
+            UserDefaults.standard.set(savedTerminal, forKey: terminalKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: terminalKey)
+        }
+
+        assertEqual(TerminalLauncher.warpNewTabURL(path: "/tmp/a&b=c d")?.absoluteString,
+                    "warp://action/new_tab?path=/tmp/a%26b%3Dc%20d", "Warp folder URL escapes query delimiters")
+
         print("✅ TerminalLauncher passed all tests!\n")
     }
 
@@ -1168,6 +1238,45 @@ struct TestRunner {
             assertTrue(!first.ideName.isEmpty, "First project has IDE tag")
         }
 
+        // JetBrains config folders map to products by their name prefix.
+        let jetBrainsCases: [(folder: String, name: String, firstID: String)] = [
+            ("IntelliJIdea2025.2", "IntelliJ IDEA", "com.jetbrains.intellij"),
+            ("IdeaIC2024.3", "IntelliJ IDEA CE", "com.jetbrains.intellij.ce"),
+            ("PyCharm2025.1", "PyCharm", "com.jetbrains.pycharm"),
+            ("PyCharmCE2024.3", "PyCharm CE", "com.jetbrains.pycharm.ce"),
+            ("WebStorm2024.1", "WebStorm", "com.jetbrains.WebStorm"),
+            ("GoLand2024.1", "GoLand", "com.jetbrains.goland"),
+            ("CLion2024.1", "CLion", "com.jetbrains.CLion"),
+            ("RustRover2024.2", "RustRover", "com.jetbrains.rustrover"),
+            ("Rider2024.3", "Rider", "com.jetbrains.rider"),
+            ("PhpStorm2025.1", "PhpStorm", "com.jetbrains.PhpStorm"),
+            ("DataGrip2024.3", "DataGrip", "com.jetbrains.datagrip"),
+            ("RubyMine2024.3", "RubyMine", "com.jetbrains.rubymine"),
+            ("DataSpell2024.1", "DataSpell", "com.jetbrains.dataspell"),
+            ("AndroidStudio2026.2.1", "Android Studio", "com.google.android.studio"),
+            ("AndroidStudioPreview2026.3", "Android Studio Preview", "com.google.android.studio-EAP"),
+        ]
+        for testCase in jetBrainsCases {
+            let product = RecentProjectsProvider.jetBrainsProduct(forFolder: testCase.folder)
+            assertEqual(product?.name, testCase.name, "\(testCase.folder) is \(testCase.name)")
+            assertEqual(product?.bundleIDs.first, testCase.firstID, "\(testCase.folder) prefers \(testCase.firstID)")
+        }
+        for folder in ["Toolbox", "consentOptions", "Chrome", "2024.1"] {
+            assertEqual(RecentProjectsProvider.jetBrainsProduct(forFolder: folder), nil, "\(folder) is not an IDE config folder")
+        }
+
+        let ideaIDs = ["com.jetbrains.intellij", "com.jetbrains.intellij.ce"]
+        assertEqual(RecentProjectsProvider.resolveInstalledBundleID(ideaIDs, isInstalled: { $0 == "com.jetbrains.intellij.ce" }),
+                    "com.jetbrains.intellij.ce", "Falls through to the Community edition when only it is installed")
+        assertEqual(RecentProjectsProvider.resolveInstalledBundleID(ideaIDs, isInstalled: { _ in true }),
+                    "com.jetbrains.intellij", "Prefers the first candidate when several are installed")
+        assertEqual(RecentProjectsProvider.resolveInstalledBundleID(["com.jetbrains.CLion"], isInstalled: { $0 == "com.jetbrains.CLion-EAP" }),
+                    "com.jetbrains.CLion-EAP", "Finds an EAP build")
+        assertEqual(RecentProjectsProvider.resolveInstalledBundleID(["com.jetbrains.CLion"], isInstalled: { _ in true }),
+                    "com.jetbrains.CLion", "Prefers the stable build over EAP")
+        assertEqual(RecentProjectsProvider.resolveInstalledBundleID(["com.jetbrains.rider"], isInstalled: { _ in false }), nil,
+                    "No bundle ID when the IDE is not installed")
+
         // Test 20: Process Killer Provider
         print("Testing ProcessKillerProvider...")
         let killer = ProcessKillerProvider.shared
@@ -1194,6 +1303,82 @@ struct TestRunner {
             print("❌ FAIL: Expected .killProcess action for kill Finder")
             exit(1)
         }
+
+        // Protected processes are never offered.
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        assertTrue(ProcessKillerProvider.isProtected(pid: 0, name: "kernel_task"), "kernel_task is protected")
+        assertTrue(ProcessKillerProvider.isProtected(pid: 1, name: "launchd"), "launchd is protected")
+        assertTrue(ProcessKillerProvider.isProtected(pid: ownPID, name: "test_engine"), "Lightspot's own PID is protected")
+        assertTrue(ProcessKillerProvider.isProtected(pid: 54321, name: "WindowServer"), "WindowServer is protected by name")
+        assertTrue(ProcessKillerProvider.isProtected(pid: 54321, name: "loginwindow"), "loginwindow is protected by name")
+        assertTrue(ProcessKillerProvider.isProtected(pid: -1, name: "Process -1"), "kill(-1) would signal every process")
+        assertTrue(!ProcessKillerProvider.isProtected(pid: 54321, name: "node"), "Ordinary processes are offered")
+
+        func killedPIDs(_ query: String) -> [Int32] {
+            killer.search(SearchQuery(query)).compactMap {
+                if case .killProcess(let pid, _, _) = $0.action { return pid }
+                return nil
+            }
+        }
+        killer.scanCLIProcesses()
+        assertTrue(!killedPIDs("kill launchd").contains(1), "kill launchd does not offer PID 1")
+        assertTrue(!killedPIDs("kill 1").contains(1), "kill 1 does not offer PID 1")
+        assertTrue(!killedPIDs("kill -1").contains(-1), "kill -1 does not offer PID -1")
+        assertTrue(!killedPIDs("kill \(ownPID)").contains(ownPID), "Lightspot's own PID is not offered")
+        assertTrue(!killer.search(SearchQuery("kill windowserver")).contains(where: { $0.title.contains("WindowServer") }),
+                   "WindowServer is not offered")
+
+        // Port lookups list listeners only, named by their command.
+        assertTrue(ProcessKillerProvider.listeningPortsArguments.contains("-sTCP:LISTEN"), "lsof is restricted to listening sockets")
+        let lsofSample = "p100\ncnode\nf5\nn*:3000\nf6\nn[::1]:3000\np200\ncpostgres\nf7\nn127.0.0.1:5432\nf8\nn127.0.0.1:50990->127.0.0.1:3000\n"
+        assertEqual(ProcessKillerProvider.parseListeningPorts(lsofSample), [
+            3000: [ProcessKillerProvider.PortListener(pid: 100, command: "node")],
+            5432: [ProcessKillerProvider.PortListener(pid: 200, command: "postgres")],
+        ], "Parses lsof -F output, de-duplicates IPv4/IPv6 and skips connected sockets")
+
+        // Live: an nc server listens, a second nc connects as a client. Only the server
+        // is offered, and under its command name rather than "Port :N Process".
+        let probe = socket(AF_INET, SOCK_STREAM, 0)
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { generic in
+                bind(probe, generic, addressLength) == 0 && getsockname(probe, generic, &addressLength) == 0
+            }
+        }
+        close(probe)
+        assertTrue(bound, "Found a free port")
+        let livePort = UInt16(bigEndian: address.sin_port)
+
+        func netcat(_ arguments: [String]) -> Process {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+            process.arguments = arguments
+            process.standardInput = Pipe()  // held open so nc keeps its socket
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            return process
+        }
+        let server = netcat(["-l", "127.0.0.1", String(livePort)])
+        let client = netcat(["127.0.0.1", String(livePort)])
+        do {
+            try server.run()
+            Thread.sleep(forTimeInterval: 0.4)
+            try client.run()
+            Thread.sleep(forTimeInterval: 0.4)
+            let listeners = killer.scanListeningPorts()[livePort] ?? []
+            assertEqual(listeners.map(\.pid), [server.processIdentifier], "Only the listening process is found on :\(livePort)")
+            let liveResults = killer.search(SearchQuery("kill :\(livePort)"))
+            let serverRow = liveResults.first(where: { $0.id == "kill-port-\(livePort)-\(server.processIdentifier)" })
+            assertEqual(serverRow?.title, "Kill nc on Port :\(livePort)", "A CLI listener is titled by its command")
+            assertTrue(!killedPIDs("kill :\(livePort)").contains(client.processIdentifier), "kill :port does not offer the client")
+        } catch {
+            print("⚠️  Skipped live port test: could not start nc: \(error)")
+        }
+        for process in [client, server] where process.isRunning { process.terminate() }
 
         print("✅ RecentProjectsProvider & ProcessKillerProvider passed all tests!\n")
 

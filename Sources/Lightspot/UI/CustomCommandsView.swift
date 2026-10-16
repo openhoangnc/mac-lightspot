@@ -851,7 +851,7 @@ struct CustomCommandEditorView: View {
         case .url: return "Opens in default browser"
         case .terminal: return "Runs in Terminal window"
         case .appleScript: return "Runs via osascript"
-        case .shell: return "Runs in background (/bin/zsh)"
+        case .shell: return "Runs in background (/bin/sh)"
         }
     }
 

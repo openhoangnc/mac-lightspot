@@ -98,12 +98,12 @@ Lightspotは、ゼロから開発者のメインのコマンドセンターと�
 
 ### 3. 💻 7つのモダンなターミナルエミュレータから選択
 Lightspotは、お気に入りのターミナルエミュレータと統合します。メニューバーからいつでも切り替え可能です：
-- **Ghostty**、**Warp**、**Alacritty**、**iTerm2**、**Kitty**、**WezTerm**、そして **Apple Terminal**。
+- **Ghostty**、**Warp**、**Alacritty**、**iTerm2**、**Kitty**、**WezTerm**、そして **Apple Terminal**。（Warp はフォルダを開けますが、他のアプリからコマンドを渡す手段がないため、Warp を選択している場合、履歴・ピン留め・カスタムのターミナルコマンドは Apple Terminal で実行されます。）
 - **"Terminal in Finder Folder"**: `term` と入力するかアクションを押すと、現在Finderで開いているディレクトリで、好みのターミナルを即座に起動します。
 
 ### 4. 📂 複数のIDEの最近のプロジェクトの検出
 Lightspotは、以下の最近のワークスペースを自動的に監視します：
-- **VS Code**、**Cursor**、**Zed**、**JetBrains Suite** (IntelliJ IDEA, WebStorm, PyCharm, CLion, GoLand, Rider など)、および **Sublime Text**。
+- **VS Code**、**Cursor**、**Zed**、**JetBrains IDE** (IntelliJ IDEA、PyCharm（Community 版を含む）、WebStorm、GoLand、CLion、RustRover、Rider、PhpStorm、DataGrip、RubyMine、DataSpell)、**Android Studio**、および **Sublime Text**。
 - **キーボード修飾キー**:
   - `↵` (Return): 関連付けられたIDEでワークスペースを開きます。
   - `⌘↵` (Command + Return): プロジェクトのルートディレクトリでお好みのターミナルを起動します。
@@ -111,8 +111,8 @@ Lightspotは、以下の最近のワークスペースを自動的に監視し�
 
 ### 5. 🔌 プロセスキラーとポートターミネーター (`kill`)
 残存している開発サーバー、スタックしたバックグラウンドタスク、または暴走したプロセスをすばやく終了します：
-- **ポートでキル:** `kill :3000`, `kill :8080`, `kill :5173` (自動的に `lsof` 経由でリスニング中のPIDを解決します)。
-- **プロセス名またはPIDでキル:** `kill node`, `kill python`, `kill 14205`。
+- **ポートでキル:** `kill :3000`, `kill :8080`, `kill :5173` (`lsof` 経由でそのポートを*リッスン*しているプロセスを解決します。ポートに接続しているだけのクライアントは表示されません)。
+- **プロセス名またはPIDでキル:** `kill node`, `kill python`, `kill 14205`。システムプロセス（`launchd`、`kernel_task`、`WindowServer`、`loginwindow`）と Lightspot 自身は候補に表示されません。
 - **終了レベル:**
   - `↵` (Return): 正常な終了 (`SIGTERM`)。
   - `⌥↵` (Option + Return): 強制終了 (`SIGKILL`)。

@@ -98,12 +98,12 @@ Lightspot从一开始就被设计为开发者的主要控制中心。每一个�
 
 ### 3. 💻 从7种现代终端模拟器中选择
 Lightspot与你最喜欢的终端模拟器集成。随时通过菜单栏切换：
-- **Ghostty**、**Warp**、**Alacritty**、**iTerm2**、**Kitty**、**WezTerm** 和 **Apple Terminal**。
+- **Ghostty**、**Warp**、**Alacritty**、**iTerm2**、**Kitty**、**WezTerm** 和 **Apple Terminal**。（Warp 可以打开文件夹，但无法接收其他应用传入的命令，因此选择 Warp 时，历史命令、置顶命令和自定义终端命令会在 Apple Terminal 中运行。）
 - **"Finder文件夹中的终端"**：输入 `term` 或按下操作，即可在Finder当前打开的目录中立即启动你首选的终端。
 
 ### 4. 📂 多IDE最近项目发现
 Lightspot自动监控以下最近工作区：
-- **VS Code**、**Cursor**、**Zed**、**JetBrains套件** (IntelliJ IDEA, WebStorm, PyCharm, CLion, GoLand, Rider等) 和 **Sublime Text**。
+- **VS Code**、**Cursor**、**Zed**、**JetBrains IDE** (IntelliJ IDEA、PyCharm（含社区版）、WebStorm、GoLand、CLion、RustRover、Rider、PhpStorm、DataGrip、RubyMine、DataSpell)、**Android Studio** 和 **Sublime Text**。
 - **键盘修饰键**：
   - `↵` (Return)：在关联的IDE中打开工作区。
   - `⌘↵` (Command + Return)：在项目根目录启动首选终端。
@@ -111,8 +111,8 @@ Lightspot自动监控以下最近工作区：
 
 ### 5. 🔌 进程终止器与端口终止器 (`kill`)
 快速终止残留的开发服务器、卡住的后台任务或恶意进程：
-- **按端口终止：** `kill :3000`, `kill :8080`, `kill :5173` (通过 `lsof` 自动解析监听的PID)。
-- **按进程名或PID终止：** `kill node`, `kill python`, `kill 14205`。
+- **按端口终止：** `kill :3000`, `kill :8080`, `kill :5173` (通过 `lsof` 解析正在*监听*该端口的进程；仅连接到该端口的客户端不会被列出)。
+- **按进程名或PID终止：** `kill node`, `kill python`, `kill 14205`。系统进程（`launchd`、`kernel_task`、`WindowServer`、`loginwindow`）和 Lightspot 自身永远不会被列出。
 - **终止级别：**
   - `↵` (Return)：优雅终止 (`SIGTERM`)。
   - `⌥↵` (Option + Return)：强制终止 (`SIGKILL`)。

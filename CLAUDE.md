@@ -215,10 +215,11 @@ candidate per keystroke across every provider, so the difference is the search.
    `ShellCommand`, `BrowserItem` and `ClipboardEntry` all cache their lowercased and
    tokenized forms at construction for exactly this reason.
 
-   Known remaining exception: `ProcessKillerProvider.findProcessesOnPort` shells out to
-   `lsof` (~55 ms) inline, but only for `kill <port>` queries. Its sibling `ps -axo`
-   snapshot is *not* an exception — it refreshes on a background queue behind a
-   staleness check and in-flight flag, primed by `warmUp()` when the panel is shown.
+   `ProcessKillerProvider` follows the pattern for both of its subprocesses: the
+   `ps -axo` process list and the `lsof -iTCP -sTCP:LISTEN` port → PID map (~55-110 ms)
+   are snapshots refreshed on a background queue behind a staleness check and an
+   in-flight flag, primed by `warmUp()` when the panel is shown. The port lookup used to
+   run `lsof` inline on every `kill <port>` keystroke; it was the last known exception.
 
 1. **Subprocess Pipe Deadlock Prevention**:
    When using `Process` with a `Pipe` on macOS (e.g. `ps`, `lsof`, `sqlite3`, or `osascript`), **always** read data via `pipe.fileHandleForReading.readDataToEndOfFile()` **before** calling `process.waitUntilExit()`. Connecting standardError to `FileHandle.nullDevice` prevents pipe buffer overflow deadlocks.
