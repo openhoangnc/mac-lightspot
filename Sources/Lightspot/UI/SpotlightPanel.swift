@@ -38,6 +38,17 @@ final class SpotlightFieldEditor: NSTextView {
         super.keyDown(with: event)
     }
 
+    /// Input methods that underline the text being composed (Vietnamese
+    /// without Accessibility, Japanese, Chinese, Korean…) update it with
+    /// `setMarkedText`, which AppKit does not report as a text change: the
+    /// search would wait for the word to be committed, and the empty query
+    /// could even make `SearchFieldView` clear the composition. Report it like
+    /// typing, so `controlTextDidChange` searches what is on screen.
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        didChangeText()
+    }
+
     override func insertNewlineIgnoringFieldEditor(_ sender: Any?) {
         onSecondarySubmit?()
     }

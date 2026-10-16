@@ -245,3 +245,9 @@ candidate per keystroke across every provider, so the difference is the search.
    - `lightspot_first_run_completed`
 7. **Privileged Commands & Headless Touch ID Execution**:
    Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.
+8. **Input-method composition (marked text) is searched live**:
+   `SpotlightFieldEditor.setMarkedText` calls `didChangeText()`. AppKit sends no text-change
+   notification for marked text (measured: 0 `controlTextDidChange` over 5 compositions), so
+   with an underlining input method (JOKey without Accessibility, Japanese, Chinese, Korean) the
+   search waited for each word to be committed, and `SearchFieldView.updateNSView` could wipe the
+   composition because the bound query looked empty. Keep the override.
