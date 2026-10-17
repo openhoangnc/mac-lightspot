@@ -213,10 +213,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. テストと検証
-LightspotにはXCTestターゲットはありません。`scripts/` 配下の2つの独立したスクリプトをソースとともにその場でコンパイルして実行します：ロジックとエンジンのテストランナー（33のテストブロック）と、ライブシステム検証ツール（10セクション、フル装備のマシンで88チェック。zshの履歴やVS Codeがない場合などは一部がスキップされます）：
+LightspotにはXCTestターゲットはありません。`scripts/` 配下の2つの独立したスクリプトをソースとともにその場でコンパイルして実行します：ロジックとエンジンのテストランナー（34のテストブロック）と、ライブシステム検証ツール（10セクション、フル装備のマシンで88チェック。zshの履歴やVS Codeがない場合などは一部がスキップされます）：
 ```bash
-# コアロジックとエンジンのテスト (33のテストブロック)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift && /tmp/test_engine
+# コアロジックとエンジンのテスト (34のテストブロック)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
 # ライブシステムチェック (10セクション、フル装備のマシンで88チェック)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -228,7 +228,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 | キー | アクション |
 |---|---|
-| **`⌘Space`** / **`⌘⇧Space`** | どこからでもLightspotを呼び出す、または閉じる (メニューバーで設定可能) |
+| **`⌘Space`** / **`⌘⇧Space`** / **`⌥Space`** / **`⌃Space`** | どこからでもLightspotを呼び出す、または閉じる (メニューバーで設定可能) |
 | **`↓` / `↑`** | 検索結果をナビゲート |
 | **`Return` (`↵`)** | 選択したアプリやIDEのプロジェクトを開く、コマンドを実行する、または計算結果をコピーする |
 | **`⌘Return` (`⌘↵`)** | お好みのターミナルで選択したプロジェクトを開く |
@@ -239,6 +239,8 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y` / `⌘⇧H`** | 検索履歴マネージャーのオーバーレイを開く |
 | **`Escape`** | オーバーレイを閉じる、検索フィールドをクリアする、またはLightspotを閉じる |
 | **外側をクリック** | フローティングパネルを自動的に閉じる |
+
+呼び出しに使うショートカットは、メニューバーの **Shortcut** で4つのうちから選びます。macOSは `⌃Space` を「前の入力ソースを選択」に割り当てているため、これを選ぶとキー操作で入力ソースも切り替わります。**Shortcut** サブメニューには、選んだ組み合わせをすでに使っているシステムのショートカットが表示されます。
 
 ---
 

@@ -213,10 +213,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. 测试与验证
-Lightspot没有XCTest目标。`scripts/` 下有两个独立脚本，会随源码一起即时编译：逻辑与引擎测试运行器（33个测试块）和实时系统验证器（10个部分，在配置齐全的机器上共88项检查；例如没有zsh历史记录或未安装VS Code时，部分检查会被跳过）：
+Lightspot没有XCTest目标。`scripts/` 下有两个独立脚本，会随源码一起即时编译：逻辑与引擎测试运行器（34个测试块）和实时系统验证器（10个部分，在配置齐全的机器上共88项检查；例如没有zsh历史记录或未安装VS Code时，部分检查会被跳过）：
 ```bash
-# 核心逻辑与引擎测试 (33个测试块)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift && /tmp/test_engine
+# 核心逻辑与引擎测试 (34个测试块)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
 # 实时系统检查 (10个部分，配置齐全的机器上共88项检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -228,7 +228,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 | 按键 | 动作 |
 |---|---|
-| **`⌘Space`** / **`⌘⇧Space`** | 在任何位置呼出或关闭Lightspot（可在菜单栏中配置） |
+| **`⌘Space`** / **`⌘⇧Space`** / **`⌥Space`** / **`⌃Space`** | 在任何位置呼出或关闭Lightspot（可在菜单栏中配置） |
 | **`↓` / `↑`** | 在搜索结果中导航 |
 | **`Return` (`↵`)** | 打开所选应用、在IDE中打开项目、运行命令或复制计算结果 |
 | **`⌘Return` (`⌘↵`)** | 在首选终端中打开所选项目 |
@@ -239,6 +239,8 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y` / `⌘⇧H`** | 打开搜索历史记录管理器浮层 |
 | **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot |
 | **点击外部** | 自动关闭悬浮面板 |
+
+呼出所用的快捷键可在菜单栏的 **Shortcut** 中从四者里选择。macOS 将 `⌃Space` 指定为「选择上一个输入源」，因此选用它时，该按键也会切换输入源；**Shortcut** 子菜单会指出哪个系统快捷键已占用所选的组合。
 
 ---
 

@@ -213,10 +213,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Verification
-Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources: a logic and engine test runner (33 test blocks) and a live-system verifier (10 sections, 88 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation):
+Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources: a logic and engine test runner (34 test blocks) and a live-system verifier (10 sections, 88 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation):
 ```bash
-# Core logic & engine tests (33 test blocks)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift && /tmp/test_engine
+# Core logic & engine tests (34 test blocks)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
 # Live system checks (10 sections, 88 checks on a fully equipped machine)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -228,7 +228,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 | Key | Action |
 |---|---|
-| **`⌘Space`** / **`⌘⇧Space`** | Summon or dismiss Lightspot anywhere (configurable in menu bar) |
+| **`⌘Space`** / **`⌘⇧Space`** / **`⌥Space`** / **`⌃Space`** | Summon or dismiss Lightspot anywhere (configurable in menu bar) |
 | **`↓` / `↑`** | Navigate through search results |
 | **`Return` (`↵`)** | Open selected app, project in IDE, run command, or copy calculation |
 | **`⌘Return` (`⌘↵`)** | Open selected project in preferred Terminal |
@@ -239,6 +239,8 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y` / `⌘⇧H`** | Open search history manager overlay |
 | **`Escape`** | Dismiss overlays, clear search field, or close Lightspot |
 | **Click Outside** | Automatically dismisses the floating panel |
+
+The summon shortcut is whichever of the four you pick under **Shortcut** in the menu bar. macOS binds `⌃Space` to "Select the previous input source", so choosing it means the keystroke also switches your input source; the **Shortcut** submenu names any system shortcut that already sits on the combination you picked.
 
 ---
 

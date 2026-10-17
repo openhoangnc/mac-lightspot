@@ -213,10 +213,10 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Vérification
-Lightspot n'a pas de cible XCTest. Deux scripts autonomes dans `scripts/` sont compilés à la volée avec les sources : un exécuteur de tests de logique et de moteur (33 blocs de tests) et un vérificateur du système en direct (10 sections, 88 vérifications sur une machine complète ; certaines sont ignorées s'il n'y a, par exemple, ni historique zsh ni VS Code installé) :
+Lightspot n'a pas de cible XCTest. Deux scripts autonomes dans `scripts/` sont compilés à la volée avec les sources : un exécuteur de tests de logique et de moteur (34 blocs de tests) et un vérificateur du système en direct (10 sections, 88 vérifications sur une machine complète ; certaines sont ignorées s'il n'y a, par exemple, ni historique zsh ni VS Code installé) :
 ```bash
-# Tests de logique de base & moteur (33 blocs de tests)
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift && /tmp/test_engine
+# Tests de logique de base & moteur (34 blocs de tests)
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
 # Vérifications du système en direct (10 sections, 88 vérifications sur une machine complète)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
@@ -228,7 +228,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 | Touche | Action |
 |---|---|
-| **`⌘Space`** / **`⌘⇧Space`** | Invoquer ou rejeter Lightspot n'importe où (configurable dans la barre de menus) |
+| **`⌘Space`** / **`⌘⇧Space`** / **`⌥Space`** / **`⌃Space`** | Invoquer ou rejeter Lightspot n'importe où (configurable dans la barre de menus) |
 | **`↓` / `↑`** | Naviguer dans les résultats de recherche |
 | **`Return` (`↵`)** | Ouvrir l'application sélectionnée, le projet dans l'IDE, exécuter la commande, ou copier le calcul |
 | **`⌘Return` (`⌘↵`)** | Ouvrir le projet sélectionné dans le Terminal préféré |
@@ -239,6 +239,8 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘Y`** / **`⌘⇧H`** | Ouvrir la superposition du gestionnaire d'historique de recherche |
 | **`Escape`** | Rejeter les superpositions, effacer le champ de recherche, ou fermer Lightspot |
 | **Cliquer en Dehors** | Rejette automatiquement le panneau flottant |
+
+Le raccourci d'invocation est celui que vous choisissez parmi les quatre dans **Shortcut**, dans la barre des menus. macOS attribue `⌃Space` à « Sélectionner la source de saisie précédente » : si vous le choisissez, la frappe change donc aussi votre source de saisie ; le sous-menu **Shortcut** indique quel raccourci système occupe déjà la combinaison choisie.
 
 ---
 
