@@ -105,14 +105,15 @@ if [ "$FOUND" -eq 0 ]; then
     echo "⚠️  ${APP_NAME} not found in /Applications or ~/Applications"
 fi
 
-# 4. Remove Preferences, the single-instance lock directory, and the HTTP cache and
-#    cookie store that versions up to 1.2.0 left behind (their update check used
-#    URLSession.shared, which writes both).
+# 4. Remove Preferences, the single-instance lock directory, and the HTTP cache,
+#    HTTP storage and cookie jar that versions up to 1.2.0 left behind (their update
+#    check used URLSession.shared, which writes all three; see LegacyNetworkStores).
 echo "--> Clearing application preferences..."
 run_quiet defaults delete com.lightspot.app
 run rm -f "${HOME}/Library/Preferences/com.lightspot.app.plist"
 run rm -rf "${HOME}/Library/Application Support/${APP_NAME}"
-for LEFTOVER in "${HOME}/Library/Caches/com.lightspot.app" "${HOME}/Library/HTTPStorages/com.lightspot.app"; do
+for LEFTOVER in "${HOME}/Library/Caches/com.lightspot.app" "${HOME}/Library/HTTPStorages/com.lightspot.app" \
+                "${HOME}/Library/HTTPStorages/com.lightspot.app.binarycookies"; do
     if [ -e "${LEFTOVER}" ]; then
         run rm -rf "${LEFTOVER}"
     fi
