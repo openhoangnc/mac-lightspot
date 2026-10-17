@@ -8,6 +8,7 @@ import Foundation
 //       Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift \
 //       Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift \
 //       Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/LegacyNetworkStores.swift \
+//       Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift \
 //       && /tmp/test_engine
 
 @main
@@ -192,6 +193,7 @@ struct TestRunner {
         testVSCodeProjectsProvider()
         testSettingsBackup()
         testSpotlightShortcutState()
+        testSystemShortcutConflicts()
         testUpdateManager()
         testPublicIPLookupIsOnDemand()
         testHistoryDoesNotPersistCopiedContent()
@@ -2135,6 +2137,101 @@ struct TestRunner {
                     "Disabling only sets the override")
 
         print("✅ SpotlightManager shortcut state passed all tests!\n")
+    }
+
+    // MARK: - Test 34: a system shortcut sitting on Lightspot's key combination
+    //
+    // The quiet half of invariant 9. Carbon only refuses a combination another Carbon
+    // owner holds; a symbolic hotkey lets the registration succeed and still acts on
+    // the keystroke, so ⌃Space opens the panel *and* switches the input source. These
+    // cover the reading of `AppleSymbolicHotKeys` that the menu note is built from.
+
+    static func testSystemShortcutConflicts() {
+        print("Testing SystemShortcutConflicts...")
+
+        // 1. Every option maps to the mask macOS stores in `parameters[2]`.
+        assertEqual(SystemShortcutConflicts.symbolicModifierMask(for: .commandSpace), 1_048_576, "⌘ mask")
+        assertEqual(SystemShortcutConflicts.symbolicModifierMask(for: .commandShiftSpace), 1_179_648, "⌘⇧ mask")
+        assertEqual(SystemShortcutConflicts.symbolicModifierMask(for: .optionSpace), 524_288, "⌥ mask")
+        assertEqual(SystemShortcutConflicts.symbolicModifierMask(for: .controlSpace), 262_144, "⌃ mask")
+
+        // 2. The watched entries, and their factory bindings. 64/65 must agree with
+        // the defaults SpotlightManager writes, or the two would disagree about what
+        // "untouched" means.
+        assertEqual(SystemShortcutConflicts.spaceShortcuts.map(\.id), [60, 61, 64, 65],
+                    "Input-source pair and Spotlight pair are watched")
+        for shortcut in SystemShortcutConflicts.spaceShortcuts where shortcut.id >= 64 {
+            assertEqual(SpotlightManager.defaultHotkeyParameters(for: shortcut.id),
+                        [32, SystemShortcutConflicts.spaceKeyCode, shortcut.factoryModifiers],
+                        "Entry \(shortcut.id) factory binding matches SpotlightManager")
+        }
+        // ⌃Space and ⌃⌥Space, as measured on a stock Mac.
+        assertEqual(SystemShortcutConflicts.spaceShortcuts.first?.factoryModifiers, 262_144, "Entry 60 is ⌃Space")
+        assertEqual(SystemShortcutConflicts.spaceShortcuts.dropFirst().first?.factoryModifiers, 786_432,
+                    "Entry 61 is ⌃⌥Space")
+
+        // 3. `parameters` has to survive both ways a CFNumber array bridges in.
+        assertEqual(SystemShortcutConflicts.parameters(of: nil), nil, "No entry, no parameters")
+        assertEqual(SystemShortcutConflicts.parameters(of: ["enabled": true]), nil, "No value dict")
+        let asInts: [String: Any] = ["value": ["parameters": [32, 49, 262_144]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.parameters(of: asInts), [32, 49, 262_144], "Int array")
+        let asNumbers: [String: Any] = ["value": ["parameters": [NSNumber(value: 32), NSNumber(value: 49), NSNumber(value: 262_144)]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.parameters(of: asNumbers), [32, 49, 262_144], "NSNumber array")
+        let notNumbers: [String: Any] = ["value": ["parameters": ["32", "49", "262144"]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.parameters(of: notNumbers), nil, "Strings are not a binding")
+
+        // 4. Reading one entry's Space binding.
+        let factory = 262_144
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: nil, factory: factory), factory,
+                    "A missing entry means the factory binding")
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: [String: Any](), factory: factory), factory,
+                    "An entry with no value means the factory binding")
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: ["enabled": false], factory: factory), nil,
+                    "A disabled entry holds nothing")
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: ["enabled": NSNumber(value: 0)], factory: factory), nil,
+                    "`defaults write -int 0` also reads as disabled")
+        let remapped: [String: Any] = ["enabled": true,
+                                       "value": ["parameters": [32, 49, 524_288]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: remapped, factory: factory), 524_288,
+                    "A custom binding wins over the factory one")
+        let otherKey: [String: Any] = ["enabled": true,
+                                       "value": ["parameters": [9, 48, 262_144]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: otherKey, factory: factory), nil,
+                    "Remapped off Space entirely, so no collision")
+        let truncated: [String: Any] = ["enabled": true,
+                                        "value": ["parameters": [32, 49]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.spaceModifiers(of: truncated, factory: factory), nil,
+                    "A short parameters array is not a binding")
+
+        // 5. A stock Mac: no entries written at all, every default live. ⌃Space and
+        // ⌘Space are taken; ⌥Space and ⌘⇧Space are free (65 is ⌥⌘Space, not ⌥Space).
+        let stock: [String: Any] = [:]
+        assertEqual(SystemShortcutConflicts.conflict(for: .controlSpace, in: stock)?.id, 60,
+                    "⌃Space is the previous-input-source shortcut")
+        assertEqual(SystemShortcutConflicts.conflict(for: .controlSpace, in: stock)?.note,
+                    "also switches input source", "…and the menu says what it does")
+        assertEqual(SystemShortcutConflicts.conflict(for: .commandSpace, in: stock)?.id, 64,
+                    "⌘Space is Spotlight")
+        assertEqual(SystemShortcutConflicts.conflict(for: .optionSpace, in: stock)?.id, nil, "⌥Space is free")
+        assertEqual(SystemShortcutConflicts.conflict(for: .commandShiftSpace, in: stock)?.id, nil,
+                    "⌘⇧Space is free")
+        assertEqual(SystemShortcutConflicts.conflicts(in: stock).count, 2, "Two options collide on a stock Mac")
+        assertEqual(SystemShortcutConflicts.conflicts(in: stock)[HotkeyOption.controlSpace.rawValue]?.id, 60,
+                    "The snapshot is keyed by raw value")
+
+        // 6. Turning the system shortcut off clears the warning — including the one
+        // Lightspot itself turns off when it disables Spotlight's ⌘Space.
+        let quiet = SpotlightManager.hotkeyRoot(["60": ["enabled": false] as [String: Any]], settingEnabled: false)
+        assertEqual(SystemShortcutConflicts.conflicts(in: quiet).count, 0, "Nothing collides once the entries are off")
+
+        // 7. A user who remapped input-source switching to ⌥Space moves the collision
+        // with it, which is why the entry's own binding is read instead of assumed.
+        let moved: [String: Any] = ["60": ["enabled": true,
+                                           "value": ["parameters": [32, 49, 524_288]] as [String: Any]] as [String: Any]]
+        assertEqual(SystemShortcutConflicts.conflict(for: .optionSpace, in: moved)?.id, 60, "⌥Space now collides")
+        assertEqual(SystemShortcutConflicts.conflict(for: .controlSpace, in: moved)?.id, nil, "⌃Space is free again")
+
+        print("✅ SystemShortcutConflicts passed all tests!\n")
     }
 
     // MARK: - Test 30: UpdateManager (version maths, release parsing, install gate)

@@ -122,7 +122,11 @@ enum SpotlightManager {
         id == 65 ? [32, 49, 1_572_864] : [32, 49, 1_048_576]
     }
 
-    private nonisolated static func readHotkeyRoot() -> [String: Any] {
+    /// The whole `AppleSymbolicHotKeys` dictionary, read through the daemon.
+    /// Not private: `SystemShortcutConflicts` reads the same root to spot a system
+    /// shortcut sitting on Lightspot's key combination, and both must see what the
+    /// system will act on rather than the plist file's stale copy.
+    nonisolated static func readHotkeyRoot() -> [String: Any] {
         CFPreferencesCopyValue(hotkeyRootKey as CFString, hotkeyDomain as CFString,
                                kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String: Any] ?? [:]
     }

@@ -29,6 +29,9 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             UpdateManager.shared.checkAutomaticallyIfDue { [weak self] _ in
                 MainActor.assumeIsolated { self?.rebuildMenu() }
             }
+            SystemShortcutConflicts.refresh { [weak self] in
+                MainActor.assumeIsolated { self?.rebuildMenu() }
+            }
         }
     }
 
@@ -43,6 +46,9 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         }
 
         updateStatusItemVisibility()
+        SystemShortcutConflicts.refresh { [weak self] in
+            MainActor.assumeIsolated { self?.rebuildMenu() }
+        }
         rebuildMenu()
     }
 
@@ -125,16 +131,40 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         menu.addItem(NSMenuItem.separator())
 
         // 6. Shortcut submenu
+        //
+        // A combination macOS already binds still registers and still opens the panel,
+        // so the only symptom is the system shortcut firing too (⌃Space switches the
+        // input source). The titles carry that, read from a cached snapshot because
+        // menu content is rebuilt on every body pass.
         let shortcutMenu = NSMenu()
         for option in HotkeyOption.allCases {
-            let item = NSMenuItem(title: option.displayName, action: #selector(selectHotkeyAction(_:)), keyEquivalent: "")
+            let title = SystemShortcutConflicts.cachedConflict(for: option)
+                .map { "\(option.displayName) — \($0.note)" } ?? option.displayName
+            let item = NSMenuItem(title: title, action: #selector(selectHotkeyAction(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = option
             item.state = (option == currentOption) ? .on : .off
             shortcutMenu.addItem(item)
         }
 
-        let shortcutParentItem = NSMenuItem(title: "Shortcut (\(currentOption.shortLabel))", action: nil, keyEquivalent: "")
+        let activeConflict = SystemShortcutConflicts.cachedConflict(for: currentOption)
+        if let conflict = activeConflict {
+            shortcutMenu.addItem(NSMenuItem.separator())
+            let noteItem = NSMenuItem(title: "macOS also uses \(currentOption.shortLabel) for “\(conflict.name)”",
+                                      action: nil, keyEquivalent: "")
+            noteItem.isEnabled = false
+            shortcutMenu.addItem(noteItem)
+
+            let settingsItem = NSMenuItem(title: "Open Keyboard Shortcuts Settings...",
+                                          action: #selector(openKeyboardSettingsAction), keyEquivalent: "")
+            settingsItem.target = self
+            shortcutMenu.addItem(settingsItem)
+        }
+
+        let shortcutTitle = activeConflict == nil
+            ? "Shortcut (\(currentOption.shortLabel))"
+            : "Shortcut (\(currentOption.shortLabel)) ⚠︎"
+        let shortcutParentItem = NSMenuItem(title: shortcutTitle, action: nil, keyEquivalent: "")
         shortcutParentItem.submenu = shortcutMenu
         menu.addItem(shortcutParentItem)
 
@@ -791,7 +821,11 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
 
-        let currentOption = hotkeyManager?.currentOption.shortLabel ?? "⌘Space"
+        let option = hotkeyManager?.currentOption
+        let conflictNote = option
+            .flatMap { SystemShortcutConflicts.cachedConflict(for: $0) }
+            .map { " — macOS also uses it for “\($0.name)”" } ?? ""
+        let currentOption = (option?.shortLabel ?? "⌘Space") + conflictNote
         let shortcutStatus = SpotlightManager.isShortcutEnabled() ? "Active" : "Disabled"
         let indexingStatus = SpotlightManager.isIndexingEnabled() ? "Active" : "Disabled"
         let processStatus = SpotlightManager.isServiceDisabled() ? "Disabled" : "Active"

@@ -27,11 +27,11 @@ The app is single-instance via `System/SingleInstanceGuard.swift`, checked in `m
 There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` sources plus the few `System/` files each one needs (`test_engine` needs `AutoStartManager`, `SpotlightManager` and `FirstRunManager` too):
 
 ```bash
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 33 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), and the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind.
+- `test_engine.swift`: 34 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), and the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind.
 - `deep_verify.swift`: 10 sections of live system checks (88 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code) verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
@@ -57,7 +57,7 @@ mac-lightspot/
 │   └── AppIcon.icns              # Multi-size macOS application icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (33 test blocks)
+│   ├── test_engine.swift         # Automated test runner (34 test blocks)
 │   └── deep_verify.swift         # Live-system verification (10 sections, 88 checks)
 └── Sources/
     └── Lightspot/
@@ -96,6 +96,7 @@ mac-lightspot/
         │   ├── SettingsBackupController.swift # Settings import/export controller
         │   ├── SingleInstanceGuard.swift # flock instance lock; hand-off / take-over between launches
         │   ├── SpotlightManager.swift   # macOS Spotlight disable/restore automations
+        │   ├── SystemShortcutConflicts.swift # Symbolic hotkeys sitting on the Lightspot combination
         │   ├── TerminalLauncher.swift   # Launcher for 7 terminal emulators & Finder detection
         │   └── UpdateManager.swift      # GitHub release check, verified download & self-replacement
         └── UI/
@@ -294,6 +295,17 @@ candidate per keystroke across every provider, so the difference is the search.
    the same bug wearing a different hat: the preference is right and ⌘Space still does
    nothing. `AppDelegate` surfaces an unclaimed hotkey as an alert at launch rather
    than failing silently.
+
+   A **symbolic** hotkey holding the combination is quieter and needs its own handling:
+   `RegisterEventHotKey` succeeds, the panel opens, and the system shortcut acts on the
+   same keystroke anyway. Measured with ⌃Space, which macOS binds to "Select the
+   previous input source" (`AppleSymbolicHotKeys` entry 60, ⌃⌥Space is 61): the panel
+   opened *and* the keyboard input source switched. So `isRegistered` cannot see it.
+   `SystemShortcutConflicts` reads those entries through `cfprefsd` (invariant 8) and
+   the shortcut submenu names the colliding shortcut; it is informational only and
+   never rewrites the user's symbolic hotkeys. Read each entry's own `value` rather
+   than assuming the factory binding — users remap input-source switching too — and
+   treat a missing entry as the factory default, enabled.
 
 10. **The updater replaces the bundle from outside the process**:
    A running `.app` cannot overwrite itself, so `UpdateManager.install` stages the new
