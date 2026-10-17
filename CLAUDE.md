@@ -27,11 +27,11 @@ The app is single-instance via `System/SingleInstanceGuard.swift`, checked in `m
 There is no XCTest target. Two standalone `@main` Swift files under `scripts/` are compiled ad hoc against the `Core` sources plus the few `System/` files each one needs (`test_engine` needs `AutoStartManager`, `SpotlightManager` and `FirstRunManager` too):
 
 ```bash
-swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift && /tmp/test_engine
+swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift && /tmp/test_engine
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 32 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, and the updater (version maths, release parsing, download allowlist, bundle validation, swap script).
+- `test_engine.swift`: 33 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), and the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind.
 - `deep_verify.swift`: 10 sections of live system checks (88 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code) verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
@@ -57,7 +57,7 @@ mac-lightspot/
 │   └── AppIcon.icns              # Multi-size macOS application icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (32 test blocks)
+│   ├── test_engine.swift         # Automated test runner (33 test blocks)
 │   └── deep_verify.swift         # Live-system verification (10 sections, 88 checks)
 └── Sources/
     └── Lightspot/
@@ -91,6 +91,7 @@ mac-lightspot/
         │   ├── AutoStartManager.swift   # SMAppService login item management & caching
         │   ├── FirstRunManager.swift    # Onboarding: auto launch-at-login & Spotlight disable prompt
         │   ├── HotkeyManager.swift      # Carbon global hotkey
+        │   ├── LegacyNetworkStores.swift # Removes the HTTP cache & cookies URLSession.shared left (≤ 1.2.0)
         │   ├── MenuBarController.swift  # Menu bar status item & preferences
         │   ├── SettingsBackupController.swift # Settings import/export controller
         │   ├── SingleInstanceGuard.swift # flock instance lock; hand-off / take-over between launches
@@ -320,3 +321,14 @@ candidate per keystroke across every provider, so the difference is the search.
    with an underlining input method (JOKey without Accessibility, Japanese, Chinese, Korean) the
    search waited for each word to be committed, and `SearchFieldView.updateNSView` could wipe the
    composition because the bound query looked empty. Keep the override.
+
+12. **No network request may use `URLSession.shared`, and nothing may touch `URLCache.shared`**:
+   The shared session writes every response to `~/Library/Caches/<bundle id>/Cache.db` and
+   cookies and HSTS state to `~/Library/HTTPStorages`, which is how the update check (≤ 1.2.0)
+   and the public-IP lookup (< 1.2.0) put the user's IP on disk. Use an ephemeral session
+   (`UpdateManager.session`, `NetworkInfoProvider.lookupSession`). Merely reading
+   `URLCache.shared`, even to call `removeAllCachedResponses()`, creates `Cache.db` (measured).
+   `LegacyNetworkStores` deletes what older versions left: at every launch, after the
+   single-instance guard, off the main thread, by known path and only where the file exists,
+   so a fresh install gets nothing and no `UserDefaults` flag is needed. `uninstall.sh`
+   removes the same paths.

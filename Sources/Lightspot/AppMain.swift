@@ -23,7 +23,10 @@ struct LightspotApp {
             )
             switch decision {
             case .run:
-                break // the lock descriptor stays open until the process exits
+                // The lock descriptor stays open until the process exits. Any older
+                // build has quit by now, so nothing still writes the HTTP cache and
+                // cookie store that versions up to 1.2.0 left behind; delete them.
+                LegacyNetworkStores.removeInBackground(bundleIdentifier: bundleIdentifier)
             case .handedOff:
                 exit(0)
             case .holderDidNotQuit(let pid):

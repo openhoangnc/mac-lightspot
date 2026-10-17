@@ -7,7 +7,7 @@ import Foundation
 //       Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift \
 //       Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift \
 //       Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift \
-//       Sources/Lightspot/System/UpdateManager.swift \
+//       Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/LegacyNetworkStores.swift \
 //       && /tmp/test_engine
 
 @main
@@ -198,6 +198,7 @@ struct TestRunner {
         testBareClipListsLatestEntries()
         testHistoryDoesNotRecordProcessKills()
         testSingleInstanceGuard()
+        testLegacyNetworkStores()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -2503,5 +2504,96 @@ struct TestRunner {
         assertEqual(gaveUp, .holderDidNotQuit(pid: stuck.pid), "Unresponsive holder: new build exits instead of running twice")
 
         print("✅ SingleInstanceGuard passed all tests!\n")
+    }
+
+    // MARK: - Test 33: HTTP cache and cookies left by URLSession.shared (≤ 1.2.0)
+
+    static func testLegacyNetworkStores() {
+        print("Testing LegacyNetworkStores...")
+        let fm = FileManager.default
+        let home = NSTemporaryDirectory() + "lightspot-legacy-\(getpid())"
+        let library = home + "/Library"
+        try? fm.removeItem(atPath: home)
+        try? fm.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: home) }
+        let id = "com.lightspot.app"
+        func make(_ relative: String, directory: Bool = false) {
+            let path = library + "/" + relative
+            if directory {
+                try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
+            } else {
+                try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                fm.createFile(atPath: path, contents: Data("x".utf8))
+            }
+        }
+        func exists(_ relative: String) -> Bool { fm.fileExists(atPath: library + "/" + relative) }
+        func tree() -> [String] { (fm.subpaths(atPath: home) ?? []).sorted() }
+
+        // 1. Fresh install, no ~/Library at all: nothing is created, not even the folders.
+        assertEqual(LegacyNetworkStores.remove(bundleIdentifier: id, libraryPath: library), [],
+                    "Nothing to remove on a fresh install")
+        assertEqual(tree(), [], "A fresh install gets no Library, Caches or HTTPStorages folder")
+
+        // 2. Fresh install on a lived-in Mac: other apps' stores with the same names stay.
+        make("Caches/com.other.app/Cache.db")
+        make("Caches/com.lightspot.app.helper/Cache.db")
+        make("HTTPStorages/com.other.app/httpstorages.sqlite")
+        make("HTTPStorages/com.other.app.binarycookies")
+        let lived = tree()
+        assertEqual(LegacyNetworkStores.leftovers(bundleIdentifier: id, libraryPath: library), [],
+                    "No leftovers without Lightspot's own folders")
+        assertEqual(LegacyNetworkStores.remove(bundleIdentifier: id, libraryPath: library), [],
+                    "Nothing of other apps is removed")
+        assertEqual(tree(), lived, "A fresh install leaves the Library exactly as it was")
+
+        // 3. Upgraded from 1.2.0: exactly what URLSession.shared wrote (measured layout).
+        for name in ["Cache.db", "Cache.db-wal", "Cache.db-shm"] { make("Caches/\(id)/\(name)") }
+        make("Caches/\(id)/fsCachedData/0A1B2C3D-response-body")
+        for name in ["httpstorages.sqlite", "httpstorages.sqlite-wal", "httpstorages.sqlite-shm"] {
+            make("HTTPStorages/\(id)/\(name)")
+        }
+        make("HTTPStorages/\(id).binarycookies")
+        let known = LegacyNetworkStores.knownPaths(bundleIdentifier: id, libraryPath: library)
+        assertEqual(known.count, 8, "Cache.db + WAL + SHM + bodies, HSTS store + WAL + SHM, cookie jar")
+        assertEqual(LegacyNetworkStores.leftovers(bundleIdentifier: id, libraryPath: library), known,
+                    "Every known entry is found")
+        assertEqual(LegacyNetworkStores.remove(bundleIdentifier: id, libraryPath: library), known,
+                    "Every known entry is removed")
+        assertTrue(!exists("Caches/\(id)"), "The emptied cache folder goes too")
+        assertTrue(!exists("HTTPStorages/\(id)"), "The emptied HTTP storage folder goes too")
+        assertTrue(!exists("HTTPStorages/\(id).binarycookies"), "The cookie jar is removed")
+        assertEqual(tree(), lived, "Only Lightspot's leftovers went; other apps' stores and the parents stay")
+
+        // 4. Idempotent: the next launch finds nothing and touches nothing.
+        assertEqual(LegacyNetworkStores.remove(bundleIdentifier: id, libraryPath: library), [],
+                    "A second launch has nothing to do")
+        assertEqual(tree(), lived, "A second launch changes nothing")
+
+        // 5. Something unknown in the cache folder is kept, and so is the folder.
+        make("Caches/\(id)/Cache.db")
+        make("Caches/\(id)/not-from-urlsession.dat")
+        assertEqual(LegacyNetworkStores.remove(bundleIdentifier: id, libraryPath: library),
+                    [library + "/Caches/\(id)/Cache.db"], "Only the known entry is removed")
+        assertTrue(exists("Caches/\(id)/not-from-urlsession.dat") && !exists("Caches/\(id)/Cache.db"),
+                   "An unknown file and its folder are kept")
+        try? fm.removeItem(atPath: library + "/Caches/\(id)")
+
+        // 6. Cookies only (a version that never cached a response): still removed.
+        make("HTTPStorages/\(id).binarycookies")
+        assertEqual(LegacyNetworkStores.remove(bundleIdentifier: id, libraryPath: library),
+                    [library + "/HTTPStorages/\(id).binarycookies"], "A lone cookie jar is removed")
+        assertEqual(tree(), lived, "Back to the lived-in Library")
+
+        // 7. An unusable identifier never resolves to Caches or HTTPStorages themselves.
+        make("Caches/Cache.db")
+        for bad in ["", ".", "..", "com/lightspot"] {
+            assertEqual(LegacyNetworkStores.knownPaths(bundleIdentifier: bad, libraryPath: library), [],
+                        "No paths for identifier '\(bad)'")
+            assertEqual(LegacyNetworkStores.remove(bundleIdentifier: bad, libraryPath: library), [],
+                        "Nothing removed for identifier '\(bad)'")
+        }
+        assertTrue(exists("Caches/Cache.db"), "A file directly in Caches is never touched")
+
+        print("✅ LegacyNetworkStores passed all tests!\n")
     }
 }
