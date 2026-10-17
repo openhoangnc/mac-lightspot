@@ -5,6 +5,7 @@ enum HotkeyOption: String, CaseIterable, Identifiable, Sendable {
     case commandSpace = "cmd_space"
     case commandShiftSpace = "cmd_shift_space"
     case optionSpace = "option_space"
+    case controlSpace = "control_space"
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum HotkeyOption: String, CaseIterable, Identifiable, Sendable {
         case .commandSpace: return "⌘Space (Command + Space)"
         case .commandShiftSpace: return "⌘⇧Space (Command + Shift + Space)"
         case .optionSpace: return "⌥Space (Option + Space)"
+        case .controlSpace: return "⌃Space (Control + Space)"
         }
     }
 
@@ -21,6 +23,7 @@ enum HotkeyOption: String, CaseIterable, Identifiable, Sendable {
         case .commandSpace: return "⌘Space"
         case .commandShiftSpace: return "⌘⇧Space"
         case .optionSpace: return "⌥Space"
+        case .controlSpace: return "⌃Space"
         }
     }
 
@@ -29,6 +32,7 @@ enum HotkeyOption: String, CaseIterable, Identifiable, Sendable {
         case .commandSpace: return [.command]
         case .commandShiftSpace: return [.command, .shift]
         case .optionSpace: return [.option]
+        case .controlSpace: return [.control]
         }
     }
 
@@ -37,6 +41,7 @@ enum HotkeyOption: String, CaseIterable, Identifiable, Sendable {
         case .commandSpace: return UInt32(cmdKey)
         case .commandShiftSpace: return UInt32(cmdKey | shiftKey)
         case .optionSpace: return UInt32(optionKey)
+        case .controlSpace: return UInt32(controlKey)
         }
     }
 }
