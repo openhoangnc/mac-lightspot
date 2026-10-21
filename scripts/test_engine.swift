@@ -209,6 +209,7 @@ struct TestRunner {
         testCleanDevMacProvider()
         testToolInstallers()
         testMacTweaks()
+        testCleanDevMacRepoScan()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -2871,10 +2872,23 @@ struct TestRunner {
         assertTrue(rule("Browser caches")?.procs.contains("Google Chrome") == true, "A rule's procs are read")
         assertTrue(bundled.rules.allSatisfy { $0.patterns.allSatisfy { $0.hasPrefix("~/") } },
                    "Every bundled pattern is under the home folder")
+        assertEqual(bundled.terminalOnly, ["Docker / Podman reclaimable data", "Orphaned app data"],
+                    "Only Docker / Podman and orphaned app data are left to cdm in the terminal")
         for name in ["node_modules folders", "Git-ignored files (all repos)", "Docker / Podman reclaimable data", "Orphaned app data"] {
-            assertTrue(bundled.terminalOnly.contains(name), "'\(name)' is left to cdm in the terminal")
-            assertTrue(rule(name) == nil, "'\(name)' is never cleaned here")
+            assertTrue(rule(name) == nil, "'\(name)' is not a cache rule")
         }
+        let projects = bundled.projects
+        assertEqual(projects.roots, ["~"], "The repo scan starts at the home folder")
+        assertEqual(projects.maxDepth, 6, "...goes six levels down")
+        assertEqual(projects.maxRepos, 400, "...asks git about at most 400 repos")
+        assertEqual(projects.groups, ["~/.gemini/antigravity/brain"], "...and groups an agent's session repos")
+        assertTrue(projects.prune.contains("Library") && projects.prune.contains(".npm"), "...never entering Library or tool caches")
+        assertEqual(projects.method(forName: "node_modules"), .rm, "node_modules is deleted")
+        assertEqual(projects.method(forName: "__pycache__"), .rm, "__pycache__ is deleted")
+        assertTrue(projects.method(forName: "src") == nil, "a name the rules do not list is not junk")
+        assertEqual(projects.gitignoreMethod, .trash, "other git-ignored files go to the Trash")
+        assertTrue(projects.categoryNames.contains("node_modules folders") && projects.categoryNames.contains("Git-ignored files (all repos)"),
+                   "The repo scan's categories are named")
 
         // cdm's defaults for missing fields, and what is left out.
         let file = Data("""
@@ -2884,7 +2898,9 @@ struct TestRunner {
           {"name": "Unknown kind", "kind": "future", "method": "rm", "paths": ["~/c"], "images": ["~/x"]},
           {"name": "Images", "kind": "android-images", "method": "rm", "paths": ["~/everything"], "images": ["~/img/*"]},
           {"name": "No paths", "method": "rm"},
-          {"name": "Repo junk", "kind": "project", "method": "rm", "dirs": ["node_modules"]},
+          {"name": "Repo junk", "kind": "project", "method": "rm", "dirs": ["node_modules", "build*"]},
+          {"name": "Ignored", "kind": "gitignore", "method": "trash"},
+          {"name": "Docker", "kind": "container", "method": "prune", "engines": ["docker"]},
           {"name": "Procs", "method": "trash", "paths": ["~/d"], "procs": ["Code", ""]}
         ]}
         """.utf8)
@@ -2898,7 +2914,16 @@ struct TestRunner {
         assertEqual(parsed?.rules[2].patterns, ["~/img/*"], "Android images never fall back to `paths`")
         assertEqual(parsed?.rules[3].method, .trash, "trash is read")
         assertEqual(parsed?.rules[3].procs, ["Code"], "Empty process names are dropped")
-        assertEqual(parsed?.terminalOnly, ["Repo junk"], "A project category is named, not run")
+        assertEqual(parsed?.terminalOnly, ["Docker"], "A container category is left to cdm")
+        assertEqual(parsed?.projects.dirs, [CleanDevMacProjectRules.JunkName(name: "node_modules", method: .rm)],
+                    "A project category's names feed the repo scan; a name with a wildcard is dropped, as cdm drops it")
+        assertEqual(parsed?.projects.gitignoreMethod, .trash, "A gitignore category turns on the git-ignored pass")
+        assertEqual(parsed?.projects.categoryNames, ["Repo junk", "Ignored"], "...and both are named")
+        let scanOnly = Data(#"{"scan": {"roots": ["~/code"], "maxDepth": "deep", "maxRepos": 12, "prune": ["vendor"]}}"#.utf8)
+        let scanFile = CleanDevMacRules.parsePatternFile(scanOnly)
+        assertEqual(scanFile?.projects.roots, ["~/code"], "scan.roots are read")
+        assertEqual(scanFile?.maxDepth, 6, "A maxDepth that is not a number falls back to 6, as in cdm")
+        assertEqual(scanFile?.maxRepos, 12, "maxRepos is read")
         assertTrue(CleanDevMacRules.parsePatternFile(Data("not json".utf8)) == nil, "A broken file does not parse")
 
         // index.json names files that get joined onto a folder or a URL.
@@ -3464,6 +3489,7 @@ struct TestRunner {
 
         // The toggles, run for real against a scratch domain: never the user's settings.
         let domain = "com.lightspot.test.tweaks"
+        @discardableResult
         func sh(_ script: String) -> String {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -3524,6 +3550,209 @@ struct TestRunner {
         }
 
         print("✅ MacTweaks passed all tests!\n")
+    }
+
+    // MARK: - Test 40: cdm's repo scan — cdm's own fixtures, plus Lightspot's guards
+
+    static func testCleanDevMacRepoScan() {
+        print("Testing CleanDevMac repo scan...")
+        guard let git = CleanDevMacProjects.gitExecutable() else {
+            print("⚠️ No git: skipping the repo scan tests, as cdm's suite does.\n")
+            return
+        }
+        // The fixtures' own repos decide what is ignored, not the developer's global
+        // excludes file: that is what cdm's tests get from their sandboxed HOME.
+        setenv("GIT_CONFIG_GLOBAL", "/dev/null", 1)
+        setenv("GIT_CONFIG_NOSYSTEM", "1", 1)
+        defer {
+            unsetenv("GIT_CONFIG_GLOBAL")
+            unsetenv("GIT_CONFIG_NOSYSTEM")
+        }
+        let fm = FileManager.default
+        let home = NSTemporaryDirectory() + "lightspot-repos-\(getpid())"
+        try? fm.removeItem(atPath: home)
+        try? fm.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: home) }
+
+        func run(_ arguments: [String], in folder: String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: git)
+            process.arguments = arguments
+            process.currentDirectoryURL = URL(fileURLWithPath: folder)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
+        func file(_ path: String, _ text: String = "x") {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(text.utf8))
+        }
+        func repo(_ path: String, ignoring: [String]) {
+            try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
+            run(["init", "-q"], in: path)
+            file(path + "/.gitignore", ignoring.joined(separator: "\n") + "\n")
+        }
+        func commitAll(_ path: String) {
+            run(["add", "-A"], in: path)
+            run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], in: path)
+        }
+        func rules(dirs: [String], gitignore: Bool = false, groups: [String] = []) -> CleanDevMacProjectRules {
+            var rules = CleanDevMacProjectRules()
+            rules.roots = ["~"]
+            rules.maxDepth = 6
+            rules.groups = groups
+            rules.dirs = dirs.map { CleanDevMacProjectRules.JunkName(name: $0, method: .rm) }
+            rules.gitignoreMethod = gitignore ? .trash : nil
+            return rules
+        }
+        func offered(_ rules: CleanDevMacProjectRules) -> [CleanDevMacProjects.Project] {
+            CleanDevMacProjects.scan(rules, home: home, git: git).projects
+        }
+        func paths(_ projects: [CleanDevMacProjects.Project]) -> Set<String> {
+            Set(projects.flatMap(\.paths))
+        }
+
+        // 1. cdm's ignored proof: a name match only nominates, git decides.
+        let a = home + "/code/repoA"            // dist ignored; build tracked; out untracked but not ignored
+        repo(a, ignoring: ["dist"])
+        file(a + "/dist/bundle.js"); file(a + "/build/release.sh"); file(a + "/out/generated.txt")
+        commitAll(a)
+        let b = home + "/code/repoB"            // dist ignore-listed but holding a tracked file
+        repo(b, ignoring: ["dist", "node_modules"])
+        file(b + "/dist/committed.js"); file(b + "/node_modules/pkg.js")
+        run(["add", "-A"], in: b); run(["add", "-f", "dist/committed.js"], in: b)
+        commitAll(b)
+        let c = home + "/code/repoC"            // a candidate under a wholly ignored folder
+        repo(c, ignoring: ["tmpstuff"])
+        file(c + "/tmpstuff/dist/x.js")
+        commitAll(c)
+        file(home + "/notarepo/node_modules/pkg.js")
+        let e = home + "/code/repoE"            // an outer repo ignoring a nested checkout
+        repo(e, ignoring: ["node_modules", "inner"])
+        file(e + "/node_modules/pkg.js"); file(e + "/inner/build/release.sh")
+        run(["init", "-q"], in: e + "/inner")
+        commitAll(e + "/inner")
+        commitAll(e)
+        let proof = paths(offered(rules(dirs: ["node_modules", "dist", "build", "out"])))
+        assertEqual(proof, [a + "/dist", b + "/node_modules", c + "/tmpstuff/dist", e + "/node_modules"],
+                    "Exactly the four proven items: no tracked build/, unignored out/, committed dist/, stray node_modules or nested build/")
+
+        // 2. cdm's grouping: a named group root is one row, counting its repos; others keep theirs.
+        for name in ["aaaaaaaa-1111", "bbbbbbbb-2222"] {
+            repo(home + "/store/" + name, ignoring: ["node_modules", "dist"])
+            file(home + "/store/\(name)/node_modules/pkg.js")
+        }
+        file(home + "/store/aaaaaaaa-1111/dist/x.js")
+        for name in ["projA", "projB"] {
+            repo(home + "/work/" + name, ignoring: ["node_modules", "dist"])
+            file(home + "/work/\(name)/node_modules/pkg.js")
+        }
+        let grouped = offered(rules(dirs: ["node_modules", "dist"], groups: ["~/store"]))
+        let store = grouped.first { $0.key == home + "/store" }
+        assertEqual(store?.paths.count, 3, "Every item under the group root lands in its one row")
+        assertTrue(store?.summary.hasPrefix("2 repos · ") == true, "...which counts repos, not items")
+        let projA = grouped.first { $0.key == home + "/work/projA" }
+        assertTrue(projA != nil && grouped.contains { $0.key == home + "/work/projB" }, "Sibling repos not named as a group keep their own rows")
+        assertEqual(projA?.summary, "node_modules", "...with no repo count")
+        assertTrue(grouped.map(\.key) == grouped.map(\.key).sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }, "Rows come in byte order")
+
+        // 3. cdm's .env* exception, with the git-ignored pass on.
+        let env = home + "/proj"
+        repo(env, ignoring: [".env", ".env.*", ".envrc", "*.log", "secret.conf"])
+        for name in [".env", ".env.local", ".env.production", ".envrc", "debug.log", "secret.conf"] { file(env + "/" + name) }
+        let gitignored = offered(rules(dirs: [], gitignore: true))
+        let envRow = gitignored.first { $0.key == env }
+        assertTrue(!paths(gitignored).contains { ($0 as NSString).lastPathComponent.hasPrefix(".env") }, "No .env* file is ever offered")
+        assertEqual(Set(envRow?.paths ?? []), [env + "/debug.log", env + "/secret.conf"], "...while the rest of what git ignores is")
+        assertEqual(Set(envRow?.methods ?? []), [.trash], "...and goes to the Trash")
+
+        // 4. Lightspot's guards.
+        assertTrue(!paths(gitignored).contains(e + "/inner"), "An outer repo ignoring a whole nested checkout cannot offer it")
+        let mixed = offered(rules(dirs: ["node_modules"], gitignore: true)).first { $0.key == e }
+        assertEqual(mixed?.paths, [e + "/node_modules"], "The outer repo still offers its own junk")
+        assertEqual(mixed?.methods, [.rm], "A regenerable folder found by the git-ignored pass is still deleted")
+        repo(home + "/Documents/docsrepo", ignoring: ["node_modules"])
+        file(home + "/Documents/docsrepo/node_modules/pkg.js")
+        repo(home + "/Library/librepo", ignoring: ["node_modules"])
+        file(home + "/Library/librepo/node_modules/pkg.js")
+        repo(home + "/a/b/c/d/e/deep", ignoring: ["node_modules"])
+        file(home + "/a/b/c/d/e/deep/node_modules/pkg.js")
+        file(home + "/worktree/.git", "gitdir: /elsewhere")
+        file(home + "/worktree/node_modules/pkg.js")
+        let walk = CleanDevMacProjects.walk(rules(dirs: ["node_modules"]), home: home)
+        assertTrue(!walk.repos.contains { $0.hasPrefix(home + "/Documents") }, "Documents is never entered (no macOS prompt, and cdm refuses it anyway)")
+        assertTrue(!walk.repos.contains { $0.hasPrefix(home + "/Library") }, "Library is never entered")
+        assertTrue(!walk.repos.contains(home + "/a/b/c/d/e/deep"), "A repo deeper than maxDepth is not reached")
+        assertTrue(!walk.repos.contains(home + "/worktree"), "A .git file (a worktree) does not make a repo")
+        assertTrue(walk.repos.contains(a) && walk.candidates.contains(b + "/node_modules"), "...while ordinary repos and candidates are found")
+        run(["init", "-q"], in: home)
+        file(home + "/.gitignore", "notarepo\n")
+        let homeRepo = CleanDevMacProjects.walk(rules(dirs: ["node_modules"]), home: home)
+        assertTrue(!homeRepo.repos.contains(home), "The home folder is never a project, even with its own .git")
+        assertTrue(!paths(offered(rules(dirs: ["node_modules"], gitignore: true))).contains(home + "/notarepo"),
+                   "...so a dotfiles repo cannot offer what it ignores")
+        try? fm.removeItem(atPath: home + "/.git")
+        try? fm.removeItem(atPath: home + "/.gitignore")
+        var capped = rules(dirs: ["node_modules", "dist"])
+        capped.maxRepos = 1
+        assertEqual(CleanDevMacProjects.reposToList(CleanDevMacProjects.walk(capped, home: home), rules: capped).count, 1,
+                    "maxRepos caps how many repos git is asked about")
+
+        // 5. In the cleaner: offered after the cache scan, added unticked, cleaned per path.
+        let trash = home + "/.Trash"
+        try? fm.createDirectory(atPath: trash, withIntermediateDirectories: true)
+        var ruleSet = CleanDevMacRuleSet(rules: [], terminalOnly: [], source: .remote)
+        ruleSet.projects = rules(dirs: ["node_modules"], gitignore: true)
+        ruleSet.projects.categoryNames = ["node_modules folders", "Git-ignored files (all repos)"]
+        let withProjects = ruleSet
+        var environment = CleanDevMacProvider.Environment(
+            home: home, bundledRules: nil, processEnvironment: [:],
+            fetchRemoteRules: { $0(withProjects) },
+            moveToTrash: { url in try FileManager.default.moveItem(atPath: url.path, toPath: trash + "/" + url.lastPathComponent) }
+        )
+        environment.git = nil
+        let noGit = CleanDevMacProvider(environment: environment)
+        assertEqual(noGit.scanEntries(withProjects).terminalOnly, ["node_modules folders", "Git-ignored files (all repos)"],
+                    "Without git, the repo scan's categories are left to cdm")
+        environment.git = git
+        let cleaner = CleanDevMacProvider(environment: environment)
+        func wait(_ phase: CleanDevMacProvider.Phase) -> CleanDevMacProvider.Snapshot {
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                let snapshot = cleaner.snapshot
+                if snapshot.phase == phase { return snapshot }
+                usleep(10_000)
+            }
+            print("❌ FAIL: the cleaner never reached \(phase); it is at \(cleaner.snapshot.phase)")
+            exit(1)
+        }
+        cleaner.startScan()
+        let caches = wait(.ready)
+        assertEqual(caches.repos, .offered, "With project rules and git, the repo scan is offered after the cache scan")
+        assertTrue(caches.entries.isEmpty, "...and nothing was scanned before it is accepted")
+        cleaner.scanRepos()
+        let scanned = wait(.ready)
+        guard case .scanned(let repoCount) = scanned.repos else {
+            assertTrue(false, "The repo scan reports what it found")
+            return
+        }
+        assertTrue(repoCount >= 9, "Every fixture repo was found (\(repoCount))")
+        assertEqual(scanned.generation, caches.generation, "Adding repo rows keeps the ticks the user made")
+        let envEntry = scanned.entries.first { $0.rule.name == "~/proj" }
+        assertEqual(envEntry?.rule.kind, .project, "A repo's row is a project row")
+        assertTrue(envEntry?.rule.isDefault == false, "...unticked, as cdm leaves it")
+        assertTrue(scanned.entries.allSatisfy { $0.id >= CleanDevMacProvider.projectIDBase }, "Repo rows have IDs of their own")
+        let receipt = cleaner.performClean(scanned.entries.filter { $0.rule.name == "~/proj" || $0.rule.name == "~/code/repoE" })
+        assertTrue(!fm.fileExists(atPath: e + "/node_modules"), "A regenerable folder is deleted")
+        assertTrue(fm.fileExists(atPath: trash + "/debug.log") && !fm.fileExists(atPath: env + "/debug.log"), "Another ignored file goes to the Trash")
+        assertTrue(fm.fileExists(atPath: env + "/.env") && fm.fileExists(atPath: e + "/inner/build/release.sh"), "Secrets and nested checkouts are untouched")
+        assertTrue(receipt.movedToTrash && receipt.problems.isEmpty, "The receipt says so")
+        let log = (try? String(contentsOfFile: home + "/.cleandevmac/clean.log", encoding: .utf8)) ?? ""
+        assertTrue(log.contains("▸ ~/proj\n") && log.contains("  trashed: ~/proj/debug.log\n") && log.contains("  deleted: ~/code/repoE/node_modules\n"),
+                   "The log records each path's own method")
+
+        print("✅ CleanDevMac repo scan passed all tests!\n")
     }
 }
 

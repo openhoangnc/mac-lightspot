@@ -37,8 +37,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 40 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
-- `deep_verify.swift`: 11 sections of live system checks (132 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder (measures only; it never deletes).
+- `test_engine.swift`: 41 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `deep_verify.swift`: 11 sections of live system checks (136 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos (measures only; it never deletes).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
@@ -71,8 +71,8 @@ mac-lightspot/
 │   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (40 test blocks)
-│   └── deep_verify.swift         # Live-system verification (11 sections, 132 checks)
+│   ├── test_engine.swift         # Automated test runner (41 test blocks)
+│   └── deep_verify.swift         # Live-system verification (11 sections, 136 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -82,6 +82,7 @@ mac-lightspot/
         │   ├── BrowserIntegrationProvider.swift # Default browser bookmarks, tabs & history
         │   ├── CalculatorEngine.swift   # Math parser & conversion dispatcher
         │   ├── CleanDevMacEngine.swift  # cdm ported: glob, du-exact sizing, safety gate, deletion, clean log
+        │   ├── CleanDevMacProjects.swift # cdm's repo scan ported: find pass, git-ignored proof, grouping
         │   ├── CleanDevMacProvider.swift # "Clean Dev Mac" row, scan/clean state machine, cdm in Terminal
         │   ├── CleanDevMacRules.swift   # cdm's rule files: parsing, local / GitHub / bundled sources
         │   ├── ClipboardHistoryManager.swift    # In-memory ephemeral clipboard ring buffer
@@ -202,9 +203,10 @@ this way names the setting in its subtitle.
 ### Clean Dev Mac (cdm)
 
 CleanDevMac (`cdm`, https://github.com/cleandevmac/cdm) is a bash TUI that reclaims disk from
-dev caches. Lightspot runs the part of it that needs nothing but the file system natively:
+dev caches. Lightspot runs its cache categories and its per-repo project scan natively:
 the "Clean Dev Mac" row (`cdm`, `clean dev mac`, `derived data`, …) opens an overlay that
-measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a receipt.
+measures, ticks cdm's safe defaults, offers to scan code repos, shows an itemized plan,
+cleans and prints a receipt.
 
 - **The rules are cdm's.** `CleanDevMacRules` reads cdm's own `rules/` format (`index.json`
   plus pattern files), from cdm's local override `~/.cleandevmac/rules` if it exists, else
@@ -214,11 +216,28 @@ measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a
   covers being offline. Refresh it by copying cdm's `rules/*.json` over `Resources/cdm-rules/`
   (deep_verify names the categories where they differ).
 - **Native vs. terminal.** `paths` and `android-images` categories with the methods `rm`,
-  `rmforce`, `trash` and `emptytrash` run here. `project`, `gitignore` and `container`
-  categories (git-ignored repo junk, Docker / Podman), cdm's orphaned-app-data scan, and
-  rules that only read other apps' sandbox containers are named in the overlay and left to
-  cdm itself: ⌘↵ runs `curl -fsSL …/releases/latest/download/cdm | bash` in the preferred
-  terminal (`CleanDevMacProvider.openInTerminal`).
+  `rmforce`, `trash` and `emptytrash` run here, and so do `project` and `gitignore` ones
+  through the repo scan below. `container` categories (Docker / Podman), cdm's
+  orphaned-app-data scan, and rules that only read other apps' sandbox containers are named
+  in the overlay and left to cdm itself: ⌘↵ runs `curl -fsSL …/releases/latest/download/cdm | bash`
+  in the preferred terminal (`CleanDevMacProvider.openInTerminal`). Without a real git
+  binary (`CleanDevMacProjects.gitExecutable`; never `/usr/bin/git`, which opens the
+  Command Line Tools installer when they are missing) the repo scan is cdm's too.
+- **The repo scan is cdm's `scan_projects`, ported** (`CleanDevMacProjects`), and like cdm
+  it is asked, not run: after the cache scan the overlay asks "Also scan your code repos
+  for build/dependency junk?" and ⇥ (or the button) starts it. One fts pass over the rules'
+  `scan.roots` (home only) finds folders holding a `.git` directory and nominates
+  directories named in the `project` categories; each repo's own
+  `git ls-files --others --ignored --exclude-standard --directory` then proves a nominee
+  ignored (it or an ancestor below its own repo root), and with a `gitignore` category every
+  other ignored entry is offered too, except `.env*`. Rows are per repo, or per `scan.groups`
+  root; each path keeps its method (regenerable folders `rm`, other ignored files `trash`),
+  which is why `Entry.methods` exists. Two guards are Lightspot's own: the walk never enters
+  `~/Library` or cdm's protected folders (cdm's gate refuses every path there anyway, and
+  reading Documents, Desktop or Downloads would raise a macOS prompt that an ad-hoc signed
+  app sees again after every update), and nothing that holds another repo is offered, so an
+  outer repo that ignores a nested checkout cannot put that checkout in the Trash. On a real
+  home folder it offers exactly what cdm's own `scan_projects` does.
 - **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
   shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list,
   `is_safe_target`, `delete_path`, `human_kb`, the disk line and the log cap. Keep the two
@@ -226,7 +245,9 @@ measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a
 - **State.** `CleanDevMacProvider` runs scans and cleans on its own queue and publishes a
   `Snapshot`; `search()` and `CleanDevMacModel` (the overlay) only read it. A scan stands
   for five minutes; a clean ends in `.finished` and the next open rescans. Ticks reset to
-  each rule's `default` on every scan, as cdm's menu does.
+  each rule's `default` on every scan, as cdm's menu does; the repo scan only adds rows
+  (unticked, IDs from `projectIDBase`) and keeps the ticks. A rescan after a clean scans the
+  repos again if they were scanned, as cdm's rescan does once the user said yes.
 - **Receipts** go to `~/.cleandevmac/clean.log`, cdm's own log, marked
   `CleanDevMac run (Lightspot)`, so one file records every clean either tool ran.
 
@@ -277,6 +298,7 @@ measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a
   - `Space`: Tick / untick the selected category (`SpotlightFieldEditor.keyDown`
     intercepts it, never mid-composition, so it types nothing)
   - `↵`: Review the itemized plan; `↵` again cleans, `Escape` goes back
+  - `⇥`: Scan code repos too, when the overlay offers it (`nextCategory` routes it there)
   - `⌥↵`: Show the selected category's first path in Finder
   - `⌘↵` (also on the row itself): Run cdm in the preferred terminal
 
@@ -337,6 +359,10 @@ measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a
      read (`CleanDevMacEngine.outOfScopeFolders`): inside another app's container macOS asks
      the user whether Lightspot may "access data from other apps", and with an ad-hoc
      signature it would ask again after every update.
+   - For Clean Dev Mac's repo scan, and only when the user asks for it (⇥): the folders
+     under the home folder to the rules' depth (six), without entering `~/Library`, cdm's
+     protected folders, `.git` or the names the rules prune, plus each repo's
+     `git ls-files` listing. Nothing is kept but the offered paths and their sizes.
 4. **Clipboard History Privacy**:
    `ClipboardHistoryManager` is 100% ephemeral in-memory (max 50 items). It is never written to disk and strictly filters out concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 5. **AppleScript & Automation Entitlements**:
@@ -468,6 +494,8 @@ measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a
    offered (cdm lists it and skips it at clean time), and `delete` checks again before it
    acts, because the plan was shown a while ago. `.emptytrash` only ever empties
    `~/.Trash`, whatever path its rule names; a symlink is removed, never followed, by every
-   method. Nothing is deleted without the itemized plan and a second `↵`. Treat a change to
+   method. The repo scan adds its own: nothing is offered unless the repo's git lists it as
+   ignored and untracked, `.env*` never, and nothing that holds another repo. Nothing is
+   deleted without the itemized plan and a second `↵`. Treat a change to
    any of this as high-risk, and give it a test that fails without it: `test_engine` covers
    each check (mutating one out fails the run), against cdm's own fixtures.

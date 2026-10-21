@@ -32,6 +32,8 @@ final class CleanDevMacModel: ObservableObject {
 
     var home: String { provider.environment.home }
     var entries: [Entry] { snapshot.entries }
+    /// The cache scan is done and cdm's repo question is open.
+    var canScanRepos: Bool { snapshot.phase == .ready && snapshot.repos == .offered && !isConfirming }
     var checkedEntries: [Entry] { entries.filter { checked.contains($0.id) } }
     var checkedKB: Int { CleanDevMacProvider.uniqueKB(checkedEntries) }
     var totalKB: Int { CleanDevMacProvider.uniqueKB(entries) }
@@ -89,11 +91,24 @@ final class CleanDevMacModel: ObservableObject {
     func tickAll() { checked = Set(entries.map(\.id)) }
     func tickNone() { checked = [] }
 
+    /// ⇥: cdm's "Also scan your code repos for build/dependency junk?".
+    func scanRepos() {
+        guard canScanRepos else { return }
+        provider.scanRepos()
+    }
+
     /// ↵: scan, review the plan, or confirm it, depending on where the cleaner stands.
     func primaryAction() {
         switch snapshot.phase {
-        case .idle, .failed, .finished:
+        case .idle, .failed:
             provider.startScan(force: true)
+        case .finished:
+            // A rescan after a clean covers the repos again if they were scanned, as cdm's does.
+            if case .scanned = snapshot.repos {
+                provider.startScan(force: true, includeRepos: true)
+            } else {
+                provider.startScan(force: true)
+            }
         case .ready:
             if isConfirming {
                 confirm()
@@ -102,7 +117,7 @@ final class CleanDevMacModel: ObservableObject {
             } else if !checked.isEmpty {
                 reviewPlan()
             }
-        case .loadingRules, .measuring, .cleaning:
+        case .loadingRules, .measuring, .scanningRepos, .cleaning:
             break
         }
     }

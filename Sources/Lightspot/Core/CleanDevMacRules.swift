@@ -5,9 +5,9 @@ import Foundation
 // CleanDevMac (cdm, https://github.com/cleandevmac/cdm) keeps what it cleans in JSON, not
 // in code: `rules/index.json` lists the pattern files, and each pattern file contributes
 // categories (`icon`, `name`, `desc`, `method`, `default`, `paths`, optionally `procs`).
-// Lightspot reads the same files, so a rule added to cdm reaches both tools. The
-// categories that need nothing but the file system run natively; project junk (git),
-// Docker / Podman and orphaned app data stay with cdm itself, one ⌘↵ away in a terminal.
+// Lightspot reads the same files, so a rule added to cdm reaches both tools. The cache
+// categories and cdm's per-repo project scan run natively; Docker / Podman and orphaned
+// app data stay with cdm itself, one ⌘↵ away in a terminal.
 
 /// One category of a cdm pattern file that Lightspot can clean on its own.
 struct CleanDevMacRule: Sendable, Equatable {
@@ -17,6 +17,9 @@ struct CleanDevMacRule: Sendable, Equatable {
         /// AVD still boots from. cdm keeps them out of `paths` so that an interpreter that
         /// does not know this kind offers nothing rather than every image.
         case androidImages = "android-images"
+        /// One code repo's junk, found by the repo scan. Never read from a rule file: cdm's
+        /// `project` and `gitignore` categories become `CleanDevMacProjectRules` instead.
+        case project
     }
 
     enum Method: String, Sendable {
@@ -45,6 +48,38 @@ struct CleanDevMacRule: Sendable, Equatable {
     let procs: [String]
 }
 
+/// What cdm's repo scan looks for (`scan` plus its `project` and `gitignore` categories):
+/// git repos under `roots`, directories named in `dirs`, and, with `gitignoreMethod`, every
+/// other file a repo ignores.
+struct CleanDevMacProjectRules: Sendable, Equatable {
+    struct JunkName: Sendable, Equatable {
+        let name: String
+        let method: CleanDevMacRule.Method
+    }
+
+    var roots: [String] = []
+    /// Names never descended into (`Library`, `.npm`, `vendor`…), wherever they are.
+    var prune: [String] = []
+    /// Folders whose repos collapse into one row each (an AI agent's session store).
+    var groups: [String] = []
+    /// cdm's own defaults until a rule file sets them.
+    var maxDepth = 8
+    var maxRepos = 400
+    /// Regenerable directory names, first category first, with the method each maps to.
+    var dirs: [JunkName] = []
+    /// The method for any other git-ignored entry; nil without a `gitignore` category.
+    var gitignoreMethod: CleanDevMacRule.Method?
+    /// The categories' names, for the note when the scan cannot run.
+    var categoryNames: [String] = []
+
+    var isEmpty: Bool { roots.isEmpty || (dirs.isEmpty && gitignoreMethod == nil) }
+
+    /// cdm's `classify_method`: the method a known regenerable name maps to.
+    func method(forName name: String) -> CleanDevMacRule.Method? {
+        dirs.first { $0.name == name }?.method
+    }
+}
+
 /// Every rule Lightspot loaded, and where from.
 struct CleanDevMacRuleSet: Sendable, Equatable {
     enum Source: String, Sendable {
@@ -65,9 +100,10 @@ struct CleanDevMacRuleSet: Sendable, Equatable {
     }
 
     let rules: [CleanDevMacRule]
-    /// Categories only cdm itself cleans (project junk, Docker / Podman, orphaned app
-    /// data). They are named in the cleaner and handed to the terminal, never run here.
+    /// Categories only cdm itself cleans (Docker / Podman, orphaned app data). They are
+    /// named in the cleaner and handed to the terminal, never run here.
     let terminalOnly: [String]
+    var projects = CleanDevMacProjectRules()
     let source: Source
 }
 
@@ -80,8 +116,8 @@ enum CleanDevMacRules {
     static let maxFileBytes = 2 * 1024 * 1024
     static let maxPatternFiles = 32
 
-    /// The kinds cdm synthesizes from git, a container engine or LaunchServices.
-    static let terminalOnlyKinds: Set<String> = ["project", "gitignore", "container"]
+    /// The kinds only cdm runs: a container engine's prune.
+    static let terminalOnlyKinds: Set<String> = ["container"]
 
     /// Ephemeral, like every other request Lightspot makes (invariant 12): nothing of the
     /// fetch lands in `~/Library/Caches` or `~/Library/HTTPStorages`.
@@ -126,6 +162,15 @@ enum CleanDevMacRules {
         return (object["orphanConfig"] as? String).map { !$0.isEmpty } ?? false
     }
 
+    struct PatternFile {
+        var rules: [CleanDevMacRule] = []
+        var terminalOnly: [String] = []
+        var projects = CleanDevMacProjectRules()
+        /// Set only when the file's `scan` names them, so a later file can override.
+        var maxDepth: Int?
+        var maxRepos: Int?
+    }
+
     /// One pattern file, read the way cdm's JXA parser reads it: a missing `kind` is
     /// `paths`, a missing `method` is `rm`, `default` is false unless set. nil when the
     /// file is not a JSON object.
@@ -135,22 +180,41 @@ enum CleanDevMacRules {
     /// a clean that never happens. An unknown `kind` is read as `paths`, as cdm reads it;
     /// cdm's rule format keeps a new kind's candidates in a field of their own for exactly
     /// that reason.
-    static func parsePatternFile(_ data: Data) -> (rules: [CleanDevMacRule], terminalOnly: [String])? {
+    static func parsePatternFile(_ data: Data) -> PatternFile? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        var rules: [CleanDevMacRule] = []
-        var terminalOnly: [String] = []
+        var file = PatternFile()
+        if let scan = object["scan"] as? [String: Any] {
+            file.projects.roots = strings(scan["roots"])
+            file.projects.prune = strings(scan["prune"])
+            file.projects.groups = strings(scan["groups"])
+            // cdm reads any value and falls back to 6 and 400 for one that is not a number.
+            if scan["maxDepth"] != nil { file.maxDepth = positiveInt(scan["maxDepth"]) ?? 6 }
+            if scan["maxRepos"] != nil { file.maxRepos = positiveInt(scan["maxRepos"]) ?? 400 }
+        }
         for category in object["categories"] as? [[String: Any]] ?? [] {
             let kindName = category["kind"] as? String ?? "paths"
             let name = category["name"] as? String ?? ""
             if terminalOnlyKinds.contains(kindName) {
-                if !name.isEmpty { terminalOnly.append(name) }
+                if !name.isEmpty { file.terminalOnly.append(name) }
                 continue
             }
             guard let method = CleanDevMacRule.Method(rawValue: category["method"] as? String ?? "rm") else { continue }
-            let kind = CleanDevMacRule.Kind(rawValue: kindName) ?? .paths
+            if kindName == "project" {
+                // A name with a find wildcard could match more than it says: cdm skips it.
+                let dirs = strings(category["dirs"]).filter { !$0.contains(where: { "*?[".contains($0) }) }
+                file.projects.dirs += dirs.map { CleanDevMacProjectRules.JunkName(name: $0, method: method) }
+                if !name.isEmpty { file.projects.categoryNames.append(name) }
+                continue
+            }
+            if kindName == "gitignore" {
+                file.projects.gitignoreMethod = method
+                if !name.isEmpty { file.projects.categoryNames.append(name) }
+                continue
+            }
+            let kind = CleanDevMacRule.Kind(rawValue: kindName).flatMap { $0 == .project ? nil : $0 } ?? .paths
             let patterns = strings(category[kind == .androidImages ? "images" : "paths"])
             guard !patterns.isEmpty else { continue }
-            rules.append(CleanDevMacRule(
+            file.rules.append(CleanDevMacRule(
                 kind: kind,
                 icon: category["icon"] as? String ?? "",
                 name: name,
@@ -161,11 +225,17 @@ enum CleanDevMacRules {
                 procs: strings(category["procs"])
             ))
         }
-        return (rules, terminalOnly)
+        return file
     }
 
     private static func strings(_ value: Any?) -> [String] {
         (value as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty }
+    }
+
+    private static func positiveInt(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, number.doubleValue == number.doubleValue.rounded(),
+              number.intValue > 0, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.intValue
     }
 
     /// Assembles a rule set from fetched or read files, in index order. Files that are
@@ -175,16 +245,26 @@ enum CleanDevMacRules {
         guard let names = patternFileNames(fromIndex: index) else { return nil }
         var rules: [CleanDevMacRule] = []
         var terminalOnly: [String] = []
+        var projects = CleanDevMacProjectRules()
         var parsed = 0
         for name in names {
             guard let data = files[name], let file = parsePatternFile(data) else { continue }
             parsed += 1
             rules.append(contentsOf: file.rules)
             terminalOnly.append(contentsOf: file.terminalOnly)
+            // cdm keeps one scan config across files: lists add up, numbers are replaced.
+            projects.roots += file.projects.roots
+            projects.prune += file.projects.prune
+            projects.groups += file.projects.groups
+            projects.dirs += file.projects.dirs
+            projects.categoryNames += file.projects.categoryNames
+            if let maxDepth = file.maxDepth { projects.maxDepth = maxDepth }
+            if let maxRepos = file.maxRepos { projects.maxRepos = maxRepos }
+            if let method = file.projects.gitignoreMethod { projects.gitignoreMethod = method }
         }
         guard parsed > 0 else { return nil }
         if indexHasOrphanConfig(index) { terminalOnly.append("Orphaned app data") }
-        return CleanDevMacRuleSet(rules: rules, terminalOnly: terminalOnly, source: source)
+        return CleanDevMacRuleSet(rules: rules, terminalOnly: terminalOnly, projects: projects, source: source)
     }
 
     // MARK: Loading

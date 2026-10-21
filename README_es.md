@@ -153,10 +153,11 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
 ### 11. 🧹 Clean Dev Mac (`cdm`)
 [CleanDevMac](https://github.com/cleandevmac/cdm) (`cdm`) encuentra las cachés de desarrollo y los artefactos de compilación que llenan tu disco; Lightspot lo ejecuta dentro del panel. Escribe `cdm`, `clean dev mac` o el nombre de una caché (`derived data`, `npm cache`) y pulsa **`↵`**:
 - **Primero mide, nada se marca a ciegas**: cada categoría que conocen las reglas de cdm (DerivedData de Xcode, Go, npm/pnpm/Yarn, Gradle, Cargo, pip/uv, CocoaPods, JetBrains, cachés de navegadores y apps Electron, imágenes de Android sin usar, …) se mide como lo haría `du`, se ordena de mayor a menor y se marcan los valores seguros por defecto de cdm. El panel muestra el disco antes y después.
-- **Teclas**: `↑↓` selecciona (la fila seleccionada muestra sus rutas y tamaños), `Space` marca, `↵` muestra el plan detallado y `↵` otra vez limpia, `⌥↵` muestra la caché seleccionada en Finder, `Esc` vuelve atrás.
+- **También tus repositorios**: tras las cachés, Clean Dev Mac pregunta, como cdm, si quieres escanear tus repositorios de código en busca de restos de compilación y dependencias; pulsa **`⇥`**. Obtienes una fila sin marcar por repositorio con sus `node_modules`, `dist`, `build`, `target`, `__pycache__` y otros archivos ignorados por git. No se ofrece nada que el propio git del repositorio no ignore (un `build/` versionado se queda), los archivos `.env*` nunca se ofrecen, ni tampoco una carpeta que contenga otro repositorio. Las carpetas regenerables se borran; los demás archivos ignorados van a la Papelera.
+- **Teclas**: `↑↓` selecciona (la fila seleccionada muestra sus rutas y tamaños), `Space` marca, `⇥` escanea tus repositorios, `↵` muestra el plan detallado y `↵` otra vez limpia, `⌥↵` muestra la caché seleccionada en Finder, `Esc` vuelve atrás.
 - **Las mismas reglas que cdm**: Lightspot lee los archivos de reglas de cdm (tu `~/.cleandevmac/rules` si lo tienes; si no, las reglas en vivo de cdm en GitHub; si no, la copia incluida en la app), así que cualquier caché que cdm aprenda a limpiar, Lightspot también la limpia.
 - **La misma seguridad que cdm**: cada ruta pasa la comprobación de seguridad de cdm antes de que ocurra nada: debe estar dentro de tu carpeta de inicio (con los enlaces simbólicos resueltos), y `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.gnupg` e iCloud Drive nunca se tocan. Antes de limpiar, el plan nombra las apps aún abiertas que reescribirían sus cachés (ciérralas primero). Cada limpieza queda registrada en `~/.cleandevmac/clean.log`, el mismo registro que lleva cdm.
-- **El resto, a una tecla**: la basura de proyectos en tus repositorios (`node_modules`, carpetas de compilación, archivos ignorados por git), Docker / Podman, los datos de apps desinstaladas y las cachés de apps en sandbox necesitan git, un motor de contenedores o un análisis de tus apps, así que `⌘↵` ejecuta cdm completo en tu terminal preferida, directamente desde su última versión.
+- **El resto, a una tecla**: Docker / Podman, los datos de apps desinstaladas y las cachés de apps en sandbox necesitan un motor de contenedores o un análisis de tus apps, así que `⌘↵` ejecuta cdm completo en tu terminal preferida, directamente desde su última versión.
 
 ### 12. 📦 Instalaciones con una tecla: setup-zsh, MacStats y herramientas de desarrollo
 Escribe `install` (o el nombre de una herramienta) y pulsa **`↵`**: Lightspot ejecuta el instalador propio de la herramienta en tu terminal preferida, así ves cada paso.
@@ -236,12 +237,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Pruebas y Verificación
-Lightspot no tiene un target de XCTest. Dos scripts independientes en `scripts/` se compilan al vuelo junto con las fuentes y se ejecutan desde la raíz del repositorio: un ejecutor de pruebas de lógica y motor (40 bloques de pruebas) y un verificador del sistema en vivo (11 secciones, 132 comprobaciones en una máquina completamente equipada; algunas se omiten si, por ejemplo, no hay historial de zsh o VS Code instalado, o no se puede acceder a GitHub):
+Lightspot no tiene un target de XCTest. Dos scripts independientes en `scripts/` se compilan al vuelo junto con las fuentes y se ejecutan desde la raíz del repositorio: un ejecutor de pruebas de lógica y motor (41 bloques de pruebas) y un verificador del sistema en vivo (11 secciones, 136 comprobaciones en una máquina completamente equipada; algunas se omiten si, por ejemplo, no hay historial de zsh o VS Code instalado, o no se puede acceder a GitHub):
 ```bash
-# Pruebas de lógica central y motor (40 bloques de pruebas)
+# Pruebas de lógica central y motor (41 bloques de pruebas)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
-# Comprobaciones del sistema en vivo (11 secciones, 132 comprobaciones en una máquina completamente equipada)
+# Comprobaciones del sistema en vivo (11 secciones, 136 comprobaciones en una máquina completamente equipada)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
@@ -260,6 +261,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘⇧P`** | Abrir la superposición del administrador de comandos fijados |
 | **`⌘⇧C`** | Abrir la superposición del administrador de comandos personalizados |
 | **`Space`** | Marcar o desmarcar una categoría en Clean Dev Mac |
+| **`Tab` (`⇥`)** | Escanear también tus repositorios de código en Clean Dev Mac |
 | **`⌘Y`** / **`⌘⇧H`** | Abrir la superposición del administrador de historial de búsqueda |
 | **`Escape`** | Descartar superposiciones, limpiar el campo de búsqueda o cerrar Lightspot |
 | **Clic Afuera** | Descarta automáticamente el panel flotante |
@@ -270,7 +272,7 @@ El atajo para invocarlo es el que elijas entre los cuatro en **Shortcut**, en la
 
 ## 🔒 Garantías de Privacidad y Seguridad
 
-- **Cero Indexación de Archivos**: Lightspot nunca indexa tus archivos personales, documentos, descargas o repositorios de código. Clean Dev Mac mide solo las carpetas de caché que nombran las reglas de cdm, solo mientras lo tienes abierto, y no guarda nada salvo los tamaños; nunca lee los contenedores sandbox de otras apps.
+- **Cero Indexación de Archivos**: Lightspot nunca indexa tus archivos personales, documentos, descargas o repositorios de código. Clean Dev Mac mide solo las carpetas de caché que nombran las reglas de cdm, solo mientras lo tienes abierto, y no guarda nada salvo los tamaños; nunca lee los contenedores sandbox de otras apps. Cuando le pides que escanee tus repositorios (`⇥`), busca repositorios git en tu carpeta de inicio, hasta seis niveles, sin entrar en `~/Library`, `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/Movies` ni `~/Music`, y pregunta al git de cada repositorio qué archivos ignora.
 - **Portapapeles Efímero Solo en RAM**: El historial del portapapeles permanece exclusivamente en memoria volátil e ignora activamente los tipos ocultos/administradores de contraseñas (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`). Nunca se escribe en el disco, ni siquiera en el historial de búsqueda, que tampoco guarda el texto que copias de resultados de la calculadora, las herramientas de desarrollo o los fragmentos.
 - **Aislamiento del Navegador Predeterminado**: Los marcadores, las pestañas abiertas y el historial reciente se leen localmente y únicamente de tu navegador predeterminado configurado, evitando el raspado entre navegadores.
 - **Comandos Iniciados por el Usuario**: Tus comandos, scripts y acciones rápidas se ejecutan solo tras la acción explícita del usuario (`Return` o `⌘↵`).

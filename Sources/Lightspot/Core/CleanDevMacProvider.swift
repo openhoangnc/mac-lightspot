@@ -4,9 +4,10 @@ import AppKit
 //
 // cdm's scan-and-clean, inside Lightspot: the "Clean Dev Mac" search row, and the state
 // behind the cleaner overlay. A scan loads cdm's rules, expands their patterns and measures
-// every match like `du`; a clean deletes what the user ticked, each path through cdm's
-// safety gate, and appends a receipt to cdm's log. Both run on a background queue and
-// publish snapshots, so `search()` and the overlay only ever read memory (invariant 0).
+// every match like `du`; then, if the user asks, the repo scan adds one row per code repo;
+// a clean deletes what the user ticked, each path through cdm's safety gate, and appends a
+// receipt to cdm's log. All of it runs on a background queue and publishes snapshots, so
+// `search()` and the overlay only ever read memory (invariant 0).
 
 final class CleanDevMacProvider: @unchecked Sendable {
     static let shared = CleanDevMacProvider()
@@ -67,6 +68,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
             return "Loading cdm's rules…"
         case .measuring(let done, let total):
             return "Measuring reclaimable space… \(done) of \(total)"
+        case .scanningRepos(let done, let total):
+            return total == 0 ? "Looking for code repos…" : "Scanning code repos… \(done) of \(total)"
         case .ready:
             guard !snapshot.entries.isEmpty else { return "Nothing to reclaim · ↵ Rescan · ⌘↵ cdm in Terminal" }
             let count = snapshot.entries.count
@@ -82,20 +85,38 @@ final class CleanDevMacProvider: @unchecked Sendable {
 
     /// One category the scan found something for.
     struct Entry: Sendable, Equatable, Identifiable {
-        /// The rule's position in its rule set; stable for one scan.
+        /// The rule's position in its rule set, or `projectIDBase` + n for a repo's row;
+        /// stable for one scan.
         let id: Int
         let rule: CleanDevMacRule
         let paths: [String]
         /// KiB per path, aligned with `paths`.
         let sizes: [Int]
+        /// What happens to each path, aligned with `paths`: the rule's method, except in a
+        /// repo's row, where regenerable folders are deleted and other ignored files go to
+        /// the Trash.
+        let methods: [CleanDevMacRule.Method]
+
+        init(id: Int, rule: CleanDevMacRule, paths: [String], sizes: [Int], methods: [CleanDevMacRule.Method]? = nil) {
+            self.id = id
+            self.rule = rule
+            self.paths = paths
+            self.sizes = sizes
+            self.methods = methods ?? Array(repeating: rule.method, count: paths.count)
+        }
 
         var sizeKB: Int { sizes.reduce(0, +) }
     }
+
+    /// Where repo rows' IDs start, far above any rule's position.
+    static let projectIDBase = 100_000
 
     enum Phase: Sendable, Equatable {
         case idle
         case loadingRules
         case measuring(done: Int, total: Int)
+        /// Listing repos with git; `total` is 0 while the home folder is still being walked.
+        case scanningRepos(done: Int, total: Int)
         case ready
         case cleaning(done: Int, total: Int)
         case finished
@@ -103,10 +124,20 @@ final class CleanDevMacProvider: @unchecked Sendable {
 
         var isBusy: Bool {
             switch self {
-            case .loadingRules, .measuring, .cleaning: return true
+            case .loadingRules, .measuring, .scanningRepos, .cleaning: return true
             case .idle, .ready, .finished, .failed: return false
             }
         }
+    }
+
+    /// cdm's project scan, from the cleaner's side.
+    enum RepoScan: Sendable, Equatable {
+        /// No project rules, or no git to prove anything with.
+        case unavailable
+        /// The caches are measured; scanning the repos is the user's call, as cdm asks.
+        case offered
+        /// Done, with the number of repos found.
+        case scanned(repos: Int)
     }
 
     struct Receipt: Sendable, Equatable {
@@ -130,7 +161,9 @@ final class CleanDevMacProvider: @unchecked Sendable {
         var disk: CleanDevMacEngine.DiskStats?
         var scannedAt: Date?
         var receipt: Receipt?
+        var repos: RepoScan = .unavailable
         /// Bumped by every completed scan, so the overlay resets its ticks to the defaults.
+        /// The repo scan only adds rows, so it leaves this, and the ticks, alone.
         var generation = 0
     }
 
@@ -140,6 +173,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
         var processEnvironment: [String: String]
         var fetchRemoteRules: @Sendable (@escaping @Sendable (CleanDevMacRuleSet?) -> Void) -> Void
         var moveToTrash: @Sendable (URL) throws -> Void
+        /// The git that proves repo junk ignored; without one the repo scan is cdm's alone.
+        var git: String? = CleanDevMacProjects.gitExecutable()
 
         static var live: Environment {
             Environment(
@@ -161,6 +196,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
     private let lock = NSLock()
     private var state = Snapshot()
     private var remoteRules: (rules: CleanDevMacRuleSet, fetchedAt: Date)?
+    /// The rules of the last scan, which the repo scan reads.
+    private var scannedRules: CleanDevMacRuleSet?
     private var observer: (@Sendable () -> Void)?
     private var lastProgressReport = Date.distantPast
     private let queue = DispatchQueue(label: "com.lightspot.cleandevmac", qos: .userInitiated)
@@ -224,7 +261,9 @@ final class CleanDevMacProvider: @unchecked Sendable {
     // MARK: Scanning
 
     /// Starts a scan unless one is running, or (without `force`) a recent one stands.
-    func startScan(force: Bool = false) {
+    /// `includeRepos` runs the repo scan right after, as cdm's rescan does once the user
+    /// accepted it.
+    func startScan(force: Bool = false, includeRepos: Bool = false) {
         lock.lock()
         let fresh = state.phase == .ready && state.scannedAt.map { Date().timeIntervalSince($0) < Self.rescanAfter } == true
         guard !state.phase.isBusy, force || !fresh else {
@@ -243,6 +282,10 @@ final class CleanDevMacProvider: @unchecked Sendable {
                         self.reportProgress(.measuring(done: done, total: total))
                     }
                     let disk = CleanDevMacEngine.diskStats(path: environment.home)
+                    let canScanRepos = !rules.projects.isEmpty && environment.git != nil
+                    lock.lock()
+                    scannedRules = rules
+                    lock.unlock()
                     update { state in
                         state.phase = .ready
                         state.entries = scan.entries
@@ -251,8 +294,10 @@ final class CleanDevMacProvider: @unchecked Sendable {
                         state.disk = disk
                         state.scannedAt = Date()
                         state.receipt = nil
+                        state.repos = canScanRepos ? .offered : .unavailable
                         state.generation += 1
                     }
+                    if includeRepos { scanRepos() }
                 case .failure(let message):
                     update { $0.phase = .failed(message.text) }
                 }
@@ -312,6 +357,10 @@ final class CleanDevMacProvider: @unchecked Sendable {
             ? CleanDevMacEngine.avdImageRefs(home: home, environment: environment.processEnvironment)
             : []
         var terminalOnly = rules.terminalOnly
+        if !rules.projects.isEmpty && environment.git == nil {
+            // Nothing can be proven ignored without git, so the repo scan stays with cdm.
+            terminalOnly += rules.projects.categoryNames
+        }
         var candidates: [(id: Int, rule: CleanDevMacRule, paths: [String])] = []
         for (id, rule) in rules.rules.enumerated() {
             if rule.patterns.allSatisfy({ CleanDevMacEngine.isOutOfScope(CleanDevMacEngine.expandTilde($0, home: home), home: home) }) {
@@ -328,26 +377,85 @@ final class CleanDevMacProvider: @unchecked Sendable {
             if !paths.isEmpty { candidates.append((id, rule, paths)) }
         }
 
-        // Measure every path, several at a time: it is file-system walking, and the big
-        // caches (DerivedData, Gradle, the module caches) dominate however it is ordered.
-        let found = candidates
-        let jobs = found.enumerated().flatMap { candidate in
-            candidate.element.paths.enumerated().map { (candidate: candidate.offset, index: $0.offset, path: $0.element) }
+        let measured = Self.measure(candidates.map(\.paths), progress: progress)
+        let entries = candidates.enumerated()
+            .map { Entry(id: $0.element.id, rule: $0.element.rule, paths: $0.element.paths, sizes: measured[$0.offset]) }
+        return (Self.biggestFirst(entries), terminalOnly)
+    }
+
+    /// Measures every path, several at a time: it is file-system walking, and the big
+    /// caches (DerivedData, Gradle, node_modules) dominate however it is ordered. Sizes
+    /// come back aligned with `pathLists`.
+    static func measure(_ pathLists: [[String]], progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) -> [[Int]] {
+        let jobs = pathLists.enumerated().flatMap { list in
+            list.element.enumerated().map { (list: list.offset, index: $0.offset, path: $0.element) }
         }
-        let sizes = Measurements(found.map { $0.paths.count })
+        let sizes = Measurements(pathLists.map(\.count))
         progress?(0, jobs.count)
         DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
             let job = jobs[index]
-            let done = sizes.record(CleanDevMacEngine.allocatedKB(job.path), candidate: job.candidate, path: job.index)
+            let done = sizes.record(CleanDevMacEngine.allocatedKB(job.path), candidate: job.list, path: job.index)
             progress?(done, jobs.count)
         }
+        return sizes.all
+    }
 
-        let measured = sizes.all
-        let entries = found.enumerated()
-            .map { Entry(id: $0.element.id, rule: $0.element.rule, paths: $0.element.paths, sizes: measured[$0.offset]) }
-            .filter { $0.sizeKB > 0 }
-            .sorted { $0.sizeKB != $1.sizeKB ? $0.sizeKB > $1.sizeKB : $0.id < $1.id }
-        return (entries, terminalOnly)
+    /// Entries with something in them, biggest first; equal sizes keep rule order.
+    static func biggestFirst(_ entries: [Entry]) -> [Entry] {
+        entries.filter { $0.sizeKB > 0 }.sorted { $0.sizeKB != $1.sizeKB ? $0.sizeKB > $1.sizeKB : $0.id < $1.id }
+    }
+
+    // MARK: Repo scan
+
+    /// cdm's "Also scan your code repos for build/dependency junk?": only after a cache
+    /// scan that offered it. Adds one row per repo (or group root) to the list, unticked,
+    /// and keeps whatever the user had ticked.
+    func scanRepos() {
+        lock.lock()
+        guard state.phase == .ready, state.repos == .offered, let rules = scannedRules, let git = environment.git else {
+            lock.unlock()
+            return
+        }
+        state.phase = .scanningRepos(done: 0, total: 0)
+        lock.unlock()
+        notify()
+
+        queue.async { [self] in
+            let found = CleanDevMacProjects.scan(rules.projects, home: environment.home, git: git) { done, total in
+                self.reportProgress(.scanningRepos(done: done, total: total))
+            }
+            let rows = projectEntries(found.projects) { done, total in
+                self.reportProgress(.measuring(done: done, total: total))
+            }
+            let disk = CleanDevMacEngine.diskStats(path: environment.home)
+            update { state in
+                state.phase = .ready
+                state.entries = Self.biggestFirst(state.entries + rows)
+                state.repos = .scanned(repos: found.repoCount)
+                state.disk = disk ?? state.disk
+            }
+        }
+    }
+
+    /// Blocking: measured rows for `projects`, named after each repo, as cdm names them.
+    func projectEntries(_ projects: [CleanDevMacProjects.Project],
+                        progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) -> [Entry] {
+        let home = environment.home
+        let measured = Self.measure(projects.map(\.paths), progress: progress)
+        return projects.enumerated().map { index, project in
+            let shown = CleanDevMacEngine.displayPath(project.key, home: home)
+            let rule = CleanDevMacRule(
+                kind: .project,
+                icon: "📁",
+                name: shown,
+                desc: "Project junk in \(shown): \(project.summary). Everything here is git-ignored: regenerable build/dependency dirs are deleted; other ignored items (e.g. local config, logs) go to the Trash (recoverable); .env* files are always left alone.",
+                method: .rm,
+                isDefault: false,
+                patterns: [],
+                procs: []
+            )
+            return Entry(id: Self.projectIDBase + index, rule: rule, paths: project.paths, sizes: measured[index], methods: project.methods)
+        }
     }
 
     private final class Measurements: @unchecked Sendable {
@@ -421,15 +529,17 @@ final class CleanDevMacProvider: @unchecked Sendable {
         var done = 0
         for entry in entries {
             log += "▸ \(entry.rule.name)\n"
-            for (path, size) in zip(entry.paths, entry.sizes) {
+            for (index, path) in entry.paths.enumerated() {
+                let size = entry.sizes[index]
+                let method = entry.methods[index]
                 let shown = CleanDevMacEngine.displayPath(path, home: home)
-                let outcome = CleanDevMacEngine.delete(path, method: entry.rule.method, home: home,
+                let outcome = CleanDevMacEngine.delete(path, method: method, home: home,
                                                        physicalHome: physicalHome, trash: environment.moveToTrash)
                 switch outcome {
                 case .alreadyGone:
                     break
                 case .deleted:
-                    switch entry.rule.method {
+                    switch method {
                     case .emptytrash: log += "  Trash emptied.\n"
                     case .rmforce: log += "  cleared: \(shown)\n"
                     case .rm, .trash: log += "  deleted: \(shown)\n"
@@ -441,7 +551,7 @@ final class CleanDevMacProvider: @unchecked Sendable {
                     log += "  skip (unsafe): \(path)\n"
                     problems.append("Skipped (unsafe): \(shown)")
                 case .failed(let reason):
-                    let verb = entry.rule.method == .trash ? "trash" : "delete"
+                    let verb = method == .trash ? "trash" : "delete"
                     log += "  failed to \(verb): \(shown) (\(reason))\n"
                     problems.append("Could not \(verb) \(shown): \(reason)")
                 }

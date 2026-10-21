@@ -385,6 +385,24 @@ struct DeepVerifier {
                   paths.allSatisfy { !CleanDevMacEngine.isOutOfScope($0, home: cdmHome) })
             check("Every offered category has a size, biggest first",
                   scan.entries.allSatisfy { $0.sizeKB > 0 } && zip(scan.entries, scan.entries.dropFirst()).allSatisfy { $0.sizeKB >= $1.sizeKB })
+
+            // The repo scan, read-only: what it would offer from the real home folder.
+            if let git = CleanDevMacProjects.gitExecutable(), !rules.projects.isEmpty {
+                let repoStarted = Date()
+                let repoScan = CleanDevMacProjects.scan(rules.projects, home: cdmHome, git: git)
+                let offered = repoScan.projects.flatMap(\.paths)
+                print("Repo scan: \(repoScan.repoCount) repos, \(repoScan.projects.count) with junk (\(offered.count) items) in \(String(format: "%.1f", Date().timeIntervalSince(repoStarted))) s")
+                check("Every repo item passes cdm's safety gate",
+                      offered.allSatisfy { CleanDevMacEngine.isSafeTarget($0, home: cdmHome, physicalHome: physicalHome) })
+                check("No .env* file is offered", offered.allSatisfy { !($0 as NSString).lastPathComponent.hasPrefix(".env") })
+                let skipped = CleanDevMacProjects.skippedFolders(home: cdmHome)
+                check("Nothing under Library or a protected folder is offered",
+                      offered.allSatisfy { path in !skipped.contains { path == $0 || path.hasPrefix($0 + "/") } })
+                check("Every repo row pairs each path with a method",
+                      repoScan.projects.allSatisfy { $0.paths.count == $0.methods.count && !$0.paths.isEmpty })
+            } else {
+                print("     ⚠️ No git — skipping the repo scan checks")
+            }
         }
 
         print("\n======================================================")

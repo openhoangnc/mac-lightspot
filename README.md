@@ -153,10 +153,11 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 ### 11. 🧹 Clean Dev Mac (`cdm`)
 [CleanDevMac](https://github.com/cleandevmac/cdm) (`cdm`) finds the dev caches and build artifacts eating your disk; Lightspot runs it inside the panel. Type `cdm`, `clean dev mac` or a cache name (`derived data`, `npm cache`) and press **`↵`**:
 - **Measured first, nothing ticked blindly**: every category cdm's rules know (Xcode DerivedData, Go, npm/pnpm/Yarn, Gradle, Cargo, pip/uv, CocoaPods, JetBrains, browser and Electron caches, unused Android images, …) is measured like `du`, listed biggest first, and ticked to cdm's safe defaults. The panel shows the disk before and after.
-- **Keys**: `↑↓` select (the selected row shows its paths and sizes), `Space` ticks, `↵` shows the itemized plan and `↵` again cleans, `⌥↵` shows the selected cache in Finder, `Esc` steps back.
+- **Your code repos too**: after the caches, Clean Dev Mac asks, as cdm does, whether to scan your code repos for build and dependency junk; press **`⇥`**. You get one unticked row per repo with its `node_modules`, `dist`, `build`, `target`, `__pycache__` and other git-ignored files. Nothing is offered unless the repo's own git says it ignores it (a tracked `build/` stays), `.env*` files are never offered, and neither is a folder that holds another repo. Regenerable folders are deleted; other ignored files go to the Trash.
+- **Keys**: `↑↓` select (the selected row shows its paths and sizes), `Space` ticks, `⇥` scans your code repos, `↵` shows the itemized plan and `↵` again cleans, `⌥↵` shows the selected cache in Finder, `Esc` steps back.
 - **The same rules as cdm**: Lightspot reads cdm's own rule files — your `~/.cleandevmac/rules` if you have one, else cdm's live rules from GitHub, else the copy built into the app — so a cache cdm learns to clean, Lightspot cleans too.
 - **The same safety as cdm**: every path passes cdm's safety check before anything happens: it must be under your home folder (symlinks resolved), and `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.gnupg` and iCloud Drive are never touched. Before cleaning, the plan names any app still running that would rewrite its caches (quit it first). Every clean is logged to `~/.cleandevmac/clean.log`, the same log cdm keeps.
-- **The rest is one key away**: project junk in your repos (`node_modules`, build folders, git-ignored files), Docker / Podman, orphaned app data and sandboxed app caches need git, a container engine or a scan of your apps, so `⌘↵` runs the full cdm in your preferred terminal, straight from its latest release.
+- **The rest is one key away**: Docker / Podman, orphaned app data and sandboxed app caches need a container engine or a scan of your apps, so `⌘↵` runs the full cdm in your preferred terminal, straight from its latest release.
 
 ### 12. 📦 One-Keystroke Installs: setup-zsh, MacStats & Dev Tools
 Type `install` (or a tool's name) and press **`↵`**: Lightspot runs the tool's own installer in your preferred terminal, so you see every step.
@@ -236,12 +237,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Verification
-Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources, and are run from the repository root: a logic and engine test runner (40 test blocks) and a live-system verifier (11 sections, 132 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation, or GitHub cannot be reached):
+Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources, and are run from the repository root: a logic and engine test runner (41 test blocks) and a live-system verifier (11 sections, 136 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation, or GitHub cannot be reached):
 ```bash
-# Core logic & engine tests (40 test blocks)
+# Core logic & engine tests (41 test blocks)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
-# Live system checks (11 sections, 132 checks on a fully equipped machine)
+# Live system checks (11 sections, 136 checks on a fully equipped machine)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
@@ -260,6 +261,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`⌘⇧P`** | Open pinned commands manager overlay |
 | **`⌘⇧C`** | Open custom commands manager overlay |
 | **`Space`** | Tick or untick a category in Clean Dev Mac |
+| **`Tab` (`⇥`)** | Scan your code repos too, in Clean Dev Mac |
 | **`⌘Y` / `⌘⇧H`** | Open search history manager overlay |
 | **`Escape`** | Dismiss overlays, clear search field, or close Lightspot |
 | **Click Outside** | Automatically dismisses the floating panel |
@@ -270,7 +272,7 @@ The summon shortcut is whichever of the four you pick under **Shortcut** in the 
 
 ## 🔒 Privacy & Security Guarantees
 
-- **Zero File Indexing**: Lightspot never indexes your personal files, documents, downloads, or code repositories. Clean Dev Mac measures only the cache folders cdm's rules name, only while you have it open, and keeps nothing but the sizes; it never reads other apps' sandbox containers.
+- **Zero File Indexing**: Lightspot never indexes your personal files, documents, downloads, or code repositories. Clean Dev Mac measures only the cache folders cdm's rules name, only while you have it open, and keeps nothing but the sizes; it never reads other apps' sandbox containers. When you ask it to scan your code repos (`⇥`), it looks for git repos in your home folder, six levels deep, without entering `~/Library`, `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/Movies` or `~/Music`, and asks each repo's git which files it ignores.
 - **RAM-Only Ephemeral Clipboard**: Clipboard history stays exclusively in volatile memory and actively ignores concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`). It is never written to disk, not even into search history, which also never keeps the text you copy from calculator, dev-tool or snippet results.
 - **Default Browser Isolation**: Bookmarks, open tabs and recent history are read locally and solely from your configured default browser, avoiding cross-browser scraping.
 - **User-Triggered Commands**: Your commands, scripts and quick actions run only upon explicit user action (`Return` or `⌘↵`).

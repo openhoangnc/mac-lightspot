@@ -97,10 +97,13 @@ struct CleanDevMacView: View {
         case .measuring(let done, let total):
             progress(title: "Measuring reclaimable space… \(done) of \(total)",
                      value: total > 0 ? Double(done) / Double(total) : nil)
+        case .scanningRepos(let done, let total):
+            progress(title: total == 0 ? "Looking for code repos…" : "Asking git what each repo ignores… \(done) of \(total)",
+                     value: total > 0 ? Double(done) / Double(total) : nil)
         case .ready:
             if model.isConfirming {
                 plan
-            } else if model.entries.isEmpty {
+            } else if model.entries.isEmpty && !model.canScanRepos {
                 message(symbol: "checkmark.seal", title: "Nothing to reclaim",
                         detail: "Everything cdm's rules cover is already clean.")
             } else {
@@ -163,9 +166,10 @@ struct CleanDevMacView: View {
     private var list: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("\(CleanDevMacEngine.humanKB(model.totalKB)) reclaimable in \(model.entries.count) \(model.entries.count == 1 ? "category" : "categories")")
+                Text(summaryLine)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundColor(.white.opacity(0.6))
+                    .lineLimit(1)
                 Spacer()
                 tickButton("Defaults", help: "Tick cdm's safe defaults", action: model.tickDefaults)
                 tickButton("All", help: "Tick every category", action: model.tickAll)
@@ -191,6 +195,9 @@ struct CleanDevMacView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
+                        if model.canScanRepos {
+                            repoOffer
+                        }
                         ForEach(Array(model.entries.enumerated()), id: \.element.id) { index, entry in
                             CleanDevMacRow(
                                 entry: entry,
@@ -215,6 +222,54 @@ struct CleanDevMacView: View {
                 }
             }
         }
+    }
+
+    private var summaryLine: String {
+        let count = model.entries.count
+        var line = "\(CleanDevMacEngine.humanKB(model.totalKB)) reclaimable in \(count) \(count == 1 ? "category" : "categories")"
+        if case .scanned(let repos) = model.snapshot.repos {
+            line += " · \(repos) \(repos == 1 ? "repo" : "repos") scanned"
+        }
+        return line
+    }
+
+    /// cdm's question after the cache scan, with its own wording.
+    private var repoOffer: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(.system(size: 15))
+                .foregroundColor(.white.opacity(0.75))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Also scan your code repos for build/dependency junk?")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.92))
+                // Verbatim: as a string literal, Text reads `__pycache__` as Markdown bold.
+                Text(verbatim: "node_modules, dist, build, target, __pycache__, git-ignored — can take a moment.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            Spacer(minLength: 8)
+            Button(action: model.scanRepos) {
+                Text("Scan repos ⇥")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.95))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.16)))
+            }
+            .buttonStyle(.plain)
+            .help("Scan the git repos in your home folder (Tab)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.07))
+        )
+        .padding(.bottom, 4)
     }
 
     private func tickButton(_ title: String, help: String, action: @escaping () -> Void) -> some View {
@@ -257,7 +312,7 @@ struct CleanDevMacView: View {
     /// The itemized confirmation cdm prints before it asks `Proceed? (y/N)`.
     private var plan: some View {
         let entries = model.checkedEntries
-        let permanent = entries.contains { $0.rule.method.isPermanent }
+        let permanent = entries.contains { $0.methods.contains(where: \.isPermanent) }
         return VStack(alignment: .leading, spacing: 10) {
             Text("Clean \(CleanDevMacEngine.humanKB(model.checkedKB))?")
                 .font(.system(size: 15, weight: .semibold))
@@ -267,14 +322,16 @@ struct CleanDevMacView: View {
                 VStack(spacing: 4) {
                     ForEach(entries) { entry in
                         HStack(spacing: 10) {
-                            CleanDevMacMethodTag(method: entry.rule.method)
                             Text(entry.rule.icon)
                                 .font(.system(size: 13))
+                                .frame(width: 20)
                             Text(entry.rule.name)
                                 .font(.system(size: 12.5))
                                 .foregroundColor(.white.opacity(0.88))
                                 .lineLimit(1)
+                                .truncationMode(.middle)
                             Spacer()
+                            CleanDevMacMethodTag(methods: entry.methods)
                             Text(CleanDevMacEngine.humanKB(entry.sizeKB))
                                 .font(.system(size: 12, weight: .medium).monospacedDigit())
                                 .foregroundColor(.white.opacity(0.75))
@@ -418,12 +475,17 @@ struct CleanDevMacView: View {
         case .ready where model.isConfirming:
             return [("⏎", "Clean now"), ("Esc", "Back")]
         case .ready where !model.entries.isEmpty:
+            if model.canScanRepos {
+                return [("↑↓", "Select"), ("Space", "Tick"), ("⏎", "Review & clean"), ("⇥", "Scan repos"), ("⌘⏎", "cdm"), ("Esc", "Close")]
+            }
             return [("↑↓", "Select"), ("Space", "Tick"), ("⏎", "Review & clean"), ("⌥⏎", "Finder"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
+        case .ready where model.canScanRepos:
+            return [("⇥", "Scan repos"), ("⏎", "Rescan"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
         case .ready, .finished:
             return [("⏎", "Rescan"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
         case .failed:
             return [("⏎", "Retry"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
-        case .idle, .loadingRules, .measuring, .cleaning:
+        case .idle, .loadingRules, .measuring, .scanningRepos, .cleaning:
             return [("Esc", "Close")]
         }
     }
@@ -480,10 +542,11 @@ struct CleanDevMacRow: View {
                     .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
                     .foregroundColor(.white.opacity(0.92))
                     .lineLimit(1)
+                    .truncationMode(.middle)
 
                 Spacer(minLength: 8)
 
-                CleanDevMacMethodTag(method: entry.rule.method)
+                CleanDevMacMethodTag(methods: entry.methods)
 
                 Text(CleanDevMacEngine.humanKB(entry.sizeKB))
                     .font(.system(size: 12.5, weight: .medium).monospacedDigit())
@@ -500,15 +563,20 @@ struct CleanDevMacRow: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.bottom, 2)
                     }
-                    ForEach(Array(zip(entry.paths, entry.sizes).prefix(Self.shownPaths).enumerated()), id: \.offset) { _, item in
+                    ForEach(Array(entry.paths.indices.prefix(Self.shownPaths)), id: \.self) { index in
                         HStack(spacing: 8) {
-                            Text(CleanDevMacEngine.displayPath(item.0, home: home))
+                            Text(CleanDevMacEngine.displayPath(entry.paths[index], home: home))
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.5))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                            if entry.methods[index] == .trash && entry.methods.contains(where: { $0 != .trash }) {
+                                Text("→ Trash")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(.yellow.opacity(0.8))
+                            }
                             Spacer(minLength: 8)
-                            Text(CleanDevMacEngine.humanKB(item.1))
+                            Text(CleanDevMacEngine.humanKB(entry.sizes[index]))
                                 .font(.system(size: 11).monospacedDigit())
                                 .foregroundColor(.white.opacity(0.45))
                         }
@@ -538,28 +606,31 @@ struct CleanDevMacRow: View {
     }
 }
 
-/// cdm's plan tags: what happens to a category's paths.
+/// cdm's plan tags: what happens to a category's paths. A repo's row can mix both:
+/// regenerable folders are deleted, other ignored files go to the Trash.
 struct CleanDevMacMethodTag: View {
-    let method: CleanDevMacRule.Method
+    let methods: [CleanDevMacRule.Method]
 
     var body: some View {
         Text(label)
             .font(.system(size: 9.5, weight: .bold))
             .foregroundColor(color.opacity(0.95))
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Capsule().fill(color.opacity(0.18)))
     }
 
+    private var trashOnly: Bool { !methods.isEmpty && methods.allSatisfy { $0 == .trash } }
+
     private var label: String {
-        switch method {
-        case .rm, .rmforce: return "DELETE"
-        case .trash: return "TRASH"
-        case .emptytrash: return "EMPTY TRASH"
-        }
+        if methods.contains(.emptytrash) { return "EMPTY TRASH" }
+        if trashOnly { return "TRASH" }
+        return methods.contains(.trash) ? "DELETE + TRASH" : "DELETE"
     }
 
     private var color: Color {
-        method == .trash ? .yellow : .red
+        trashOnly ? .yellow : .red
     }
 }

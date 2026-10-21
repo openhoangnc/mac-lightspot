@@ -332,7 +332,12 @@ final class SearchViewModel: ObservableObject {
     }
 
     func nextCategory() {
-        if isCleanerPresented || isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
+        if isCleanerPresented {
+            // Tab answers the cleaner's "Also scan your code repos?".
+            cleaner.scanRepos()
+            return
+        }
+        if isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let nextIdx = (idx + 1) % all.count
