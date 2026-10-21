@@ -62,28 +62,32 @@ for TARGET_DIR in "$HOME/Applications" "/Applications"; do
     fi
 done
 
-# 2. Terminate running instance gracefully then force
-running_pids() {
-    pgrep -x "${APP_NAME}" | tr '\n' ' ' | sed 's/ $//'
+# 2. Terminate running instance gracefully then force. This user's copies only: another
+# account on this Mac runs its own Lightspot, which this user may not signal.
+own_pids() {
+    pgrep -u "$(id -u)" -x "${APP_NAME}"
 }
-if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+running_pids() {
+    own_pids | tr '\n' ' ' | sed 's/ $//'
+}
+if own_pids >/dev/null 2>&1; then
     echo "--> Stopping running ${APP_NAME} process..."
     if [ "$DRY_RUN" -eq 1 ]; then
-        echo "    [dry-run] killall ${APP_NAME} (pid $(running_pids))"
+        echo "    [dry-run] pkill -u $(id -u) -x ${APP_NAME} (pid $(running_pids))"
     else
-        killall "${APP_NAME}" 2>/dev/null || pkill -x "${APP_NAME}" 2>/dev/null || true
+        pkill -u "$(id -u)" -x "${APP_NAME}" 2>/dev/null || true
         for _ in {1..30}; do
-            if ! pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+            if ! own_pids >/dev/null 2>&1; then
                 break
             fi
             sleep 0.1
         done
-        if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+        if own_pids >/dev/null 2>&1; then
             echo "⚠️ Forcing termination of lingering ${APP_NAME} process..."
-            killall -9 "${APP_NAME}" 2>/dev/null || pkill -9 -x "${APP_NAME}" 2>/dev/null || true
+            pkill -9 -u "$(id -u)" -x "${APP_NAME}" 2>/dev/null || true
             sleep 0.2
         fi
-        if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+        if own_pids >/dev/null 2>&1; then
             echo "⚠️ Could not stop ${APP_NAME} (pid $(running_pids)): not permitted from this shell."
             echo "   Quit it from its menu bar icon (Quit Lightspot) once this script finishes."
         fi

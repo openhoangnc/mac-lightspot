@@ -76,27 +76,32 @@ fi
 
 echo "[2/3] Installing to ${DEST_APP}..."
 
-# Stop running instance robustly before copying
+# Stop running instance robustly before copying. This user's copies only: another
+# account on this Mac runs its own Lightspot, which this user may not signal, and the
+# wait and force-kill below used to spend themselves on it and then report a failure.
+own_pids() {
+    pgrep -u "$(id -u)" -x "${APP_NAME}"
+}
 echo "🛑 Stopping existing ${APP_NAME} process..."
-if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
-    killall "${APP_NAME}" 2>/dev/null || pkill -x "${APP_NAME}" 2>/dev/null || true
+if own_pids >/dev/null 2>&1; then
+    pkill -u "$(id -u)" -x "${APP_NAME}" 2>/dev/null || true
     # Wait up to 3 seconds for graceful shutdown
     for _ in {1..30}; do
-        if ! pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+        if ! own_pids >/dev/null 2>&1; then
             break
         fi
         sleep 0.1
     done
     # Force kill if still lingering
-    if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
+    if own_pids >/dev/null 2>&1; then
         echo "⚠️ Forcing termination of lingering ${APP_NAME} process..."
-        killall -9 "${APP_NAME}" 2>/dev/null || pkill -9 -x "${APP_NAME}" 2>/dev/null || true
+        pkill -9 -u "$(id -u)" -x "${APP_NAME}" 2>/dev/null || true
         sleep 0.2
     fi
     # Signals are refused from some shells (e.g. sandboxed ones). The new copy asks the
     # running one to quit when it launches; versions before that could not be asked.
-    if pgrep -x "${APP_NAME}" >/dev/null 2>&1; then
-        echo "⚠️ Could not stop ${APP_NAME} (pid $(pgrep -x "${APP_NAME}" | tr '\n' ' ')): not permitted from this shell."
+    if own_pids >/dev/null 2>&1; then
+        echo "⚠️ Could not stop ${APP_NAME} (pid $(own_pids | tr '\n' ' ')): not permitted from this shell."
         echo "   The new copy will ask it to quit. If two keep running, quit the old one from its menu bar icon."
     fi
 fi
