@@ -5,7 +5,7 @@ struct LazyAppIconView: View {
     let path: String
     let size: CGFloat
 
-    @State private var icon: NSImage?
+    @ViewState private var icon: NSImage?
 
     init(path: String, size: CGFloat) {
         self.path = path

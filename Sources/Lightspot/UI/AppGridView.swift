@@ -110,7 +110,7 @@ struct AppGridItemView: View {
     let isSelected: Bool
     let onTap: () -> Void
 
-    @State private var isHovered: Bool = false
+    @ViewState private var isHovered: Bool = false
 
     var body: some View {
         Button(action: onTap) {

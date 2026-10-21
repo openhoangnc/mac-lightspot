@@ -153,7 +153,7 @@ public final class NetworkInfoProvider: @unchecked Sendable {
         let fetch = fetcher
         lock.unlock()
 
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [self] in
             fetch { [weak self] ip in
                 self?.finishLookup(ip)
             }

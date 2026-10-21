@@ -183,7 +183,7 @@ struct PinnedCommandRow: View {
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
 
-    @State private var isHovered: Bool = false
+    @ViewState private var isHovered: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {

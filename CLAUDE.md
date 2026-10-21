@@ -20,6 +20,12 @@ make clean      # rm -rf build .build
 
 `swift build` alone produces the bare binary; it will not run correctly as an app (no bundle, no `Info.plist`, so no `LSUIElement`). Always go through `build.sh` or `install.sh`.
 
+Write `@ViewState`, never `@State` (`UI/ViewState.swift`). From the macOS 27 SDK on,
+`@State` resolves to a SwiftUI macro whose implementation ships with Xcode only, so a
+Command Line Tools build fails on it; `ViewState` is the same property wrapper under a
+name no macro claims. Xcode, and so CI, compiles `@State` fine, which is why `build.sh`
+refuses it up front.
+
 The app is single-instance via `System/SingleInstanceGuard.swift`, checked in `main()` after the uninstall helper flags: an `flock` on `~/Library/Application Support/Lightspot/<bundle id>.lock`. Launching the same build again asks the running copy to show its panel and exits; launching a different build (reinstalled, rebuilt, or at another path such as `build/`) asks the running copy to quit, then takes over. `run.sh` and `install.sh` still kill first, but that kill is refused from a sandboxed shell (EPERM), which is how duplicate instances used to pile up. An updater that relaunches must likewise launch the new build and let it take over, not start a copy of the same file.
 
 ### Tests
@@ -119,6 +125,7 @@ mac-lightspot/
             ├── SpotlightComponents.swift# Search result rows, buttons, & category headers
             ├── SpotlightPanel.swift     # Floating borderless NSPanel with vibrancy
             ├── SpotlightView.swift      # Root SwiftUI view
+            ├── ViewState.swift          # @ViewState: SwiftUI State without the macOS 27 SDK macro
             └── VisualEffectBlur.swift   # NSVisualEffectView glass vibrancy wrapper
 ```
 

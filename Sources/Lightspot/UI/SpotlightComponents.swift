@@ -49,7 +49,7 @@ struct AppStoreGlyphView: View {
 // MARK: - Glowing Cursor View (Apple Intelligence / Siri Aura)
 
 struct GlowCursorView: View {
-    @State private var isPulsing: Bool = false
+    @ViewState private var isPulsing: Bool = false
 
     var body: some View {
         ZStack {
@@ -132,7 +132,7 @@ struct CategoryChipButton: View {
     let isSelected: Bool
     let onTap: () -> Void
 
-    @State private var isHovered: Bool = false
+    @ViewState private var isHovered: Bool = false
 
     var body: some View {
         Button(action: onTap) {
@@ -172,7 +172,7 @@ struct CalculatorCardView: View {
     let result: String
     let onCopy: () -> Void
 
-    @State private var isHovered: Bool = false
+    @ViewState private var isHovered: Bool = false
 
     var body: some View {
         Button(action: onCopy) {
@@ -309,7 +309,7 @@ struct SearchResultRow: View {
     var onOpenTerminal: (() -> Void)? = nil
     var onOpenFinder: (() -> Void)? = nil
 
-    @State private var isHovered: Bool = false
+    @ViewState private var isHovered: Bool = false
 
     private var isPinnable: Bool {
         result.category == .shellHistory && onTogglePin != nil

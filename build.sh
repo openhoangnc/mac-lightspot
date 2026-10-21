@@ -8,6 +8,14 @@ CONTENTS="$APP_BUNDLE/Contents"
 
 echo "🔨 Building Lightspot..."
 
+# From the macOS 27 SDK on, `@State` is a SwiftUI macro whose implementation ships with
+# Xcode only, so it breaks every Command Line Tools build. Xcode (and so CI) builds it
+# fine, which is why this is checked here rather than left to the compiler.
+if grep -rnE '@State([^A-Za-z0-9_]|$)' "$SCRIPT_DIR/Sources" --include='*.swift' | grep -v '/UI/ViewState.swift:'; then
+    echo "❌ Write @ViewState instead of @State (see Sources/Lightspot/UI/ViewState.swift)."
+    exit 1
+fi
+
 ARCH_FLAGS=${ARCH_FLAGS:-}
 
 # Build with SPM (Maximum Optimization)

@@ -14,8 +14,8 @@ struct CustomCommandsView: View {
     let onSave: (CustomCommand) -> Void
     let onClose: () -> Void
 
-    @State private var isEditing: Bool = false
-    @State private var editingCommand: CustomCommand? = nil
+    @ViewState private var isEditing: Bool = false
+    @ViewState private var editingCommand: CustomCommand? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -355,7 +355,7 @@ struct CustomCommandRow: View {
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
 
-    @State private var isHovered: Bool = false
+    @ViewState private var isHovered: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -458,13 +458,13 @@ struct CustomCommandEditorView: View {
     let onSave: (CustomCommand) -> Void
     let onCancel: () -> Void
 
-    @State private var name: String
-    @State private var type: CustomCommandType
-    @State private var target: String
-    @State private var keywords: String
-    @State private var prefix: String
-    @State private var iconSource: CustomCommandIconSource
-    @State private var iconBase64: String?
+    @ViewState private var name: String
+    @ViewState private var type: CustomCommandType
+    @ViewState private var target: String
+    @ViewState private var keywords: String
+    @ViewState private var prefix: String
+    @ViewState private var iconSource: CustomCommandIconSource
+    @ViewState private var iconBase64: String?
 
     init(command: CustomCommand, onSave: @escaping (CustomCommand) -> Void, onCancel: @escaping () -> Void) {
         self.command = command

@@ -3,7 +3,7 @@ import AppKit
 
 struct SpotlightView: View {
     @ObservedObject var viewModel: SearchViewModel
-    @State private var showSettingsMenu: Bool = false
+    @ViewState private var showSettingsMenu: Bool = false
 
     var body: some View {
         mainContent
