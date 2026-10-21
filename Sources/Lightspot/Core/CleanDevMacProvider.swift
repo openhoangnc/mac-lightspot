@@ -31,9 +31,9 @@ final class CleanDevMacProvider: @unchecked Sendable {
     ]
     private static let lowercaseTitle = title.lowercased()
 
-    /// The whole cdm, for what only it can clean (project junk, Docker / Podman, orphaned
-    /// app data): run the way its README runs it, straight from the latest release, with
-    /// nothing installed.
+    /// The whole cdm, for what only it can clean (Docker / Podman, orphaned app data, and
+    /// project junk on a Mac without git): run the way its README runs it, straight from
+    /// the latest release, with nothing installed.
     static let terminalCommand = "curl -fsSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash"
 
     static func openInTerminal() {
