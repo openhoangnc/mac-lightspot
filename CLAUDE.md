@@ -232,17 +232,19 @@ cleans and prints a receipt.
   ignored (it or an ancestor below its own repo root), and with a `gitignore` category every
   other ignored entry is offered too, except `.env*`. Rows are per repo, or per `scan.groups`
   root; each path keeps its method (regenerable folders `rm`, other ignored files `trash`),
-  which is why `Entry.methods` exists. Two guards are Lightspot's own: the walk never enters
+  which is why `Entry.methods` exists. One guard is Lightspot's own: the walk never enters
   `~/Library` or cdm's protected folders (cdm's gate refuses every path there anyway, and
   reading Documents, Desktop or Downloads would raise a macOS prompt that an ad-hoc signed
-  app sees again after every update), and nothing that holds another checkout, or sits
+  app sees again after every update). Another started here and is cdm's too since
+  v2026.10.21.1 (`touches_other_checkout`): nothing that holds another checkout, or sits
   inside one below its own repo, is offered (`withoutOtherCheckouts`), so an outer repo that
   ignores a nested checkout cannot put it in the Trash. The walk counts only `.git`
   directories as repos, as cdm does, and never enters pruned names, so that guard probes
   the offered folders themselves: a worktree's or submodule's `.git` is a file, and Claude
   Code keeps worktrees in `.claude/worktrees`, which repos git-ignore and the rules prune.
   1.3.1 offered such a folder, worktrees and uncommitted work included, for the Trash. On a
-  real home folder it offers what cdm's own `scan_projects` does, minus those.
+  real home folder it offers exactly what cdm's own `scan_projects` does. Keep that guard
+  in step with cdm's, as with the engine below.
 - **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
   shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list,
   `is_safe_target`, `delete_path`, `human_kb`, the disk line and the log cap. Keep the two

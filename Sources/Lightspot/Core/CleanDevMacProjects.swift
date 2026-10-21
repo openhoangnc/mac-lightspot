@@ -155,9 +155,9 @@ enum CleanDevMacProjects {
     ///   (the walk stops at the root: an outer repo ignoring a nested checkout says nothing
     ///   about what that checkout tracks);
     /// - with a `gitignore` category, every other ignored entry except `.env*`;
-    /// - never a path holding another repo (Lightspot's addition: an outer repo that ignores
-    ///   a whole nested checkout would otherwise offer it; `withoutOtherCheckouts` extends
-    ///   this to checkouts the walk did not see), nor one the safety gate refuses;
+    /// - never a path holding another repo (an outer repo that ignores a whole nested
+    ///   checkout would otherwise offer it; `withoutOtherCheckouts` extends this to
+    ///   checkouts the walk did not see), nor one the safety gate refuses;
     /// - an item inside another kept item is dropped, and a repo under a group root is
     ///   listed under the group root.
     static func items(_ walk: Walk, ignored: [String: [String]], listed: [String],
@@ -288,11 +288,12 @@ enum CleanDevMacProjects {
     }
 
     /// `items` minus every path that holds another checkout or sits inside one below its
-    /// own repo (Lightspot's addition). The walk counts only `.git` directories as repos,
-    /// as cdm does, and never enters pruned names such as `.claude` or `vendor`, while git
-    /// lists an ignored folder whole: without this, a folder offered for the Trash could
-    /// hold a worktree with uncommitted work, and a checkout's tracked `build/` could be
-    /// offered on the strength of an outer repo ignoring the checkout.
+    /// own repo: cdm's `touches_other_checkout`, which started here. The walk counts only
+    /// `.git` directories as repos, as cdm does, and never enters pruned names such as
+    /// `.claude` or `vendor`, while git lists an ignored folder whole: without this, a
+    /// folder offered for the Trash could hold a worktree with uncommitted work, and a
+    /// checkout's tracked `build/` could be offered on the strength of an outer repo
+    /// ignoring the checkout.
     static func withoutOtherCheckouts(_ items: [Item], repos: [String]) -> [Item] {
         let touched = Probes(count: items.count)
         DispatchQueue.concurrentPerform(iterations: items.count) { index in
