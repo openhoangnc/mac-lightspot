@@ -146,7 +146,7 @@ Exécutez des actions de maintenance privilégiées (`Vider le Cache DNS`, `Purg
 
 ### 10. 🔄 Mise à Jour Automatique Intégrée
 - Consulte les Releases GitHub en arrière-plan (peu après le lancement et à l'ouverture du menu de la barre des menus) et propose la nouvelle version depuis la barre de menus. Après une vérification réussie, Lightspot attend un jour avant la suivante ; une vérification échouée (hors ligne, limite de requêtes) est relancée au lancement suivant ou à la prochaine ouverture du menu. **`Check for Updates...`** (Rechercher les mises à jour) la lance à la demande, et **`Automatically Check for Updates`** désactive entièrement les vérifications automatiques.
-- Installation sur place : Lightspot télécharge la release, la vérifie, remplace son propre bundle et redémarre. **`Skip This Version`** met en sourdine une release précise sans désactiver les vérifications.
+- Installation sur place : Lightspot télécharge la release, la vérifie, remplace son propre bundle, lance la nouvelle version et ne quitte qu’une fois celle-ci démarrée : Lightspot ne disparaît jamais. **`Skip This Version`** met en sourdine une release précise sans désactiver les vérifications.
 - Chaque téléchargement est filtré : HTTPS uniquement, hôtes GitHub uniquement (revérifiés après les redirections), le bundle décompressé doit porter l'identifiant de bundle de Lightspot, un exécutable fonctionnel et exactement la version annoncée, et une version antérieure à celle déjà installée n'est jamais acceptée.
 - Les releases sont signées en ad-hoc (ce projet ne fournit aucun Developer ID), il n'y a donc aucune signature de code à vérifier : les contrôles ci-dessus et HTTPS vers GitHub constituent tout le modèle de confiance, celui-là même que `install.sh` exige déjà.
 

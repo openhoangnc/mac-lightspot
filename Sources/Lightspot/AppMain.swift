@@ -12,33 +12,50 @@ struct LightspotApp {
             exit(0)
         }
 
+        let delegate = AppDelegate()
+
         // One Lightspot per user; see SingleInstanceGuard. Checked after the helper
         // flags above, which the uninstaller runs while a copy may still be up.
         if let bundleIdentifier = Bundle.main.bundleIdentifier,
            let executablePath = Bundle.main.executablePath {
-            let decision = SingleInstanceGuard.claim(
+            let claim = AppDelegate.InstanceClaim(
                 bundleIdentifier: bundleIdentifier,
                 lockPath: SingleInstanceGuard.lockFilePath(bundleIdentifier: bundleIdentifier),
-                build: SingleInstanceGuard.buildIdentity(executablePath: executablePath)
+                build: SingleInstanceGuard.buildIdentity(executablePath: executablePath),
+                replacedPID: SingleInstanceGuard.replacedPID(arguments: CommandLine.arguments)
             )
-            switch decision {
-            case .run:
-                // The lock descriptor stays open until the process exits. Any older
-                // build has quit by now, so nothing still writes the HTTP cache and
-                // cookie store that versions up to 1.2.0 left behind; delete them.
-                LegacyNetworkStores.removeInBackground(bundleIdentifier: bundleIdentifier)
-            case .handedOff:
-                exit(0)
-            case .holderDidNotQuit(let pid):
-                NSLog("Lightspot: another build (pid %d) is running and did not quit; exiting.", pid ?? -1)
-                exit(1)
+            if claim.replacedPID != nil {
+                // Started by an update. The old copy quits only once this one has
+                // finished launching, so the lock is claimed after that, in the delegate.
+                delegate.pendingClaim = claim
+            } else {
+                proceed(with: SingleInstanceGuard.claim(
+                    bundleIdentifier: claim.bundleIdentifier,
+                    lockPath: claim.lockPath,
+                    build: claim.build
+                ), bundleIdentifier: bundleIdentifier)
             }
         }
 
         let app = NSApplication.shared
-        let delegate = AppDelegate()
         app.delegate = delegate
         app.run()
+    }
+
+    /// Exits unless the decision is to run.
+    static func proceed(with decision: SingleInstanceGuard.LaunchDecision, bundleIdentifier: String) {
+        switch decision {
+        case .run:
+            // The lock descriptor stays open until the process exits. Any older
+            // build has quit by now, so nothing still writes the HTTP cache and
+            // cookie store that versions up to 1.2.0 left behind; delete them.
+            LegacyNetworkStores.removeInBackground(bundleIdentifier: bundleIdentifier)
+        case .handedOff:
+            exit(0)
+        case .holderDidNotQuit(let pid):
+            NSLog("Lightspot: another build (pid %d) is running and did not quit; exiting.", pid ?? -1)
+            exit(1)
+        }
     }
 }
 
@@ -52,10 +69,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var instanceRequests: SingleInstanceGuard.RequestListener?
     private let launchedAt = Date()
 
+    struct InstanceClaim {
+        let bundleIdentifier: String
+        let lockPath: String
+        let build: String
+        let replacedPID: pid_t?
+    }
+
+    /// Set when an update started this copy to replace another: the lock is claimed,
+    /// and anything shown, only once that copy has quit.
+    var pendingClaim: InstanceClaim?
+    /// Fires the moment the replaced copy exits, so the gap between its menu bar item
+    /// going and ours appearing is only `setup()`. The 0.1 s poll stays as the fallback.
+    private var replacedExitSource: DispatchSourceProcess?
+
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
-            setup()
+            if let claim = pendingClaim, let replacedPID = claim.replacedPID {
+                // Finishing launching is the old copy's cue to quit. Until it has, it
+                // owns the menu bar item and the hotkey, and showing ours would put two
+                // Lightspots on screen.
+                let deadline = Date().addingTimeInterval(SingleInstanceGuard.replacingTimeout)
+                let source = DispatchSource.makeProcessSource(identifier: replacedPID, eventMask: .exit, queue: .main)
+                source.setEventHandler { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.awaitReplacedCopy(replacedPID, claim: claim, until: deadline)
+                    }
+                }
+                source.resume()
+                replacedExitSource = source
+                awaitReplacedCopy(replacedPID, claim: claim, until: deadline)
+            } else {
+                setup()
+            }
         }
+    }
+
+    private func awaitReplacedCopy(_ replacedPID: pid_t, claim: InstanceClaim, until deadline: Date) {
+        // The exit source and the poll can both land after the claim was made.
+        guard pendingClaim != nil else { return }
+        let decision = Date() < deadline
+            ? SingleInstanceGuard.claimReplacing(replacedPID,
+                                                 bundleIdentifier: claim.bundleIdentifier,
+                                                 lockPath: claim.lockPath,
+                                                 build: claim.build)
+            : SingleInstanceGuard.claim(bundleIdentifier: claim.bundleIdentifier,
+                                        lockPath: claim.lockPath,
+                                        build: claim.build)
+        guard let decision else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.awaitReplacedCopy(replacedPID, claim: claim, until: deadline)
+                }
+            }
+            return
+        }
+        pendingClaim = nil
+        replacedExitSource?.cancel()
+        replacedExitSource = nil
+        NSLog("Lightspot: taking over from pid %d", replacedPID)
+        LightspotApp.proceed(with: decision, bundleIdentifier: claim.bundleIdentifier)
+        setup()
     }
 
     /// Opening Lightspot.app while it runs (Finder, `open`) reopens this instance

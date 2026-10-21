@@ -146,7 +146,7 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
 
 ### 10. 🔄 Actualización Automática Integrada
 - Consulta las Releases de GitHub en segundo plano (poco después del inicio y al abrir el menú de la barra de menús) y ofrece la nueva versión desde la barra de menús. Tras una comprobación correcta espera un día antes de la siguiente; una comprobación fallida (sin conexión, límite de peticiones) se repite en el siguiente inicio o al abrir el menú. **`Check for Updates...`** la ejecuta al instante, y **`Automatically Check for Updates`** desactiva por completo las comprobaciones automáticas.
-- Se instala en el sitio: Lightspot descarga la release, la verifica, sustituye su propio paquete y se reinicia. **`Skip This Version`** silencia una release concreta sin desactivar las comprobaciones.
+- Se instala en el sitio: Lightspot descarga la release, la verifica, sustituye su propio paquete, arranca la nueva versión y se cierra cuando esta ya está en marcha, sin ningún momento sin Lightspot. **`Skip This Version`** silencia una release concreta sin desactivar las comprobaciones.
 - Cada descarga pasa por un filtro: solo HTTPS, solo hosts de GitHub (revalidados tras las redirecciones), el paquete descomprimido debe llevar el identificador de paquete de Lightspot, un ejecutable funcional y exactamente la versión anunciada, y nunca se acepta una compilación anterior a la ya instalada.
 - Las releases están firmadas de forma ad-hoc (este proyecto no incluye un Developer ID), por lo que no hay firma de código que verificar: las comprobaciones anteriores y HTTPS hacia GitHub son todo el modelo de confianza, el mismo que `install.sh` ya requiere.
 

@@ -788,7 +788,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         if let notes = release.notes, !notes.isEmpty {
             details += "\n\n" + String(notes.prefix(600))
         }
-        details += "\n\nLightspot will quit and reopen to finish installing."
+        details += "\n\nLightspot keeps running until the new version has started, then hands over to it."
         alert.informativeText = details
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Install and Relaunch")
@@ -817,7 +817,8 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         UpdateManager.shared.install(release) { [weak self] outcome in
             switch outcome {
             case .relaunching:
-                // The helper is waiting on this PID; quitting is what starts the swap.
+                // The new build has finished launching and is waiting for this
+                // process to exit before it shows its menu bar item.
                 NSApp.terminate(nil)
             case .failed(let message):
                 self?.rebuildMenu()

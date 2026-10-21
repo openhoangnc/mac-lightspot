@@ -26,7 +26,7 @@ Command Line Tools build fails on it; `ViewState` is the same property wrapper u
 name no macro claims. Xcode, and so CI, compiles `@State` fine, which is why `build.sh`
 refuses it up front.
 
-The app is single-instance via `System/SingleInstanceGuard.swift`, checked in `main()` after the uninstall helper flags: an `flock` on `~/Library/Application Support/Lightspot/<bundle id>.lock`. Launching the same build again asks the running copy to show its panel and exits; launching a different build (reinstalled, rebuilt, or at another path such as `build/`) asks the running copy to quit, then takes over. `run.sh` and `install.sh` still kill first, but that kill is refused from a sandboxed shell (EPERM), which is how duplicate instances used to pile up. The lock is per user, and so are the scripts: every `pgrep`/`pkill` takes `-u "$(id -u)"`, because another account on the same Mac runs its own Lightspot, which this user may not signal; unscoped, `install.sh` waited on those copies, tried to force-kill them and reported a failure. An updater that relaunches must likewise launch the new build and let it take over, not start a copy of the same file.
+The app is single-instance via `System/SingleInstanceGuard.swift`, checked in `main()` after the uninstall helper flags: an `flock` on `~/Library/Application Support/Lightspot/<bundle id>.lock`. Launching the same build again asks the running copy to show its panel and exits; launching a different build (reinstalled, rebuilt, or at another path such as `build/`) asks the running copy to quit, then takes over. `run.sh` and `install.sh` still kill first, but that kill is refused from a sandboxed shell (EPERM), which is how duplicate instances used to pile up. The lock is per user, and so are the scripts: every `pgrep`/`pkill` takes `-u "$(id -u)"`, because another account on the same Mac runs its own Lightspot, which this user may not signal; unscoped, `install.sh` waited on those copies, tried to force-kill them and reported a failure. An in-app update is the exception to "asks the running copy to quit": the old copy starts the new build with `--replacing <old pid>` and quits once it has finished launching, so that launch waits for the old PID to release the lock (`claimReplacing`) and shows nothing until then (see invariant 10).
 
 ### Tests
 
@@ -37,7 +37,7 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 41 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `test_engine.swift`: 42 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
 - `deep_verify.swift`: 11 sections of live system checks (136 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos (measures only; it never deletes).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
@@ -71,7 +71,7 @@ mac-lightspot/
 │   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (41 test blocks)
+│   ├── test_engine.swift         # Automated test runner (42 test blocks)
 │   └── deep_verify.swift         # Live-system verification (11 sections, 136 checks)
 └── Sources/
     └── Lightspot/
@@ -439,17 +439,33 @@ cleans and prints a receipt.
    than assuming the factory binding — users remap input-source switching too — and
    treat a missing entry as the factory default, enabled.
 
-10. **The updater replaces the bundle from outside the process**:
+10. **The updater swaps the bundle while the app runs, and the old copy hands over**:
    A running `.app` cannot overwrite itself, so `UpdateManager.install` stages the new
-   bundle in a temp directory, writes a `/bin/sh` helper **outside** that directory (the
-   helper deletes it), launches it detached and quits — the helper waits on the old PID,
-   moves the current bundle aside as `.lightspot-old` for rollback, copies with `ditto`
-   (not `cp`: bundle metadata), clears quarantine, **re-signs ad-hoc** (an ad-hoc
-   signature does not survive a copy), relaunches and cleans up. When the destination's
-   parent is not user-writable the helper runs through
-   `QuickActionsProvider.executePrivilegedWithTouchID`, backgrounded inside the
-   privileged shell so `sudo` returns and this process can exit, and relaunches via
-   `launchctl asuser <uid>` so Lightspot does not come back as root.
+   bundle in a temp directory and writes a `/bin/sh` helper **outside** it (the helper
+   deletes it). The helper runs while Lightspot is still up: it moves the current bundle
+   aside as `.lightspot-old`, copies with `ditto` (not `cp`: bundle metadata), clears
+   quarantine, **re-signs ad-hoc** (an ad-hoc signature does not survive a copy) and
+   writes `swapped` to its status file. Lightspot then starts the new build itself with
+   `NSWorkspace.openApplication` (`createsNewApplicationInstance`, `activates = false`,
+   `--replacing <pid>`) and quits only once that copy reports `isFinishedLaunching`. The
+   new copy waits for the old PID to exit (a process-exit source plus a 0.1 s poll on the
+   lock) before `setup()`, so the menu bar item, panel and hotkey are never doubled.
+
+   Quit-then-relaunch, as up to 1.3.2, left the user with no Lightspot at all: the
+   first launch of a just-swapped, just-re-signed bundle goes through LaunchServices'
+   "node has changed" path (`launchViaCSUA`) and a Gatekeeper scan, and the process
+   sits paused until it ends (measured at 30 s in a sibling app, 0.5 s here; it varies).
+   Test a hand-over with a freshly compiled build: one that has run before starts fast
+   and hides the gap.
+
+   If the new copy dies or does not finish launching within `handOverTimeout` (180 s),
+   Lightspot force-terminates it, drops a `restore` file, and the helper (still waiting
+   on the old PID) puts `.lightspot-old` back; the old copy keeps running and reports the
+   failure. Otherwise the helper removes the rollback once the old PID has exited. When
+   the destination's parent is not user-writable the helper runs through
+   `QuickActionsProvider.executePrivilegedWithTouchID` (off the main thread, backgrounded
+   inside the privileged shell so `sudo` returns) and `chown`s the bundle back to the
+   user before reporting; it never launches anything, so nothing comes back as root.
 
    **Trust model, stated plainly:** releases are ad-hoc signed — the project ships no
    Developer ID — so there is no signature to verify. The gate is HTTPS, a GitHub host

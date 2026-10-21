@@ -146,7 +146,7 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 
 ### 10. 🔄 Built-in Auto-Update
 - Checks GitHub Releases in the background (shortly after launch and when you open the menu bar menu) and offers the new version from the menu bar. After a successful check it waits a day before the next one; a failed check (offline, rate-limited) is retried at the next launch or menu open. **Check for Updates...** runs it on demand, and **Automatically Check for Updates** turns automatic checks off entirely.
-- Installs in place: Lightspot downloads the release, verifies it, swaps its own bundle and relaunches. **Skip This Version** silences one release without disabling checks.
+- Installs in place: Lightspot downloads the release, verifies it, swaps its own bundle, starts the new version and quits once it is up, so there is no moment without Lightspot. **Skip This Version** silences one release without disabling checks.
 - Every download is gated: HTTPS only, GitHub hosts only (re-checked after redirects), the unpacked bundle must carry Lightspot's bundle identifier, a runnable executable and exactly the advertised version, and a build older than the one installed is never accepted.
 - Releases are ad-hoc signed (this project ships no Developer ID), so there is no code signature to verify — the checks above and HTTPS to GitHub are the whole trust model, the same one `install.sh` already asks for.
 

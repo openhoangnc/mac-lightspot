@@ -89,8 +89,16 @@ enum UpdateCheckOutcome: Sendable {
 }
 
 enum UpdateInstallOutcome: Sendable {
-    /// The swap helper is staged and the app is about to be replaced and relaunched.
+    /// The new build is in place and has finished launching. Quit now: it is waiting
+    /// for this process to exit before it shows anything.
     case relaunching
+    case failed(String)
+}
+
+/// One poll of the copy an update started.
+enum HandOverStep: Equatable, Sendable {
+    case waiting
+    case launched
     case failed(String)
 }
 
@@ -333,9 +341,16 @@ final class UpdateManager {
 
     // MARK: - Installing
 
-    /// Downloads the release, verifies the unpacked bundle, then hands the swap to a
-    /// detached helper and quits — a running bundle cannot replace itself.
-    /// `completion` runs on the main actor; `.relaunching` means the app is about to exit.
+    /// Downloads the release, verifies the unpacked bundle, swaps it into place while
+    /// this copy keeps running, then starts the new build and waits for it to finish
+    /// launching. `completion` runs on the main actor; `.relaunching` means the new
+    /// build is up and this copy should quit, which is what lets it take over.
+    ///
+    /// The order is what keeps Lightspot on screen. The first launch of a freshly
+    /// swapped and re-signed bundle goes through LaunchServices' "node has changed"
+    /// path and a Gatekeeper scan (measured at 30 s in a sibling app), and the process
+    /// sits paused meanwhile. Quitting first and relaunching from a helper, as up to
+    /// 1.3.2, left the user with no Lightspot for that whole scan.
     func install(_ release: ReleaseInfo,
                  completion: (@Sendable @MainActor (UpdateInstallOutcome) -> Void)? = nil) {
         guard !isInstalling else { return }
@@ -364,16 +379,137 @@ final class UpdateManager {
                     self.isInstalling = false
                     completion?(.failed(message))
                 case .success(let staged):
-                    guard Self.launchSwapHelper(staged: staged, destination: destination) else {
-                        self.isInstalling = false
-                        try? FileManager.default.removeItem(at: staged.workDirectory)
-                        completion?(.failed("Could not start the update helper."))
-                        return
-                    }
-                    completion?(.relaunching)
+                    let outcome = await self.swapAndHandOver(staged, release: release, destination: destination)
+                    if case .failed = outcome { self.isInstalling = false }
+                    completion?(outcome)
                 }
             }
         }.resume()
+    }
+
+    /// How long this copy waits for the helper to put the new bundle in place. The
+    /// privileged path has already been authorised by then; this is ditto + codesign.
+    nonisolated static let swapTimeout: TimeInterval = 120
+    /// How long the new build gets to finish launching. Generous on purpose: this copy
+    /// stays up all along, so waiting costs nothing, and a first launch can sit in a
+    /// Gatekeeper scan for half a minute.
+    nonisolated static let handOverTimeout: TimeInterval = 180
+    /// How long a rollback may take before the failure is reported anyway.
+    nonisolated static let restoreTimeout: TimeInterval = 15
+
+    /// Files the helper and this copy talk through, inside the helper's own folder.
+    nonisolated static let helperStatusFile = "status"
+    nonisolated static let helperRestoreFile = "restore"
+
+    /// The helper runs on its own serial queue: the privileged path blocks on Touch ID
+    /// or the password dialog, and its fallback is an `NSAppleScript`.
+    private nonisolated static let helperQueue = DispatchQueue(label: "lightspot.update.helper")
+
+    private func swapAndHandOver(_ staged: StagedUpdate,
+                                 release: ReleaseInfo,
+                                 destination: URL) async -> UpdateInstallOutcome {
+        let fm = FileManager.default
+        let helper: URL? = await withCheckedContinuation { continuation in
+            Self.helperQueue.async {
+                continuation.resume(returning: Self.launchSwapHelper(staged: staged, destination: destination))
+            }
+        }
+        guard let helper else {
+            try? fm.removeItem(at: staged.workDirectory)
+            return .failed("Could not start the update helper.")
+        }
+
+        // 1. The swap. This copy keeps running from the bundle the helper moves aside.
+        let swapDeadline = Date().addingTimeInterval(Self.swapTimeout)
+        var status = Self.helperStatus(in: helper)
+        while status == nil, Date() < swapDeadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            status = Self.helperStatus(in: helper)
+        }
+        switch status {
+        case "swapped":
+            break
+        case "failed":
+            try? fm.removeItem(at: helper)
+            return .failed("Lightspot \(release.displayVersion) could not be copied into place. Lightspot \(currentVersion) is still installed.")
+        default:
+            // Still copying: the helper rolls back as soon as it reaches the hand-over.
+            Self.requestRestore(in: helper)
+            return .failed("The update helper did not finish. Lightspot \(currentVersion) stays installed.")
+        }
+
+        // 2. The hand-over: start the new build as a second copy and wait for it to
+        //    finish launching. It waits for this process to exit before showing
+        //    anything, so the user never sees two.
+        var newCopy: NSRunningApplication?
+        var failure: String
+        do {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            configuration.activates = false
+            configuration.addsToRecentItems = false
+            configuration.arguments = SingleInstanceGuard.replacingArguments(pid: getpid())
+            let app = try await NSWorkspace.shared.openApplication(at: destination, configuration: configuration)
+            newCopy = app
+            let deadline = Date().addingTimeInterval(Self.handOverTimeout)
+            while true {
+                let step = Self.handOverStep(isTerminated: app.isTerminated,
+                                             isFinishedLaunching: app.isFinishedLaunching,
+                                             timedOut: Date() >= deadline)
+                if step == .launched {
+                    NSLog("UpdateManager: %@ is up (pid %d), handing over", release.displayVersion, app.processIdentifier)
+                    return .relaunching
+                }
+                if case .failed(let reason) = step {
+                    failure = reason
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        } catch {
+            failure = error.localizedDescription
+        }
+
+        // The new build did not take over: put the old bundle back and keep running it.
+        NSLog("UpdateManager: %@ did not take over (%@); rolling back", release.displayVersion, failure)
+        if let newCopy, !newCopy.isTerminated {
+            newCopy.forceTerminate()
+            let deadline = Date().addingTimeInterval(2)
+            while !newCopy.isTerminated, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        Self.requestRestore(in: helper)
+        let restoreDeadline = Date().addingTimeInterval(Self.restoreTimeout)
+        while Self.helperStatus(in: helper) != "restored", Date() < restoreDeadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try? fm.removeItem(at: helper)
+        return .failed("Lightspot \(release.displayVersion) did not start (\(failure)). Lightspot \(currentVersion) is still installed and running.")
+    }
+
+    /// Pure decision for one poll of the new copy, split out to be testable.
+    nonisolated static func handOverStep(isTerminated: Bool,
+                                         isFinishedLaunching: Bool,
+                                         timedOut: Bool) -> HandOverStep {
+        if isTerminated { return .failed("it quit while starting") }
+        if isFinishedLaunching { return .launched }
+        if timedOut { return .failed("it took too long to start") }
+        return .waiting
+    }
+
+    /// What the helper last reported: `swapped`, `failed` or `restored`; nil until then.
+    nonisolated static func helperStatus(in helperDirectory: URL) -> String? {
+        let file = helperDirectory.appendingPathComponent(helperStatusFile)
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        let status = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return status.isEmpty ? nil : status
+    }
+
+    /// Asks the helper to put the old bundle back instead of deleting it.
+    nonisolated static func requestRestore(in helperDirectory: URL) {
+        FileManager.default.createFile(atPath: helperDirectory.appendingPathComponent(helperRestoreFile).path,
+                                       contents: Data())
     }
 
     struct StagedUpdate: Sendable {
@@ -512,79 +648,107 @@ final class UpdateManager {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// The script that replaces the bundle once this process is gone.
+    /// The script that swaps the bundle while this process is still running, then
+    /// waits out the hand-over.
     ///
-    /// It waits for our PID, keeps the old bundle aside as a rollback, copies with
-    /// `ditto`, clears quarantine, re-signs ad-hoc (the release is ad-hoc signed and
-    /// the signature does not survive a plain copy), relaunches and cleans up.
-    /// When run with admin rights it relaunches through `launchctl asuser` so the app
-    /// does not come back as root.
+    /// It keeps the old bundle aside as a rollback, copies with `ditto`, clears
+    /// quarantine, re-signs ad-hoc (the release is ad-hoc signed and the signature does
+    /// not survive a plain copy) and reports `swapped` (or `failed`, after restoring)
+    /// in its status file. Then it waits: once our PID exits, the new copy has taken
+    /// over and the rollback goes; if a restore file appears instead, the new copy did
+    /// not start, and the old bundle goes back in place (`restored`).
+    ///
+    /// It no longer relaunches anything: this process starts the new build itself,
+    /// as the user, so the privileged path needs no `launchctl asuser`.
     nonisolated static func installerScript(pid: Int32,
                                             stagedBundle: String,
                                             destination: String,
                                             workDirectory: String,
+                                            helperDirectory: String,
                                             uid: uid_t,
                                             privileged: Bool) -> String {
         let staged = shellQuote(stagedBundle)
         let dest = shellQuote(destination)
         let work = shellQuote(workDirectory)
         let rollback = shellQuote(destination + ".lightspot-old")
+        let status = shellQuote(helperDirectory + "/" + helperStatusFile)
+        let statusTemp = shellQuote(helperDirectory + "/" + helperStatusFile + ".tmp")
+        let restore = shellQuote(helperDirectory + "/" + helperRestoreFile)
+        let helper = shellQuote(helperDirectory)
 
-        let relaunch = privileged
-            ? "/bin/launchctl asuser \(uid) /usr/bin/open \(dest)"
-            : "/usr/bin/open \(dest)"
         let chown = privileged
-            ? "/usr/sbin/chown -R \(uid) \(dest) 2>/dev/null || true\n"
+            ? "    /usr/sbin/chown -R \(uid) \(dest) 2>/dev/null || true\n"
             : ""
 
         return """
         #!/bin/sh
-        # Lightspot update helper — replaces the app bundle after it exits.
+        # Lightspot update helper — swaps the app bundle while Lightspot runs, then
+        # waits for the hand-over to the new build.
 
-        waited=0
-        while kill -0 \(pid) 2>/dev/null; do
-            sleep 0.2
-            waited=$((waited + 1))
-            if [ "$waited" -ge 150 ]; then
-                kill -9 \(pid) 2>/dev/null || true
-                sleep 0.5
-                break
+        report() {
+            echo "$1" > \(statusTemp) && mv -f \(statusTemp) \(status)
+        }
+
+        put_back() {
+            rm -rf \(dest)
+            if [ -d \(rollback) ]; then
+                mv \(rollback) \(dest)
             fi
-        done
+        }
 
         rm -rf \(rollback)
         if [ -d \(dest) ]; then
-            mv \(dest) \(rollback) || exit 1
+            if ! mv \(dest) \(rollback); then
+                rm -rf \(work)
+                report failed
+                exit 1
+            fi
         fi
 
         if /usr/bin/ditto \(staged) \(dest); then
             /usr/bin/xattr -dr com.apple.quarantine \(dest) 2>/dev/null || true
             /usr/bin/codesign --force --deep --sign - \(dest) 2>/dev/null || true
-        \(chown)    rm -rf \(rollback)
-        else
-            # Roll back to the version that was working a moment ago.
-            rm -rf \(dest)
-            if [ -d \(rollback) ]; then
-                mv \(rollback) \(dest)
-            fi
+        \(chown)else
+            # Roll back to the version that is running right now.
+            put_back
+            rm -rf \(work)
+            report failed
+            exit 1
         fi
-
-        \(relaunch) || true
-
         rm -rf \(work)
-        # The helper sits alone in its own lightspot-updater-* folder; take that too.
-        rm -rf "$(dirname "$0")"
+        report swapped
+
+        # Lightspot now starts the new build and quits once it has finished launching.
+        waited=0
+        while kill -0 \(pid) 2>/dev/null; do
+            if [ -e \(restore) ]; then
+                put_back
+                report restored
+                exit 0
+            fi
+            sleep 0.2
+            waited=$((waited + 1))
+            # Lightspot gives up on the new build long before this.
+            if [ "$waited" -ge 3000 ]; then
+                break
+            fi
+        done
+
+        rm -rf \(rollback)
+        rm -rf \(helper)
         """
     }
 
-    /// Writes the helper to its own directory and launches it detached.
-    nonisolated static func launchSwapHelper(staged: StagedUpdate, destination: URL) -> Bool {
+    /// Writes the helper to its own directory and launches it detached. Returns that
+    /// directory, where the helper reports its progress, or nil if it did not start.
+    /// Blocking on the privileged path (Touch ID or the password dialog).
+    nonisolated static func launchSwapHelper(staged: StagedUpdate, destination: URL) -> URL? {
         let fm = FileManager.default
         // The helper deletes the staging directory, so it must not live inside it.
         let helperDirectory = fm.temporaryDirectory
             .appendingPathComponent("lightspot-updater-\(UUID().uuidString)", isDirectory: true)
         guard (try? fm.createDirectory(at: helperDirectory, withIntermediateDirectories: true)) != nil else {
-            return false
+            return nil
         }
         let script = helperDirectory.appendingPathComponent("install.sh")
 
@@ -592,6 +756,7 @@ final class UpdateManager {
                                    stagedBundle: staged.bundle.path,
                                    destination: destination.path,
                                    workDirectory: staged.workDirectory.path,
+                                   helperDirectory: helperDirectory.path,
                                    uid: getuid(),
                                    privileged: staged.needsPrivileges)
         do {
@@ -599,14 +764,19 @@ final class UpdateManager {
             try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
         } catch {
             NSLog("UpdateManager: could not write the update helper: %@", error.localizedDescription)
-            return false
+            try? fm.removeItem(at: helperDirectory)
+            return nil
         }
 
         if staged.needsPrivileges {
-            // Background it inside the privileged shell so sudo returns immediately;
-            // this process has to be able to exit for the swap to proceed.
+            // Background it inside the privileged shell so sudo returns; the helper
+            // outlives it, waiting for this process to hand over.
             let command = "nohup /bin/sh \(shellQuote(script.path)) >/dev/null 2>&1 &"
-            return QuickActionsProvider.executePrivilegedWithTouchID(command: command)
+            guard QuickActionsProvider.executePrivilegedWithTouchID(command: command) else {
+                try? fm.removeItem(at: helperDirectory)
+                return nil
+            }
+            return helperDirectory
         }
 
         let process = Process()
@@ -618,8 +788,9 @@ final class UpdateManager {
             try process.run()
         } catch {
             NSLog("UpdateManager: could not launch the update helper: %@", error.localizedDescription)
-            return false
+            try? fm.removeItem(at: helperDirectory)
+            return nil
         }
-        return true
+        return helperDirectory
     }
 }

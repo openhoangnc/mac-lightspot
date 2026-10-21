@@ -20,6 +20,10 @@ import Foundation
 /// A launch that finds the lock taken either hands off (the same build is running:
 /// ask it to show its panel) or takes over (a different build is running, i.e. the
 /// app was reinstalled, rebuilt or updated: ask it to quit, then take the lock).
+///
+/// An in-app update is the one launch that must not ask: the updater starts the new
+/// build with `--replacing <old pid>` and quits only once that build has finished
+/// launching, so the new copy waits for the old one to let go (`claimReplacing`).
 enum SingleInstanceGuard {
     // MARK: - Lock file
 
@@ -142,6 +146,48 @@ enum SingleInstanceGuard {
             }
         }
     }
+
+    // MARK: - Hand-over from an update
+
+    /// Passed, with the old copy's PID, to the build an update starts.
+    static let replacingFlag = "--replacing"
+
+    static func replacingArguments(pid: pid_t) -> [String] {
+        [replacingFlag, String(pid)]
+    }
+
+    /// The PID of the copy this launch replaces, when an update started it.
+    static func replacedPID(arguments: [String]) -> pid_t? {
+        guard let index = arguments.firstIndex(of: replacingFlag), index + 1 < arguments.count,
+              let pid = pid_t(arguments[index + 1]), pid > 0 else { return nil }
+        return pid
+    }
+
+    /// One non-blocking attempt by a copy an update started. Returns nil while the
+    /// copy it replaces still holds the lock: that copy quits by itself once this one
+    /// has finished launching, so it is waited out, never asked to quit. Anyone else
+    /// holding the lock gets the ordinary `claim`.
+    static func claimReplacing(
+        _ replacedPID: pid_t,
+        bundleIdentifier: String,
+        lockPath: String,
+        build: String
+    ) -> LaunchDecision? {
+        switch acquireLock(atPath: lockPath, build: build) {
+        case .acquired(let fd):
+            return .run(lockFD: fd)
+        case .unavailable:
+            return .run(lockFD: nil)
+        case .held(let holder):
+            // No details yet: whoever took the lock is still writing them; look again.
+            guard let holder, holder.pid != replacedPID else { return nil }
+            return claim(bundleIdentifier: bundleIdentifier, lockPath: lockPath, build: build)
+        }
+    }
+
+    /// How long a replacing copy waits before it treats the old one as stuck and
+    /// falls back to `claim` (which asks it to quit). The updater gives up first.
+    static let replacingTimeout: TimeInterval = 240
 
     // MARK: - Requests between copies
 

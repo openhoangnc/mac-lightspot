@@ -197,6 +197,7 @@ struct TestRunner {
         testSpotlightShortcutState()
         testSystemShortcutConflicts()
         testUpdateManager()
+        testUpdateHandOver()
         testPublicIPLookupIsOnDemand()
         testHistoryDoesNotPersistCopiedContent()
         testBareClipListsLatestEntries()
@@ -2442,9 +2443,11 @@ struct TestRunner {
                                                    stagedBundle: "/tmp/stage/Lightspot.app",
                                                    destination: "/Applications/Lightspot.app",
                                                    workDirectory: "/tmp/stage",
+                                                   helperDirectory: "/tmp/helper",
                                                    uid: 501,
                                                    privileged: false)
-        assertTrue(script.contains("kill -0 4242"), "The helper waits for the running app to exit")
+        assertTrue(script.contains("kill -0 4242"), "The helper waits out the running app after the swap")
+        assertTrue(!script.contains("kill -9"), "The helper never kills the running app: it quits once the new build is up")
         assertTrue(script.contains("/usr/bin/ditto '/tmp/stage/Lightspot.app' '/Applications/Lightspot.app'"),
                    "The helper copies the staged bundle over the installed one")
         assertTrue(script.contains("mv '/Applications/Lightspot.app' '/Applications/Lightspot.app.lightspot-old'"),
@@ -2452,21 +2455,33 @@ struct TestRunner {
         assertTrue(script.contains("codesign --force --deep --sign -"),
                    "The helper re-signs ad-hoc, which a plain copy does not preserve")
         assertTrue(script.contains("xattr -dr com.apple.quarantine"), "The helper clears quarantine")
-        assertTrue(script.contains("/usr/bin/open '/Applications/Lightspot.app'"), "The helper relaunches the app")
-        assertTrue(!script.contains("launchctl asuser"), "The unprivileged helper relaunches directly")
-        assertTrue(script.contains("rm -rf '/tmp/stage'") && script.contains("rm -rf \"$(dirname \"$0\")\""),
+        // Up to 1.3.2 the helper relaunched after the app had quit, and the first launch
+        // of the new bundle sat in a Gatekeeper scan with no Lightspot on screen.
+        assertTrue(!script.contains("/usr/bin/open"), "The helper does not relaunch: the running app starts the new build")
+        assertTrue(script.contains("report swapped") && script.contains("'/tmp/helper/status'"),
+                   "The helper reports the swap in its status file")
+        assertTrue(script.contains("'/tmp/helper/restore'"), "The helper watches for a restore request")
+        let swapIndex = script.range(of: "report swapped")!.lowerBound
+        let waitIndex = script.range(of: "kill -0 4242")!.lowerBound
+        assertTrue(swapIndex < waitIndex, "The swap happens before the running app quits, not after")
+        assertTrue(script.contains("rm -rf '/tmp/stage'") && script.contains("rm -rf '/tmp/helper'"),
                    "The helper removes the staging folder and its own folder")
+        assertTrue(!script.contains("chown"), "The unprivileged helper leaves ownership alone")
 
         let privileged = UpdateManager.installerScript(pid: 4242,
                                                        stagedBundle: "/tmp/stage/Lightspot.app",
                                                        destination: "/Applications/Lightspot.app",
                                                        workDirectory: "/tmp/stage",
+                                                       helperDirectory: "/tmp/helper",
                                                        uid: 501,
                                                        privileged: true)
-        // Relaunching from a root shell would start Lightspot as root.
-        assertTrue(privileged.contains("/bin/launchctl asuser 501 /usr/bin/open '/Applications/Lightspot.app'"),
-                   "The privileged helper relaunches back in the user's session")
-        assertTrue(privileged.contains("chown -R 501"), "The privileged helper hands the bundle back to the user")
+        assertTrue(privileged.contains("chown -R 501 '/Applications/Lightspot.app'"),
+                   "The privileged helper hands the bundle back to the user")
+        // The app, running as the user, starts the new build; a root helper never does.
+        assertTrue(!privileged.contains("/usr/bin/open") && !privileged.contains("launchctl"),
+                   "The privileged helper launches nothing as root")
+        assertTrue(privileged.range(of: "chown")!.lowerBound < privileged.range(of: "report swapped")!.lowerBound,
+                   "The bundle is the user's before the app is told to start it")
 
         // Regression: the check ran on URLSession.shared, which stored every release feed
         // in ~/Library/Caches/<bundle id>/Cache.db and its cookies in ~/Library/HTTPStorages.
@@ -2479,6 +2494,165 @@ struct TestRunner {
 
         try? fm.removeItem(at: sandbox)
         print("✅ UpdateManager passed all tests!\n")
+    }
+
+    // MARK: - Test 31b: update hand-over (swap while running, new build takes over)
+
+    /// Runs the real helper script against fake bundles. A `sleep` stands in for the
+    /// running Lightspot, so its exit is the old copy quitting.
+    @MainActor
+    static func testUpdateHandOver() {
+        print("Testing update hand-over...")
+        let fm = FileManager.default
+
+        // --- Pure decisions ---
+        assertEqual(UpdateManager.handOverStep(isTerminated: false, isFinishedLaunching: false, timedOut: false),
+                    .waiting, "A copy still launching is waited for")
+        assertEqual(UpdateManager.handOverStep(isTerminated: false, isFinishedLaunching: true, timedOut: false),
+                    .launched, "A copy that finished launching takes over")
+        assertEqual(UpdateManager.handOverStep(isTerminated: true, isFinishedLaunching: true, timedOut: false),
+                    .failed("it quit while starting"), "A copy that died is a failed hand-over, even if it had launched")
+        assertEqual(UpdateManager.handOverStep(isTerminated: false, isFinishedLaunching: false, timedOut: true),
+                    .failed("it took too long to start"), "A copy that never finishes launching is a failed hand-over")
+        assertTrue(UpdateManager.handOverTimeout >= 60, "The hand-over outlasts a first-launch Gatekeeper scan (30 s measured)")
+
+        let arguments = SingleInstanceGuard.replacingArguments(pid: 4242)
+        assertEqual(SingleInstanceGuard.replacedPID(arguments: ["/x/Lightspot"] + arguments), 4242,
+                    "The new copy reads the PID it replaces")
+        assertEqual(SingleInstanceGuard.replacedPID(arguments: ["/x/Lightspot"]), nil, "An ordinary launch replaces nothing")
+        assertEqual(SingleInstanceGuard.replacedPID(arguments: ["/x/Lightspot", "--replacing"]), nil, "A flag without a PID is ignored")
+        assertEqual(SingleInstanceGuard.replacedPID(arguments: ["/x/Lightspot", "--replacing", "abc"]), nil, "A malformed PID is ignored")
+
+        // --- The helper script, for real ---
+        let sandbox = fm.temporaryDirectory.appendingPathComponent("lightspot-handover-\(getpid())", isDirectory: true)
+        try? fm.removeItem(at: sandbox)
+        defer { try? fm.removeItem(at: sandbox) }
+
+        func makeBundle(at url: URL, marker: String) {
+            let macos = url.appendingPathComponent("Contents/MacOS", isDirectory: true)
+            try? fm.createDirectory(at: macos, withIntermediateDirectories: true)
+            fm.createFile(atPath: macos.appendingPathComponent("Lightspot").path,
+                          contents: Data("#!/bin/sh\n# \(marker)\n".utf8),
+                          attributes: [.posixPermissions: 0o755])
+        }
+        func marker(of url: URL) -> String? {
+            guard let text = try? String(contentsOf: url.appendingPathComponent("Contents/MacOS/Lightspot"),
+                                         encoding: .utf8) else { return nil }
+            return text.contains("# new") ? "new" : text.contains("# old") ? "old" : "?"
+        }
+        func waitUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while !condition() {
+                if Date() >= deadline { return false }
+                usleep(50_000)
+            }
+            return true
+        }
+
+        struct Run {
+            let app: URL, rollback: URL, work: URL, helper: URL
+            let runningApp: Process, script: Process
+        }
+        func start(_ name: String, stageNewBuild: Bool = true) -> Run {
+            let root = sandbox.appendingPathComponent(name, isDirectory: true)
+            let app = root.appendingPathComponent("Applications/Lightspot.app", isDirectory: true)
+            let work = root.appendingPathComponent("stage", isDirectory: true)
+            let helper = root.appendingPathComponent("helper", isDirectory: true)
+            makeBundle(at: app, marker: "old")
+            try? fm.createDirectory(at: work, withIntermediateDirectories: true)
+            if stageNewBuild { makeBundle(at: work.appendingPathComponent("Lightspot.app"), marker: "new") }
+            try? fm.createDirectory(at: helper, withIntermediateDirectories: true)
+
+            let runningApp = Process()
+            runningApp.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            runningApp.arguments = ["60"]
+            try? runningApp.run()
+
+            let body = UpdateManager.installerScript(pid: runningApp.processIdentifier,
+                                                     stagedBundle: work.appendingPathComponent("Lightspot.app").path,
+                                                     destination: app.path,
+                                                     workDirectory: work.path,
+                                                     helperDirectory: helper.path,
+                                                     uid: getuid(),
+                                                     privileged: false)
+            let scriptURL = helper.appendingPathComponent("install.sh")
+            try? body.write(to: scriptURL, atomically: true, encoding: .utf8)
+            let script = Process()
+            script.executableURL = URL(fileURLWithPath: "/bin/sh")
+            script.arguments = [scriptURL.path]
+            script.standardOutput = FileHandle.nullDevice
+            script.standardError = FileHandle.nullDevice
+            try? script.run()
+            return Run(app: app, rollback: URL(fileURLWithPath: app.path + ".lightspot-old"),
+                       work: work, helper: helper, runningApp: runningApp, script: script)
+        }
+
+        // 1. Success: the swap lands while the app still runs; its exit clears the rollback.
+        let ok = start("ok")
+        assertTrue(waitUntil(30) { UpdateManager.helperStatus(in: ok.helper) != nil }, "The helper reports the swap")
+        assertEqual(UpdateManager.helperStatus(in: ok.helper), "swapped", "The swap succeeds")
+        assertTrue(ok.runningApp.isRunning, "The running app is still up when the swap is reported")
+        assertEqual(marker(of: ok.app), "new", "The new build is in place before the app quits")
+        assertEqual(marker(of: ok.rollback), "old", "The old bundle is kept aside until the hand-over is over")
+        assertTrue(!fm.fileExists(atPath: ok.work.path), "The staging folder is gone after the swap")
+        assertTrue(ok.script.isRunning, "The helper waits for the hand-over")
+        ok.runningApp.terminate()
+        assertTrue(waitUntil(10) { !ok.script.isRunning }, "The helper finishes once the old copy has quit")
+        assertEqual(marker(of: ok.app), "new", "The new build stays")
+        assertTrue(!fm.fileExists(atPath: ok.rollback.path), "The rollback copy is removed after the hand-over")
+        assertTrue(!fm.fileExists(atPath: ok.helper.path), "The helper removes its own folder")
+
+        // 2. The new build did not start: the old copy asks for its bundle back.
+        let back = start("restore")
+        assertTrue(waitUntil(30) { UpdateManager.helperStatus(in: back.helper) == "swapped" }, "The second swap lands")
+        UpdateManager.requestRestore(in: back.helper)
+        assertTrue(waitUntil(10) { UpdateManager.helperStatus(in: back.helper) == "restored" }, "The helper reports the rollback")
+        assertEqual(marker(of: back.app), "old", "The old bundle is back in place")
+        assertTrue(!fm.fileExists(atPath: back.rollback.path), "Nothing is left beside it")
+        assertTrue(back.runningApp.isRunning, "The old copy keeps running through a rollback")
+        assertTrue(waitUntil(5) { !back.script.isRunning }, "The helper exits after a rollback")
+        back.runningApp.terminate()
+
+        // 3. The copy fails: nothing changes and the old copy is told so.
+        let broken = start("broken", stageNewBuild: false)
+        assertTrue(waitUntil(30) { UpdateManager.helperStatus(in: broken.helper) != nil }, "The helper reports a failed copy")
+        assertEqual(UpdateManager.helperStatus(in: broken.helper), "failed", "A failed copy is reported as such")
+        assertEqual(marker(of: broken.app), "old", "A failed copy leaves the installed bundle in place")
+        assertTrue(!fm.fileExists(atPath: broken.rollback.path), "A failed copy leaves no rollback behind")
+        assertTrue(waitUntil(5) { !broken.script.isRunning }, "The helper exits after a failed copy")
+        broken.runningApp.terminate()
+
+        // --- The new copy waits for the old one instead of asking it to quit ---
+        let directory = sandbox.appendingPathComponent("locks", isDirectory: true).path
+        try? fm.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let bundleIdentifier = "com.lightspot.tests.handover.\(getpid())"
+        let lock = directory + "/handover.lock"
+        let old = HolderProcess(lockPath: lock, bundleIdentifier: bundleIdentifier, build: "build-A")
+        assertTrue(old.waitFor("locked"), "The old copy holds the lock")
+        assertEqual(SingleInstanceGuard.claimReplacing(old.pid, bundleIdentifier: bundleIdentifier, lockPath: lock, build: "build-B"),
+                    nil, "The new copy waits while the copy it replaces holds the lock")
+        usleep(500_000)
+        assertTrue(old.process.isRunning, "The old copy was not asked to quit: it quits once the new one has launched")
+        old.process.terminate()
+        old.process.waitUntilExit()
+        let tookOver = SingleInstanceGuard.claimReplacing(old.pid, bundleIdentifier: bundleIdentifier, lockPath: lock, build: "build-B")
+        guard case .run(let fd?) = tookOver else {
+            assertTrue(false, "The new copy takes the lock once the old one has quit, got \(String(describing: tookOver))"); return
+        }
+        close(fd)
+
+        // Anyone else holding the lock gets the ordinary take-over.
+        let other = HolderProcess(lockPath: lock, bundleIdentifier: bundleIdentifier, build: "build-C")
+        assertTrue(other.waitFor("locked"), "An unrelated copy holds the lock")
+        let overOther = SingleInstanceGuard.claimReplacing(4_000_000, bundleIdentifier: bundleIdentifier, lockPath: lock, build: "build-B")
+        guard case .run(let fd2?) = overOther else {
+            assertTrue(false, "An unrelated holder is taken over as usual, got \(String(describing: overOther))"); return
+        }
+        assertTrue(other.waitFor("quit"), "The unrelated holder was asked to quit")
+        other.process.waitUntilExit()
+        close(fd2)
+
+        print("✅ Update hand-over passed all tests!\n")
     }
 
     // MARK: - Test 32: single instance guard
