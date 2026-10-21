@@ -156,7 +156,8 @@ enum CleanDevMacProjects {
     ///   about what that checkout tracks);
     /// - with a `gitignore` category, every other ignored entry except `.env*`;
     /// - never a path holding another repo (Lightspot's addition: an outer repo that ignores
-    ///   a whole nested checkout would otherwise offer it), nor one the safety gate refuses;
+    ///   a whole nested checkout would otherwise offer it; `withoutOtherCheckouts` extends
+    ///   this to checkouts the walk did not see), nor one the safety gate refuses;
     /// - an item inside another kept item is dropped, and a repo under a group root is
     ///   listed under the group root.
     static func items(_ walk: Walk, ignored: [String: [String]], listed: [String],
@@ -249,7 +250,84 @@ enum CleanDevMacProjects {
         for (repo, entries) in zip(listed, listings.all) { ignored[repo] = entries }
         let physicalHome = CleanDevMacEngine.physicalPath(home)
         let offered = items(found, ignored: ignored, listed: listed, rules: rules, home: home, physicalHome: physicalHome)
-        return (projects(offered, repos: found.repos, groups: rules.groups, home: home), Set(found.repos).count)
+        let kept = withoutOtherCheckouts(offered, repos: sortedRepos(found.repos))
+        return (projects(kept, repos: found.repos, groups: rules.groups, home: home), Set(found.repos).count)
+    }
+
+    // MARK: Other checkouts
+
+    /// Whether `gitPath` (a `.git` entry) makes its folder a checkout: a `.git` directory
+    /// with a `HEAD`, or the `.git` file of a worktree or submodule (`gitdir: …`).
+    static func isCheckoutMarker(_ gitPath: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory) else { return false }
+        if isDirectory.boolValue { return access(gitPath + "/HEAD", F_OK) == 0 }
+        guard let handle = FileHandle(forReadingAtPath: gitPath) else { return false }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: 8)) == Data("gitdir: ".utf8)
+    }
+
+    /// Whether `path` holds a checkout anywhere below it. Blocking: reads every directory
+    /// under `path`, names only. A folder it cannot read counts as holding one.
+    static func holdsCheckout(_ path: String) -> Bool {
+        guard let cPath = strdup(path) else { return true }
+        defer { free(cPath) }
+        var roots: [UnsafeMutablePointer<CChar>?] = [cPath, nil]
+        guard let tree = fts_open(&roots, FTS_PHYSICAL | FTS_NOCHDIR | FTS_NOSTAT, nil) else { return true }
+        defer { fts_close(tree) }
+        while let entry = fts_read(tree) {
+            let info = Int32(entry.pointee.fts_info)
+            if info == FTS_DNR || info == FTS_ERR { return true }
+            guard entry.pointee.fts_level > 0, entry.pointee.fts_namelen == 4, info != FTS_DP else { continue }
+            let entryPath = String(cString: entry.pointee.fts_path)
+            guard (entryPath as NSString).lastPathComponent == ".git" else { continue }
+            if isCheckoutMarker(entryPath) { return true }
+            if info == FTS_D { fts_set(tree, entry, FTS_SKIP) }
+        }
+        return false
+    }
+
+    /// `items` minus every path that holds another checkout or sits inside one below its
+    /// own repo (Lightspot's addition). The walk counts only `.git` directories as repos,
+    /// as cdm does, and never enters pruned names such as `.claude` or `vendor`, while git
+    /// lists an ignored folder whole: without this, a folder offered for the Trash could
+    /// hold a worktree with uncommitted work, and a checkout's tracked `build/` could be
+    /// offered on the strength of an outer repo ignoring the checkout.
+    static func withoutOtherCheckouts(_ items: [Item], repos: [String]) -> [Item] {
+        let touched = Probes(count: items.count)
+        DispatchQueue.concurrentPerform(iterations: items.count) { index in
+            let path = items[index].path
+            let repo = projectKey(path, repos: repos) ?? items[index].key
+            var folder = (path as NSString).deletingLastPathComponent
+            var inside = false
+            while folder.hasPrefix(repo + "/") && !inside {
+                inside = isCheckoutMarker(folder + "/.git")
+                folder = (folder as NSString).deletingLastPathComponent
+            }
+            touched.record(inside || holdsCheckout(path), at: index)
+        }
+        return zip(items, touched.all).filter { !$0.1 }.map(\.0)
+    }
+
+    private final class Probes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var results: [Bool]
+
+        init(count: Int) {
+            results = Array(repeating: true, count: count)
+        }
+
+        func record(_ result: Bool, at index: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            results[index] = result
+        }
+
+        var all: [Bool] {
+            lock.lock()
+            defer { lock.unlock() }
+            return results
+        }
     }
 
     private final class Listings: @unchecked Sendable {

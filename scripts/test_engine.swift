@@ -3699,6 +3699,33 @@ struct TestRunner {
         assertEqual(CleanDevMacProjects.reposToList(CleanDevMacProjects.walk(capped, home: home), rules: capped).count, 1,
                     "maxRepos caps how many repos git is asked about")
 
+        // Checkouts the walk does not count or reach: a worktree (its .git is a file) in an
+        // ignored folder, a Claude Code worktree and a clone under pruned names.
+        let f = home + "/code/repoF"
+        repo(f, ignoring: ["node_modules", "wt", "vendor", ".claude/worktrees"])
+        commitAll(f)
+        run(["worktree", "add", "-q", "wt/feature"], in: f)
+        run(["worktree", "add", "-q", ".claude/worktrees/agent-1"], in: f)
+        file(f + "/wt/feature/uncommitted.txt")
+        file(f + "/wt/feature/node_modules/pkg.js")
+        repo(f + "/vendor/lib", ignoring: [])
+        file(f + "/node_modules/pkg.js")
+        file(f + "/node_modules/odd/.git/config")
+        var pruning = rules(dirs: ["node_modules"], gitignore: true)
+        pruning.prune = [".claude", "vendor"]
+        assertEqual(offered(pruning).first { $0.key == f }?.paths, [f + "/node_modules"],
+                    "Nothing holding a worktree or a clone is offered, even where the walk never looked")
+        var namesOnly = rules(dirs: ["node_modules"])
+        namesOnly.prune = [".claude", "vendor"]
+        assertTrue(!paths(offered(namesOnly)).contains(f + "/wt/feature/node_modules"),
+                   "...nor junk inside a worktree, proven only by the outer repo ignoring the worktree")
+        assertTrue(CleanDevMacProjects.holdsCheckout(f + "/wt") && CleanDevMacProjects.holdsCheckout(f + "/vendor")
+                   && CleanDevMacProjects.holdsCheckout(f + "/.claude"), "A worktree's .git file and a clone's .git folder both make a checkout")
+        assertTrue(!CleanDevMacProjects.holdsCheckout(f + "/node_modules") && !CleanDevMacProjects.holdsCheckout(f + "/node_modules/pkg.js"),
+                   "...while a .git folder with no HEAD, or a plain file, does not")
+        assertTrue(fm.fileExists(atPath: f + "/wt/feature/.git") && !CleanDevMacProjects.walk(pruning, home: home).repos.contains(f + "/wt/feature"),
+                   "The walk still counts only .git folders as repos, as cdm does")
+
         // 5. In the cleaner: offered after the cache scan, added unticked, cleaned per path.
         let trash = home + "/.Trash"
         try? fm.createDirectory(atPath: trash, withIntermediateDirectories: true)
