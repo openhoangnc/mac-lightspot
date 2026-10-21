@@ -35,10 +35,18 @@ enum AutoStartManager {
         return status == .enabled
     }
 
+    /// `SMAppService.mainApp` is whatever executable is running. Outside an `.app` bundle
+    /// (the `scripts/` test runners, a bare `swift build` binary) that is the binary
+    /// itself: the first-run test registered `test_engine` under Login Items on every run.
+    nonisolated static var canRegisterLoginItem: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
     @discardableResult
     static func setEnabled(_ enabled: Bool) -> Bool {
         UserDefaults.standard.set(enabled, forKey: userDefaultsKey)
         cachedEnabled = enabled // optimistic; refreshState() reconciles
+        guard canRegisterLoginItem else { return false }
 
         do {
             if enabled {

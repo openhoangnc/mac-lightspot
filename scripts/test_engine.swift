@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 
 // MARK: - Test Runner for Lightspot Core Logic
 //
@@ -2036,6 +2037,9 @@ struct TestRunner {
 
         assertTrue(!FirstRunManager.isFirstRun, "isFirstRun is false after handleFirstRunIfNeeded")
         assertTrue(AutoStartManager.isEnabled, "AutoStartManager is enabled on first run")
+        // This runner is a bare executable: registering it would list "test_engine" under Login Items.
+        assertTrue(!AutoStartManager.canRegisterLoginItem, "A binary outside an .app bundle never registers")
+        assertTrue(SMAppService.mainApp.status != .enabled, "The test runner is not a login item")
         assertEqual(mockDelegate.rebuildMenuCallCount, 1, "rebuildMenu called on first run")
 
         // Second run must be a no-op

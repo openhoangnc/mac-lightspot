@@ -36,6 +36,11 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
+The runners are bare executables, so `SMAppService.mainApp` inside them is the runner
+itself: before `AutoStartManager.canRegisterLoginItem`, the first-run test put
+`test_engine` under Login Items on every run. Anything else that registers with the
+system on the app's behalf needs the same `.app` check.
+
 ## Project Structure
 
 ```
