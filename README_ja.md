@@ -155,7 +155,7 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 ## ✨ 追加の組み込み機能
 
 - **正確なmacOS Spotlight UI**: アニメーションによる展開とプレビューペインを備えた、半透明の角丸ピルデザイン（`NSVisualEffectView`）。
-- **Mach / IOKit ハードウェアHUD**: 即時の、サブプロセスなしのハードウェア診断（`sys`, `cpu`, `ram`, `battery`, `uptime`）:
+- **Mach / IOKit ハードウェアHUD**: 即時の、サブプロセスなしのハードウェア診断（`sys`, `cpu`, `ram`, `memory`, `disk`, `battery`, `uptime`, `specs`, `resources`）:
   - 正規化されたマルチコアCPU負荷 %
   - アクティブ、ワイヤード、圧縮、および合計の物理RAM
   - ブートSSDの空き容量と合計ストレージ
@@ -167,7 +167,7 @@ Webユーティリティを開いたりCLIパッケージをインストール�
   - 基数: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **デフォルトブラウザのブックマーク、履歴、タブ**: 重複ゼロで、アクティブなデフォルトブラウザのみを統合します（**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**）。ブックマークと最近の履歴はブラウザ自身のファイルから読み取られ（履歴は直近3日または7日分、デフォルトは7日で、メニューバーの **Browser History** からオフにもできます）、開いているタブはSafariとChromiumベースのブラウザから取得します。
 - **インメモリの一時的なクリップボード**: `clip <query>` 経経由でアクセスできる揮発性のRAM専用リングバッファ（最大50アイテム）。ディスクに書き込むことはなく、パスワードマネージャー（`1Password`, `Bitwarden`）を厳格にフィルタリングします。
-- **macOSのシステム設定へのディープリンク**: 特定のmacOS設定ペイン（`x-apple.systempreferences:...`）を直接開く35のディープリンク。
+- **macOSのシステム設定へのディープリンク**: 特定のmacOS設定ペイン（`x-apple.systempreferences:...`）を直接開く46のディープリンク。システム設定自体の検索と同じキーワード（`night shift`, `lockdown mode`, `sticky keys`）で、システムの言語のまま検索できます。
 - **マルチエンジンWeb検索**: 組み込みのプレフィックスショートカット: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`、さらに `brew <formula>`（検索ではなく、formulae.brew.sh上のそのformulaのページを開きます）。
 
 ---

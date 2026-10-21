@@ -1,12 +1,51 @@
 import AppKit
 
-final class SettingsProvider: Sendable {
+final class SettingsProvider: @unchecked Sendable {
     static let shared = SettingsProvider()
 
     let items: [SettingsItem]
 
+    private let lock = NSLock()
+    private var searchIndex = SettingsSearchIndex.empty
+    private var hasStartedLoadingTerms = false
+
     private init() {
+        // macOS renames panes between releases; the sidebar label is what users type.
+        var isMacOS26 = false
+        if #available(macOS 26, *) { isMacOS26 = true }
+        var hasAppleIntelligence = false
+        #if arch(arm64)
+        if #available(macOS 15.1, *) { hasAppleIntelligence = true }
+        #endif
+        let menuBarName = isMacOS26 ? "Menu Bar" : "Control Center"
+        let siriName = hasAppleIntelligence ? "Apple Intelligence & Siri" : "Siri"
+        let airDropName = isMacOS26 ? "AirDrop & Continuity" : "AirDrop & Handoff"
+        let passwordsName = isMacOS26 ? "AutoFill & Passwords" : "Passwords"
+
         self.items = [
+            SettingsItem(
+                name: "Apple Account",
+                keywords: ["apple account", "apple id", "appleid", "account", "sign in", "sign out", "media & purchases", "subscriptions", "payment", "two-factor"],
+                sfSymbol: "person.crop.circle",
+                deepLink: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings",
+                subtitle: "System Settings → Apple Account",
+                termSections: ["AppleAccount", "com.apple.AppleMediaServicesUI.SpyglassPurchases"]
+            ),
+            SettingsItem(
+                name: "iCloud",
+                keywords: ["icloud", "cloud", "icloud drive", "icloud+", "storage", "photos", "keychain", "find my", "hide my email", "private relay", "sync"],
+                sfSymbol: "icloud",
+                deepLink: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings:icloud",
+                subtitle: "System Settings → iCloud",
+                termSections: ["iCloud"]
+            ),
+            SettingsItem(
+                name: "Family",
+                keywords: ["family", "family sharing", "parental controls", "child", "kids", "ask to buy", "purchase sharing", "location sharing", "subscriptions"],
+                sfSymbol: "person.3",
+                deepLink: "x-apple.systempreferences:com.apple.Family-Settings.extension",
+                subtitle: "System Settings → Family"
+            ),
             SettingsItem(
                 name: "Wi-Fi",
                 keywords: ["wifi", "wi-fi", "wireless", "internet", "network", "wlan", "ssid", "hotspot", "airport", "ip address"],
@@ -27,6 +66,13 @@ final class SettingsProvider: Sendable {
                 sfSymbol: "network",
                 deepLink: "x-apple.systempreferences:com.apple.Network-Settings.extension",
                 subtitle: "System Settings → Network"
+            ),
+            SettingsItem(
+                name: "VPN",
+                keywords: ["vpn", "virtual private network", "ikev2", "l2tp", "ipsec", "wireguard", "tunnel", "vpn on demand"],
+                sfSymbol: "lock.shield",
+                deepLink: "x-apple.systempreferences:com.apple.NetworkExtensionSettingsUI.NESettingsUIExtension",
+                subtitle: "System Settings → VPN"
             ),
             SettingsItem(
                 name: "Notifications",
@@ -58,10 +104,46 @@ final class SettingsProvider: Sendable {
             ),
             SettingsItem(
                 name: "General",
-                keywords: ["general", "about", "info", "system", "airdrop", "language", "region"],
+                keywords: ["general", "info", "system"],
                 sfSymbol: "gearshape",
-                deepLink: "x-apple.systempreferences:com.apple.General-Settings.extension",
+                deepLink: "x-apple.systempreferences:com.apple.systempreferences.GeneralSettings",
                 subtitle: "System Settings → General"
+            ),
+            SettingsItem(
+                name: "About",
+                keywords: ["about this mac", "about", "serial number", "model", "chip", "processor", "memory", "macos version", "system report", "mac name"],
+                sfSymbol: "info.circle",
+                deepLink: "x-apple.systempreferences:com.apple.SystemProfiler.AboutExtension",
+                subtitle: "System Settings → About"
+            ),
+            SettingsItem(
+                name: airDropName,
+                keywords: ["airdrop", "handoff", "continuity", "airplay receiver", "universal clipboard", "iphone"],
+                sfSymbol: "dot.radiowaves.left.and.right",
+                deepLink: "x-apple.systempreferences:com.apple.AirDrop-Handoff-Settings.extension",
+                subtitle: "System Settings → \(airDropName)",
+                id: "settings-airdrop-handoff"
+            ),
+            SettingsItem(
+                name: "Login Items",
+                keywords: ["login items", "startup items", "open at login", "launch at login", "background items", "extensions", "launch agents"],
+                sfSymbol: "list.bullet",
+                deepLink: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+                subtitle: "System Settings → Login Items"
+            ),
+            SettingsItem(
+                name: "Language & Region",
+                keywords: ["language", "region", "locale", "translation", "number format", "first day of week", "measurement units", "temperature unit"],
+                sfSymbol: "globe",
+                deepLink: "x-apple.systempreferences:com.apple.Localization-Settings.extension",
+                subtitle: "System Settings → Language & Region"
+            ),
+            SettingsItem(
+                name: "Device Management",
+                keywords: ["device management", "profiles", "configuration profiles", "mdm", "enrollment", "supervision"],
+                sfSymbol: "checkmark.seal",
+                deepLink: "x-apple.systempreferences:com.apple.Profiles-Settings.extension",
+                subtitle: "System Settings → Device Management"
             ),
             SettingsItem(
                 name: "Appearance",
@@ -78,18 +160,20 @@ final class SettingsProvider: Sendable {
                 subtitle: "System Settings → Accessibility"
             ),
             SettingsItem(
-                name: "Control Center",
-                keywords: ["control center", "menu bar", "status bar", "shortcuts", "modules", "clock", "battery percent"],
+                name: menuBarName,
+                keywords: ["menu bar", "menubar", "control center", "status bar", "shortcuts", "modules", "clock", "battery percent", "hide menu bar"],
                 sfSymbol: "switch.2",
                 deepLink: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension",
-                subtitle: "System Settings → Control Center"
+                subtitle: "System Settings → \(menuBarName)",
+                id: "settings-control-center"
             ),
             SettingsItem(
-                name: "Siri",
-                keywords: ["siri", "voice", "assistant", "hey siri", "dictation", "talk", "ai", "apple intelligence"],
+                name: siriName,
+                keywords: ["siri", "apple intelligence", "voice", "assistant", "hey siri", "dictation", "talk", "ai", "chatgpt", "writing tools"],
                 sfSymbol: "waveform",
                 deepLink: "x-apple.systempreferences:com.apple.Siri-Settings.extension",
-                subtitle: "System Settings → Siri"
+                subtitle: "System Settings → \(siriName)",
+                id: "settings-siri"
             ),
             SettingsItem(
                 name: "Spotlight",
@@ -102,7 +186,7 @@ final class SettingsProvider: Sendable {
                 name: "Privacy & Security",
                 keywords: ["privacy", "security", "location", "camera", "microphone", "gatekeeper", "filevault", "firewall", "permissions", "analytics"],
                 sfSymbol: "hand.raised",
-                deepLink: "x-apple.systempreferences:com.apple.Privacy-Settings.extension",
+                deepLink: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
                 subtitle: "System Settings → Privacy & Security"
             ),
             SettingsItem(
@@ -130,8 +214,12 @@ final class SettingsProvider: Sendable {
                 name: "Screen Saver",
                 keywords: ["screen saver", "screensaver", "aerial", "drift", "hello", "lock screen", "display sleep"],
                 sfSymbol: "sparkles",
-                deepLink: "x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension",
-                subtitle: "System Settings → Screen Saver"
+                // macOS 26 folded Screen Saver into the Wallpaper pane.
+                deepLink: isMacOS26
+                    ? "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension"
+                    : "x-apple.systempreferences:com.apple.ScreenSaver-Settings.extension",
+                subtitle: "System Settings → Screen Saver",
+                termSections: isMacOS26 ? ["ScreenSaver"] : nil
             ),
             SettingsItem(
                 name: "Battery",
@@ -148,11 +236,12 @@ final class SettingsProvider: Sendable {
                 subtitle: "System Settings → Lock Screen"
             ),
             SettingsItem(
-                name: "Touch ID",
-                keywords: ["touch id", "touchid", "fingerprint", "password", "unlock", "apple watch unlock", "security", "biometrics"],
+                name: "Touch ID & Password",
+                keywords: ["touch id", "touchid", "fingerprint", "password", "login password", "change password", "unlock", "apple watch unlock", "security", "biometrics"],
                 sfSymbol: "touchid",
                 deepLink: "x-apple.systempreferences:com.apple.Touch-ID-Settings.extension",
-                subtitle: "System Settings → Touch ID"
+                subtitle: "System Settings → Touch ID & Password",
+                id: "settings-touch-id"
             ),
             SettingsItem(
                 name: "Users & Groups",
@@ -162,11 +251,12 @@ final class SettingsProvider: Sendable {
                 subtitle: "System Settings → Users & Groups"
             ),
             SettingsItem(
-                name: "Passwords",
-                keywords: ["passwords", "keychain", "credentials", "login", "autofill", "2fa", "security codes", "passkeys"],
+                name: passwordsName,
+                keywords: ["passwords", "autofill", "keychain", "credentials", "login", "2fa", "security codes", "verification codes", "passkeys"],
                 sfSymbol: "key",
                 deepLink: "x-apple.systempreferences:com.apple.Passwords-Settings.extension",
-                subtitle: "System Settings → Passwords"
+                subtitle: "System Settings → \(passwordsName)",
+                id: "settings-passwords"
             ),
             SettingsItem(
                 name: "Internet Accounts",
@@ -174,6 +264,20 @@ final class SettingsProvider: Sendable {
                 sfSymbol: "at",
                 deepLink: "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension",
                 subtitle: "System Settings → Internet Accounts"
+            ),
+            SettingsItem(
+                name: "Game Center",
+                keywords: ["game center", "gamecenter", "games", "friends", "achievements", "leaderboards", "multiplayer", "nickname"],
+                sfSymbol: "gamecontroller",
+                deepLink: "x-apple.systempreferences:com.apple.Game-Center-Settings.extension",
+                subtitle: "System Settings → Game Center"
+            ),
+            SettingsItem(
+                name: "Wallet & Apple Pay",
+                keywords: ["wallet", "apple pay", "credit card", "debit card", "cards", "payment", "express transit"],
+                sfSymbol: "wallet.pass",
+                deepLink: "x-apple.systempreferences:com.apple.WalletSettingsExtension",
+                subtitle: "System Settings → Wallet & Apple Pay"
             ),
             SettingsItem(
                 name: "Keyboard",
@@ -255,13 +359,46 @@ final class SettingsProvider: Sendable {
         ]
     }
 
-    /// Search settings items with fuzzy matching against name and keywords
+    /// Reads System Settings' own search terms (`SettingsSearchTerms`) on a background
+    /// queue, once. Until they land, search matches pane names and curated keywords.
+    func startLoadingSearchTerms() {
+        lock.lock()
+        if hasStartedLoadingTerms {
+            lock.unlock()
+            return
+        }
+        hasStartedLoadingTerms = true
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).async { [self] in
+            loadSearchTerms()
+        }
+    }
+
+    /// Synchronous: 40-140 ms of file reads, so never on the main thread. Returns the
+    /// number of keys indexed.
+    @discardableResult
+    func loadSearchTerms(from directories: [URL] = SettingsSearchTerms.extensionDirectories, languages: [String] = SettingsSearchTerms.preferredLanguages()) -> Int {
+        let index = SettingsSearchTerms.buildIndex(for: items, directories: directories, languages: languages)
+        lock.lock()
+        searchIndex = index
+        lock.unlock()
+        return index.keyCount
+    }
+
+    /// Search settings items with fuzzy matching against name, keywords and the terms
+    /// System Settings itself searches
     func search(_ query: SearchQuery) -> [SearchResult] {
         if query.isEmpty { return [] }
 
+        lock.lock()
+        let index = searchIndex
+        lock.unlock()
+        let termMatches = index.matches(for: query.lowercased)
+
         var results: [SearchResult] = []
 
-        for item in items {
+        for (position, item) in items.enumerated() {
             var highestScore: Double?
 
             // Match against item name (zero allocation using SearchQuery)
@@ -281,12 +418,21 @@ final class SettingsProvider: Sendable {
                 }
             }
 
+            // Match against System Settings' search terms, naming the setting that matched
+            var subtitle = item.subtitle
+            if let match = termMatches[position], match.score > (highestScore ?? 0) {
+                highestScore = match.score
+                if match.title.lowercased() != item.lowercaseName {
+                    subtitle = "\(item.subtitle) → \(match.title)"
+                }
+            }
+
             guard let score = highestScore else { continue }
 
             let result = SearchResult(
                 id: item.id,
                 title: item.name,
-                subtitle: item.subtitle,
+                subtitle: subtitle,
                 iconType: .systemSymbol(name: item.sfSymbol),
                 category: .systemSettings,
                 score: score,

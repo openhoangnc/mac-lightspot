@@ -51,6 +51,29 @@ struct DeepVerifier {
         print("Valid system URL schemes: \(validUrls) / \(settings.count)")
         check("All settings deep links resolve to system handler", validUrls == settings.count)
 
+        // The scheme check above passes for any pane ID at all. System Settings opens a
+        // pane by its extension's bundle identifier, so each link must name one.
+        let panes = SettingsSearchTerms.paneExtensions()
+        let unknownPanes = settings.filter { panes[$0.extensionID] == nil }
+        for item in unknownPanes {
+            print("     ⚠️ No installed pane for: \(item.name) -> \(item.extensionID)")
+        }
+        check("Every settings deep link names an installed System Settings pane", unknownPanes.isEmpty)
+
+        let termKeys = SettingsProvider.shared.loadSearchTerms()
+        print("System Settings search terms indexed: \(termKeys) keys")
+        check("System Settings search terms load (> 1,000 keys)", termKeys > 1_000)
+        // Terms that exist only in Apple's .searchTerms files, not in Lightspot's keywords.
+        for (query, pane, setting) in [("lockdown mode", "Privacy & Security", "Lockdown Mode"),
+                                       ("power nap", "Battery", "Power Nap"),
+                                       ("universal control", "Displays", "Universal Control"),
+                                       ("known networks", "Wi-Fi", "Known networks"),
+                                       ("sticky keys", "Accessibility", "Sticky Keys")] {
+            let row = SettingsProvider.shared.search(SearchQuery(query)).first
+            check("'\(query)' finds \(pane) → \(setting)",
+                  row?.title == pane && row?.subtitle.hasSuffix("→ \(setting)") == true)
+        }
+
         // ----------------------------------------------------
         // SECTION 2: Quick Actions Script Validation
         // ----------------------------------------------------

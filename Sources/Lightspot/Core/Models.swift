@@ -230,16 +230,29 @@ struct SettingsItem: Sendable {
     let sfSymbol: String
     let deepLink: String
     let subtitle: String
-    
-    init(name: String, keywords: [String], sfSymbol: String, deepLink: String, subtitle: String) {
+    /// The settings extension behind the pane: the deep link's pane ID up to any `:`
+    /// sidebar sub-item or `?` anchor. Its `.searchTerms` file feeds this item.
+    let extensionID: String
+    /// Sections of that file this item takes, for an extension that serves more than
+    /// one sidebar item (Apple Account and iCloud are one extension). nil takes them all.
+    let termSections: Set<String>?
+
+    static let deepLinkScheme = "x-apple.systempreferences:"
+
+    /// `id` pins the identifier of a pane that macOS renamed ("Control Center" is
+    /// "Menu Bar" on macOS 26): search history is keyed by it.
+    init(name: String, keywords: [String], sfSymbol: String, deepLink: String, subtitle: String, id: String? = nil, termSections: Set<String>? = nil) {
         let lower = name.lowercased()
-        self.id = "settings-\(lower.replacingOccurrences(of: " ", with: "-"))"
+        self.id = id ?? "settings-\(lower.replacingOccurrences(of: " ", with: "-"))"
         self.name = name
         self.lowercaseName = lower
         self.lowercaseKeywords = keywords.map { $0.lowercased() }
         self.sfSymbol = sfSymbol
         self.deepLink = deepLink
         self.subtitle = subtitle
+        let paneID = deepLink.hasPrefix(Self.deepLinkScheme) ? deepLink.dropFirst(Self.deepLinkScheme.count) : Substring(deepLink)
+        self.extensionID = String(paneID.prefix { $0 != ":" && $0 != "?" })
+        self.termSections = termSections
     }
 }
 

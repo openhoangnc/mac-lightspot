@@ -155,7 +155,7 @@ Lightspot自动监控以下最近工作区：
 ## ✨ 额外的内置功能
 
 - **精确的macOS Spotlight UI**：带有动画展开和预览窗格（`NSVisualEffectView`）的浮动半透明超椭圆胶囊。
-- **Mach / IOKit硬件HUD**：即时、无子进程的硬件诊断 (`sys`, `cpu`, `ram`, `battery`, `uptime`)：
+- **Mach / IOKit硬件HUD**：即时、无子进程的硬件诊断 (`sys`, `cpu`, `ram`, `memory`, `disk`, `battery`, `uptime`, `specs`, `resources`)：
   - 标准化多核CPU负载 %
   - 活动、固定、压缩和总物理RAM
   - 引导SSD可用和总存储空间
@@ -167,7 +167,7 @@ Lightspot自动监控以下最近工作区：
   - 数字基数：`0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **默认浏览器书签、历史记录与标签页**：仅为当前处于活动状态的默认浏览器（**Chrome**、**Safari**、**Firefox**、**Arc**、**Brave**、**Edge**）提供零冗余集成。书签和近期历史记录直接从浏览器自身的文件中读取（历史记录涵盖最近3天或7天，默认7天，也可通过菜单栏的 **Browser History** 关闭）；打开的标签页则通过Safari和基于Chromium的浏览器查询。
 - **内存中的临时剪贴板**：仅限RAM的易失性环形缓冲区（最多50项），可通过 `clip <query>` 访问。从不写入磁盘，并严格过滤密码管理器（`1Password`、`Bitwarden`）。
-- **macOS系统设置深层链接**：35 个直接深层链接，用于打开特定的macOS设置窗格 (`x-apple.systempreferences:...`)。
+- **macOS系统设置深层链接**：46 个直接深层链接，用于打开特定的macOS设置窗格 (`x-apple.systempreferences:...`)，可用系统设置自身搜索所用的关键词查找 (`night shift`, `lockdown mode`, `sticky keys`)，支持你的系统语言。
 - **多引擎网页搜索**：内置前缀快捷键：`g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`，另有 `brew <formula>`，它会打开 formulae.brew.sh 上对应formula的页面，而不是执行搜索。
 
 ---

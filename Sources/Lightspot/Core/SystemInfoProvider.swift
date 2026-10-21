@@ -9,16 +9,38 @@ public final class SystemInfoProvider: @unchecked Sendable {
 
     private init() {}
 
+    /// Words that name the HUD outright: an exact one outranks an app that merely starts
+    /// with it, and three letters of a one-word one ("hard", "upti", "memo") already list it.
+    static let primaryKeywords: Set<String> = [
+        "sys", "system", "sysinfo", "system info", "system status", "system stats",
+        "specs", "specifications", "hardware", "resources", "resource", "system resources", "resource usage",
+        "cpu", "cpu usage", "cpu load", "load average", "loadavg",
+        "ram", "ram usage", "memory", "mem", "memory usage", "free memory", "free ram",
+        "disk usage", "disk space", "free space", "free disk",
+        "battery", "battery level", "battery status", "battery percentage",
+        "uptime", "up time", "boot time",
+    ]
+
+    /// Words that also name something else (Disk Utility, the Storage pane, PowerPoint):
+    /// they list the HUD without taking Top Hit from the closer match, and only in full.
+    static let secondaryKeywords: Set<String> = [
+        "disk", "storage", "power", "charge", "charging", "load", "usage",
+        "status", "stats", "performance", "perf", "health",
+    ]
+
+    /// Phrases are left out: "dis", "fre" and "boo" would list the HUD for "disk usage",
+    /// "free memory" and "boot time" while the user is typing Discord, Freeform or Books.
+    private static let prefixKeywords = primaryKeywords.filter { !$0.contains(" ") }
+
+    static func matchScore(_ lower: String) -> Double? {
+        if primaryKeywords.contains(lower) { return 98 }
+        if secondaryKeywords.contains(lower) { return 90 }
+        if lower.utf8.count >= 3, prefixKeywords.contains(where: { $0.hasPrefix(lower) }) { return 75 }
+        return nil
+    }
+
     func search(_ query: SearchQuery) -> [SearchResult] {
-        let lower = query.lowercased
-        guard lower == "sys"
-                || lower == "system"
-                || lower == "specs"
-                || lower == "battery"
-                || lower == "ram"
-                || lower == "cpu"
-                || lower == "uptime"
-                || lower == "hardware" else {
+        guard let score = Self.matchScore(query.lowercased) else {
             return []
         }
 
@@ -42,7 +64,7 @@ public final class SystemInfoProvider: @unchecked Sendable {
                 subtitle: "\(subtitle) · Press ↵ to copy",
                 iconType: .systemSymbol(name: "gauge.with.dots.needle.bottom.50percent"),
                 category: .quickActions,
-                score: 98,
+                score: score,
                 action: .copyToClipboard(report)
             )
         ]

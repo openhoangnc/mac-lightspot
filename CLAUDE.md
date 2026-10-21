@@ -31,8 +31,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 34 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), and the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind.
-- `deep_verify.swift`: 10 sections of live system checks (88 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code) verifying real settings deep links, AppleScript syntax, terminal commands, applications scan, and system invariants.
+- `test_engine.swift`: 35 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, and System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks).
+- `deep_verify.swift`: 10 sections of live system checks (95 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript syntax, terminal commands, applications scan, and system invariants.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
@@ -57,8 +57,8 @@ mac-lightspot/
 │   └── AppIcon.icns              # Multi-size macOS application icon
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (34 test blocks)
-│   └── deep_verify.swift         # Live-system verification (10 sections, 88 checks)
+│   ├── test_engine.swift         # Automated test runner (35 test blocks)
+│   └── deep_verify.swift         # Live-system verification (10 sections, 95 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -81,7 +81,8 @@ mac-lightspot/
         │   ├── SearchEngine.swift       # Synchronous search aggregator & ranking
         │   ├── SearchHistoryManager.swift # Search query & selection history
         │   ├── SettingsBackup.swift     # Settings export & import backup
-        │   ├── SettingsProvider.swift   # 35 macOS System Settings deep links
+        │   ├── SettingsProvider.swift   # 46 macOS System Settings deep links
+        │   ├── SettingsSearchTerms.swift # System Settings' own .searchTerms vocabulary, indexed at launch
         │   ├── ShellHistoryProvider.swift # zsh history parser & pinned commands
         │   ├── SnippetsStore.swift      # Text expansion snippets with variable interpolation
         │   ├── SystemInfoProvider.swift # Zero-subprocess Mach/IOKit hardware dashboard
@@ -167,6 +168,15 @@ the latter is a Foundation extension that forwards to `range(of:)` and collates,
 ~3.3 µs against a 90-character haystack versus ~0.11 µs byte-wise. It runs once per
 candidate per keystroke across every provider, so the difference is the search.
 
+System Settings rows also match what System Settings' own search matches. Each pane's
+extension ships a `.searchTerms` plist of entries, a `title` ("Night Shift options") plus
+comma-separated `index` words ("warm, sunset"); `SettingsSearchTerms` reads them for the
+user's languages plus English at launch (~13k keys, 0.2 s, background) into one sorted
+array the keystroke path binary-searches (~2 µs). Only the exact, prefix and word-boundary
+tiers apply. Titles score ×0.9; index words score ×0.55, which caps them at 55, under the
+60 a Top Hit needs, because many are generic ("show", "top", "word"). A row matched
+this way names the setting in its subtitle.
+
 ### Keyboard Shortcuts & Action Modifiers
 
 - **Return (`↵`)**:
@@ -236,6 +246,9 @@ candidate per keystroke across every provider, so the difference is the search.
    - The user's zsh history file (last 2 MB only)
    - IDE recent workspace state files (`storage.json`, `recentProjects.xml`, etc.)
    - The user's default browser bookmarks file (default browser only)
+   - System Settings' pane bundles, once at launch: each `Info.plist` under
+     `/System/Library/ExtensionKit/Extensions`, System Settings.app's `PlugIns` and the
+     Safari cryptex's `CoreServices`, and the `.searchTerms` files they name
 4. **Clipboard History Privacy**:
    `ClipboardHistoryManager` is 100% ephemeral in-memory (max 50 items). It is never written to disk and strictly filters out concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 5. **AppleScript & Automation Entitlements**:
@@ -344,3 +357,15 @@ candidate per keystroke across every provider, so the difference is the search.
    single-instance guard, off the main thread, by known path and only where the file exists,
    so a fresh install gets nothing and no `UserDefaults` flag is needed. `uninstall.sh`
    removes the same paths.
+
+13. **A settings deep link is an installed pane's bundle identifier**:
+   `x-apple.systempreferences:<id>` opens the settings extension whose `CFBundleIdentifier`
+   (or `legacyBundleIdentifier`) is `<id>`; a sidebar sub-item adds `:<item>`
+   (`com.apple.systempreferences.AppleIDSettings:icloud`). Any other ID still passes a
+   URL-scheme check: `com.apple.General-Settings.extension` and
+   `com.apple.Privacy-Settings.extension` shipped that way, yet neither is a pane and the
+   System Settings binary contains neither string.
+   The real IDs are in `/System/Applications/System Settings.app/Contents/Resources/Sidebar*.plist`.
+   `deep_verify` checks every link against the installed panes. macOS renames and merges
+   panes (Control Center became Menu Bar and Screen Saver moved into Wallpaper in macOS 26),
+   so a renamed pane passes `id:` to keep the search-history key it had.

@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Discover and load recent projects (VS Code, Cursor, Zed, JetBrains, Sublime) off the main thread
         RecentProjectsProvider.shared.startLoading()
 
+        // Read System Settings' own search terms for every pane off the main thread
+        SettingsProvider.shared.startLoadingSearchTerms()
+
         // Start in-memory ephemeral clipboard history monitoring
         ClipboardHistoryManager.shared.startMonitoring()
 

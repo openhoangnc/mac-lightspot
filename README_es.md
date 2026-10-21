@@ -155,7 +155,7 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
 ## ✨ Capacidades Adicionales Integradas
 
 - **UI Exacta de Spotlight de macOS**: Píldora de ardilla translúcida flotante con expansión animada y panel de vista previa (`NSVisualEffectView`).
-- **HUD de Hardware Mach / IOKit**: Diagnóstico de hardware instantáneo sin subprocesos (`sys`, `cpu`, `ram`, `battery`, `uptime`):
+- **HUD de Hardware Mach / IOKit**: Diagnóstico de hardware instantáneo sin subprocesos (`sys`, `cpu`, `ram`, `memory`, `disk`, `battery`, `uptime`, `specs`, `resources`):
   - Carga de CPU multinúcleo normalizada %
   - RAM Física Activa, Cableada, Comprimida y Total
   - Almacenamiento libre y total del SSD de arranque
@@ -167,7 +167,7 @@ Ejecuta acciones de mantenimiento privilegiadas (`Flush DNS Cache`, `Purge Inact
   - Bases numéricas: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **Marcadores, Historial y Pestañas del Navegador Predeterminado**: Integración sin redundancia solo para tu navegador predeterminado activo (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**). Los marcadores y el historial reciente se leen de los propios archivos del navegador (el historial abarca los últimos 3 o 7 días, 7 por defecto, o se puede desactivar en **Browser History** de la barra de menús); las pestañas abiertas se consultan en Safari y en navegadores basados en Chromium.
 - **Portapapeles Efímero en Memoria**: Búfer de anillo volátil solo en RAM (hasta 50 elementos) al que se accede mediante `clip <query>`. Nunca escribe en el disco y filtra estrictamente los administradores de contraseñas (`1Password`, `Bitwarden`).
-- **Enlaces Profundos de Ajustes del Sistema de macOS**: 35 enlaces profundos directos que abren paneles de ajustes específicos de macOS (`x-apple.systempreferences:...`).
+- **Enlaces Profundos de Ajustes del Sistema de macOS**: 46 enlaces profundos directos que abren paneles de ajustes específicos de macOS (`x-apple.systempreferences:...`), encontrados con los mismos términos que usa la búsqueda de Ajustes del Sistema (`night shift`, `lockdown mode`, `sticky keys`), en los idiomas de tu sistema.
 - **Búsqueda Web Multimotor**: Atajos de prefijo integrados: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`, además de `brew <fórmula>`, que abre la página de esa fórmula en formulae.brew.sh en lugar de ejecutar una búsqueda.
 
 ---

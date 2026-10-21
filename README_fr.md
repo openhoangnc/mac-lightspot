@@ -155,7 +155,7 @@ Exécutez des actions de maintenance privilégiées (`Vider le Cache DNS`, `Purg
 ## ✨ Capacités Intégrées Supplémentaires
 
 - **Interface exacte de macOS Spotlight** : Pilule flottante translucide en forme de cercle carré avec expansion animée et panneau d'aperçu (`NSVisualEffectView`).
-- **Affichage Matériel Mach / IOKit** : Diagnostics matériels instantanés sans sous-processus (`sys`, `cpu`, `ram`, `battery`, `uptime`) :
+- **Affichage Matériel Mach / IOKit** : Diagnostics matériels instantanés sans sous-processus (`sys`, `cpu`, `ram`, `memory`, `disk`, `battery`, `uptime`, `specs`, `resources`) :
   - Charge CPU multicœur normalisée %
   - RAM Physique Active, Résidente (Wired), Compressée, et Totale
   - Stockage libre et total du SSD de démarrage
@@ -167,7 +167,7 @@ Exécutez des actions de maintenance privilégiées (`Vider le Cache DNS`, `Purg
   - Bases numériques : `0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **Signets, Historique & Onglets du Navigateur par Défaut** : Intégration sans redondance, uniquement pour votre navigateur par défaut actif (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**). Les signets et l'historique récent sont lus depuis les fichiers du navigateur lui-même (l'historique couvre les 3 ou 7 derniers jours, 7 par défaut, ou peut être désactivé via **Browser History** dans la barre des menus) ; les onglets ouverts sont interrogés dans Safari et les navigateurs basés sur Chromium.
 - **Presse-papiers Éphémère en Mémoire** : Tampon circulaire volatile uniquement en RAM (jusqu'à 50 éléments) accessible via `clip <query>`. N'écrit jamais sur le disque et filtre strictement les gestionnaires de mots de passe (`1Password`, `Bitwarden`).
-- **Liens Profonds des Paramètres Système macOS** : 35 liens profonds directs ouvrant des volets spécifiques des paramètres de macOS (`x-apple.systempreferences:...`).
+- **Liens Profonds des Paramètres Système macOS** : 46 liens profonds directs ouvrant des volets spécifiques des paramètres de macOS (`x-apple.systempreferences:...`), trouvés avec les mêmes termes que la recherche des Réglages Système (`night shift`, `lockdown mode`, `sticky keys`), dans les langues de votre système.
 - **Recherche Web Multi-Moteurs** : Raccourcis de préfixes intégrés : `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`, ainsi que `brew <formule>`, qui ouvre la page de cette formule sur formulae.brew.sh au lieu de lancer une recherche.
 
 ---

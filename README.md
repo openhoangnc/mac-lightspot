@@ -155,7 +155,7 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 ## ✨ Additional Built-in Capabilities
 
 - **Exact macOS Spotlight UI**: Floating translucent squircle pill with animated expansion and preview pane (`NSVisualEffectView`).
-- **Mach / IOKit Hardware HUD**: Instant, zero-subprocess hardware diagnostics (`sys`, `cpu`, `ram`, `battery`, `uptime`):
+- **Mach / IOKit Hardware HUD**: Instant, zero-subprocess hardware diagnostics (`sys`, `cpu`, `ram`, `memory`, `disk`, `battery`, `uptime`, `specs`, `resources`):
   - Normalized multi-core CPU load %
   - Active, Wired, Compressed, and Total Physical RAM
   - Boot SSD free and total storage
@@ -167,7 +167,7 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
   - Number bases: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **Default Browser Bookmarks, History & Tabs**: Zero-redundancy integration for your active default browser only (**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**). Bookmarks and recent history are read from the browser's own files (history covers the last 3 or 7 days, 7 by default, or can be turned off via **Browser History** in the menu bar); open tabs are queried from Safari and Chromium-based browsers.
 - **In-Memory Ephemeral Clipboard**: Volatile RAM-only ring buffer (up to 50 items) accessed via `clip <query>`. Never writes to disk and strictly filters password managers (`1Password`, `Bitwarden`).
-- **macOS System Settings Deep Links**: 35 direct deep links opening specific macOS settings panes (`x-apple.systempreferences:...`).
+- **macOS System Settings Deep Links**: 46 direct deep links opening specific macOS settings panes (`x-apple.systempreferences:...`), found by the same terms System Settings' own search uses (`night shift`, `lockdown mode`, `sticky keys`), in your system languages.
 - **Multi-Engine Web Search**: Built-in prefix shortcuts: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`, plus `brew <formula>`, which opens that formula's page on formulae.brew.sh rather than running a search.
 
 ---

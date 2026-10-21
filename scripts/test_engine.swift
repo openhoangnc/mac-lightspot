@@ -201,6 +201,7 @@ struct TestRunner {
         testHistoryDoesNotRecordProcessKills()
         testSingleInstanceGuard()
         testLegacyNetworkStores()
+        testSettingsSearchTerms()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -1975,6 +1976,25 @@ struct TestRunner {
         assertTrue(!sysResults.isEmpty, "sys search returns hardware HUD")
         assertEqual(sysResults.first?.id, "system-hud", "HUD result ID is system-hud")
 
+        // Words that name the HUD outright beat an app that only starts with them.
+        for word in ["memory", "mem", "cpu usage", "free memory", "disk space", "load average", "resources", "System Info"] {
+            assertEqual(SystemInfoProvider.shared.search(SearchQuery(word)).first?.score, 98, "'\(word)' names the HUD")
+        }
+        // Words that also name Disk Utility, the Storage pane or PowerPoint list it below them.
+        for word in ["disk", "storage", "power", "charging", "performance"] {
+            assertEqual(SystemInfoProvider.shared.search(SearchQuery(word)).first?.score, 90, "'\(word)' lists the HUD")
+        }
+        // Three letters of a one-word keyword list it while typing; phrases need the whole word.
+        for partial in ["hardw", "upti", "memo", "batt", "res", "spec"] {
+            assertEqual(SystemInfoProvider.shared.search(SearchQuery(partial)).first?.score, 75, "'\(partial)' lists the HUD")
+        }
+        for unrelated in ["up", "me", "dis", "fre", "boo", "chrome", "systemd"] {
+            assertTrue(SystemInfoProvider.shared.search(SearchQuery(unrelated)).isEmpty, "'\(unrelated)' does not list the HUD")
+        }
+        let diskEngine = SearchEngine.shared.searchImmediate(SearchQuery("storage"))
+        assertEqual(diskEngine[.topHit]?.first?.title, "Storage", "The Storage pane keeps Top Hit for 'storage'")
+        assertTrue(diskEngine[.quickActions]?.contains(where: { $0.id == "system-hud" }) == true, "The HUD is still listed for 'storage'")
+
         print("✅ Browser, Clipboard, Snippets, and System HUD passed all tests!\n")
 
         // Test 25: FirstRunManager
@@ -2692,5 +2712,124 @@ struct TestRunner {
         assertTrue(exists("Caches/Cache.db"), "A file directly in Caches is never touched")
 
         print("✅ LegacyNetworkStores passed all tests!\n")
+    }
+
+    // MARK: - Test 34: System Settings' own search terms
+
+    static func testSettingsSearchTerms() {
+        print("Testing SettingsSearchTerms...")
+        let provider = SettingsProvider.shared
+        let items = provider.items
+        func item(_ deepLinkSuffix: String) -> SettingsItem? {
+            items.first { $0.deepLink.hasSuffix(deepLinkSuffix) }
+        }
+
+        // The pane list: real pane IDs, and stable IDs for panes macOS renamed.
+        assertEqual(Set(items.map(\.id)).count, items.count, "Settings item IDs are unique")
+        for settingsItem in items {
+            assertTrue(settingsItem.deepLink.hasPrefix(SettingsItem.deepLinkScheme), "\(settingsItem.name) is a System Settings link")
+            assertTrue(!settingsItem.extensionID.isEmpty && !settingsItem.extensionID.contains(":") && !settingsItem.extensionID.contains("?"),
+                       "\(settingsItem.name) names its extension")
+        }
+        assertTrue(item(":com.apple.systempreferences.GeneralSettings") != nil, "General opens the General pane")
+        assertTrue(item(":com.apple.settings.PrivacySecurity.extension") != nil, "Privacy & Security opens its pane")
+        assertTrue(!items.contains { $0.deepLink.contains("General-Settings") || $0.deepLink.contains("Privacy-Settings") },
+                   "No link to the pane IDs System Settings does not know")
+        assertEqual(item("ControlCenter-Settings.extension")?.id, "settings-control-center", "Menu Bar keeps the Control Center ID")
+        assertEqual(item("Siri-Settings.extension")?.id, "settings-siri", "Apple Intelligence & Siri keeps the Siri ID")
+        assertEqual(item("Touch-ID-Settings.extension")?.id, "settings-touch-id", "Touch ID & Password keeps the Touch ID ID")
+        assertEqual(item("Passwords-Settings.extension")?.id, "settings-passwords", "AutoFill & Passwords keeps the Passwords ID")
+        let iCloud = item("AppleIDSettings:icloud")
+        assertEqual(iCloud?.extensionID, "com.apple.systempreferences.AppleIDSettings", "iCloud is served by the Apple Account extension")
+        assertEqual(iCloud?.termSections, ["iCloud"], "iCloud takes only the iCloud section")
+        for (query, pane) in [("family", "Family"), ("vpn", "VPN"), ("icloud", "iCloud"), ("game center", "Game Center"),
+                              ("apple pay", "Wallet & Apple Pay"), ("about this mac", "About"), ("login items", "Login Items"),
+                              ("language", "Language & Region"), ("profiles", "Device Management")] {
+            assertEqual(provider.search(SearchQuery(query)).first?.title, pane, "'\(query)' finds \(pane)")
+        }
+
+        assertEqual(SettingsSearchTerms.normalize(" Wi\u{2011}Fi\u{00A0}Help "), "wi-fi help", "Apple's typography folds to typed text")
+
+        // A fake ExtensionKit folder shaped like /System/Library/ExtensionKit/Extensions.
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory() + "lightspot-settings-terms-\(getpid())")
+        try? fm.removeItem(at: root)
+        defer { try? fm.removeItem(at: root) }
+        func writePlist(_ object: Any, to url: URL) {
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try? PropertyListSerialization.data(fromPropertyList: object, format: .xml, options: 0)
+            fm.createFile(atPath: url.path, contents: data)
+        }
+        func makePane(_ folder: String, id: String, termsFile: String, point: String = SettingsSearchTerms.settingsExtensionPoint,
+                      terms: [String: [String: [(title: String, index: String)]]]) {
+            let bundle = root.appendingPathComponent("\(folder).appex/Contents")
+            writePlist([
+                "CFBundleIdentifier": id,
+                "EXAppExtensionAttributes": [
+                    "EXExtensionPointIdentifier": point,
+                    "SettingsExtensionAttributes": ["searchTermsFileName": termsFile],
+                ],
+            ], to: bundle.appendingPathComponent("Info.plist"))
+            for (language, sections) in terms {
+                let plist = sections.mapValues { entries in
+                    ["localizableStrings": entries.map { ["title": $0.title, "index": $0.index, "comments": "Localizable index words"] }]
+                }
+                writePlist(plist, to: bundle.appendingPathComponent("Resources/\(language).lproj/\(termsFile).searchTerms"))
+            }
+        }
+        makePane("DisplaysExt", id: "com.apple.Displays-Settings.extension", termsFile: "DisplaysSearchGroups", terms: [
+            "en": ["nightShiftSection": [("Night Shift options", "warm, sunset, night shift")],
+                   "ambienceSection": [("True Tone", "white balance")]],
+            "vi": ["nightShiftSection": [("Tùy chọn Night Shift", "ấm, hoàng hôn")]],
+            "fr": ["nightShiftSection": [("Options de Night Shift", "coucher du soleil")]],
+        ])
+        makePane("AppleIDSettings", id: "com.apple.systempreferences.AppleIDSettings", termsFile: "appleIDSettingsSearchTerms", terms: [
+            "en": ["AppleAccount": [("Apple ID", "two-factor authentication, legacy contact")],
+                   "iCloud": [("iCloud", "hide my email, private relay")]],
+        ])
+        makePane("Wi-Fi", id: "com.apple.wifi-settings-extension", termsFile: "WiFiSettings", terms: [
+            "en": ["General_Main": [("Wi\u{2011}Fi", "turn wi\u{2011}fi on, 802.11")]],
+        ])
+        // Same bundle ID as a real pane, but not a settings extension: never read.
+        makePane("SoundIntents", id: "com.apple.Sound-Settings.extension", termsFile: "Sound",
+                 point: "com.apple.appintents-extension", terms: ["en": ["Sound": [("Decoy volume", "decoyword")]]])
+
+        func row(_ query: String, _ pane: String) -> SearchResult? {
+            provider.search(SearchQuery(query)).first { $0.title == pane }
+        }
+
+        assertTrue(provider.loadSearchTerms(from: [root], languages: ["en"]) > 0, "Fixture terms are indexed")
+        assertEqual(row("night shift options", "Displays")?.score, 90, "An exact entry title scores 90")
+        assertEqual(row("sunset", "Displays")?.subtitle, "System Settings → Displays → Night Shift options",
+                    "An index word finds its pane and names the setting")
+        assertTrue((row("sunset", "Displays")?.score ?? 100) < 60, "An index word alone never makes a Top Hit")
+        assertEqual(row("shift", "Displays")?.subtitle, "System Settings → Displays → Night Shift options", "A later word of a title matches")
+        assertEqual(row("white bal", "Displays")?.subtitle, "System Settings → Displays → True Tone", "A prefix of an index phrase matches")
+        let display = provider.search(SearchQuery("display")).first
+        assertEqual(display?.title, "Displays", "The pane name still leads")
+        assertEqual(display?.subtitle, "System Settings → Displays", "A name match keeps the plain subtitle")
+        assertEqual(provider.search(SearchQuery("hide my email")).first?.title, "iCloud", "iCloud takes the iCloud section")
+        assertEqual(row("legacy contact", "Apple Account")?.subtitle, "System Settings → Apple Account → Apple ID",
+                    "Apple Account takes the account section")
+        assertTrue(row("legacy contact", "iCloud") == nil, "iCloud does not take the account section")
+        assertEqual(row("turn wi-fi", "Wi-Fi")?.subtitle, "System Settings → Wi-Fi → Wi\u{2011}Fi", "A typed hyphen matches U+2011")
+        assertTrue(row("decoyword", "Sound") == nil, "An extension of another kind is not read")
+        assertTrue(!provider.search(SearchQuery("w")).contains { $0.subtitle.components(separatedBy: " → ").count > 2 },
+                   "A single letter does not match System Settings terms")
+        assertTrue(row("hoàng hôn", "Displays") == nil, "A language the user does not use is not read")
+
+        // Every preferred language is searched; the earlier one names the setting on a tie.
+        provider.loadSearchTerms(from: [root], languages: ["vi-VN", "en"])
+        assertEqual(row("hoàng hôn", "Displays")?.subtitle, "System Settings → Displays → Tùy chọn Night Shift",
+                    "A Vietnamese term finds the pane")
+        assertEqual(row("shift", "Displays")?.subtitle, "System Settings → Displays → Tùy chọn Night Shift", "The first language wins a tie")
+        assertTrue(row("coucher", "Displays") == nil, "Only preferred languages are read")
+        provider.loadSearchTerms(from: [root], languages: ["en-VN", "vi-VN"])
+        assertEqual(row("shift", "Displays")?.subtitle, "System Settings → Displays → Night Shift options", "English first wins the tie back")
+
+        assertEqual(provider.loadSearchTerms(from: [], languages: ["en"]), 0, "No extensions, no terms")
+        assertTrue(row("sunset", "Displays") == nil, "Without terms, only names and keywords match")
+
+        print("✅ SettingsSearchTerms passed all tests!\n")
     }
 }
