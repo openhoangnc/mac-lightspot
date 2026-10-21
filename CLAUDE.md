@@ -37,7 +37,7 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 41 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards, worktrees and clones the walk never sees among them), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `test_engine.swift`: 41 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
 - `deep_verify.swift`: 11 sections of live system checks (136 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos (measures only; it never deletes).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
@@ -232,19 +232,17 @@ cleans and prints a receipt.
   ignored (it or an ancestor below its own repo root), and with a `gitignore` category every
   other ignored entry is offered too, except `.env*`. Rows are per repo, or per `scan.groups`
   root; each path keeps its method (regenerable folders `rm`, other ignored files `trash`),
-  which is why `Entry.methods` exists. One guard is Lightspot's own: the walk never enters
+  which is why `Entry.methods` exists. Two guards are Lightspot's own: the walk never enters
   `~/Library` or cdm's protected folders (cdm's gate refuses every path there anyway, and
   reading Documents, Desktop or Downloads would raise a macOS prompt that an ad-hoc signed
-  app sees again after every update). Another started here and is cdm's too since
-  v2026.10.21.1 (`touches_other_checkout`): nothing that holds another checkout, or sits
-  inside one below its own repo, is offered (`withoutOtherCheckouts`), so an outer repo that
-  ignores a nested checkout cannot put it in the Trash. The walk counts only `.git`
-  directories as repos, as cdm does, and never enters pruned names, so that guard probes
-  the offered folders themselves: a worktree's or submodule's `.git` is a file, and Claude
-  Code keeps worktrees in `.claude/worktrees`, which repos git-ignore and the rules prune.
-  1.3.1 offered such a folder, worktrees and uncommitted work included, for the Trash. On a
-  real home folder it offers exactly what cdm's own `scan_projects` does. Keep that guard
-  in step with cdm's, as with the engine below.
+  app sees again after every update), and nothing that holds a repo the walk found is
+  offered, so an outer repo that ignores a nested clone cannot put it in the Trash. A
+  git-ignored folder holding a worktree (its `.git` is a file) or a clone under a pruned name
+  such as `.claude` is offered like any other ignored folder, on purpose: 1.3.2 refused those
+  too, and 1.3.3 reverted that at the owner's request, because such folders mostly hold junk,
+  a checkout is easy to make again, and they go to the Trash. Don't add that guard back
+  without asking. On a real home folder it offers what cdm's own `scan_projects` does, except
+  a folder holding a nested repo, which cdm offers.
 - **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
   shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list,
   `is_safe_target`, `delete_path`, `human_kb`, the disk line and the log cap. Keep the two
@@ -502,8 +500,8 @@ cleans and prints a receipt.
    acts, because the plan was shown a while ago. `.emptytrash` only ever empties
    `~/.Trash`, whatever path its rule names; a symlink is removed, never followed, by every
    method. The repo scan adds its own: nothing is offered unless the repo's git lists it as
-   ignored and untracked, `.env*` never, and nothing that holds or sits inside another
-   checkout (a clone, a worktree, a submodule). Nothing is
+   ignored and untracked, `.env*` never, and nothing that holds a repo the walk found
+   (worktrees and clones under pruned names are offered on purpose, see the repo scan above). Nothing is
    deleted without the itemized plan and a second `↵`. Treat a change to
    any of this as high-risk, and give it a test that fails without it: `test_engine` covers
    each check (mutating one out fails the run), against cdm's own fixtures.
