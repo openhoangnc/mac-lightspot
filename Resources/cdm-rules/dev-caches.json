@@ -1,0 +1,509 @@
+{
+  "title": "Developer caches & build artifacts",
+  "_comment": "Regenerable caches created by developer tools. method: rm = delete permanently, rmforce = chmod +w then delete (for read-only caches like Go modules & Cargo sources). Paths may use ~ and * globs. default:true = pre-selected. Rule of thumb for default: true means 'costs a rebuild or a small re-download'; false means 'costs a large re-download, or the data may not regenerate on its own'.",
+  "categories": [
+    {
+      "icon": "🔨",
+      "name": "Xcode derived data & device support",
+      "method": "rm",
+      "default": true,
+      "desc": "Xcode build cache, device-support & documentation cache — rebuilt on next build.",
+      "paths": [
+        "~/Library/Developer/Xcode/DerivedData",
+        "~/Library/Developer/Xcode/iOS DeviceSupport",
+        "~/Library/Developer/Xcode/watchOS DeviceSupport",
+        "~/Library/Developer/Xcode/tvOS DeviceSupport",
+        "~/Library/Developer/Xcode/Products",
+        "~/Library/Developer/Xcode/DocumentationCache",
+        "~/Library/Developer/Xcode/iOS Device Logs",
+        "~/Library/Developer/XCTestDevices",
+        "~/Library/Developer/CoreSimulator/Caches",
+        "~/Library/Caches/com.apple.dt.Xcode",
+        "~/Library/Logs/CoreSimulator"
+      ]
+    },
+    {
+      "icon": "📦",
+      "name": "Xcode archives",
+      "method": "rm",
+      "default": false,
+      "desc": "Release .xcarchive bundles — hold the dSYMs needed to symbolicate crash reports from shipped builds. Do NOT clear if you still support those releases.",
+      "paths": [
+        "~/Library/Developer/Xcode/Archives"
+      ]
+    },
+    {
+      "icon": "🐹",
+      "name": "Go build & tooling cache",
+      "method": "rm",
+      "default": true,
+      "desc": "go build/test cache, gopls/goimports indexes & golangci-lint cache — regenerated on build.",
+      "paths": [
+        "~/Library/Caches/go-build",
+        "~/Library/Caches/gopls",
+        "~/Library/Caches/goimports",
+        "~/Library/Caches/golangci-lint"
+      ]
+    },
+    {
+      "icon": "🐹",
+      "name": "Go module cache",
+      "method": "rmforce",
+      "default": true,
+      "desc": "Downloaded Go modules ($GOPATH/pkg/mod) — re-fetched on next 'go build'.",
+      "paths": [
+        "~/go/pkg/mod"
+      ]
+    },
+    {
+      "icon": "🟢",
+      "name": "Node / npm cache",
+      "method": "rm",
+      "default": true,
+      "desc": "npm download cache, npx package cache, logs & prebuilt binaries — re-fetched on install.",
+      "paths": [
+        "~/.npm/_cacache",
+        "~/.npm/_npx",
+        "~/.npm/_logs",
+        "~/.npm/_prebuilds",
+        "~/.tnpm/_cacache",
+        "~/.tnpm/_logs",
+        "~/Library/Caches/node-gyp",
+        "~/.node-gyp",
+        "~/Library/Caches/typescript",
+        "~/.cache/typescript"
+      ]
+    },
+    {
+      "icon": "🔧",
+      "name": "JS build-tool caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Turbo/Vite/webpack/Parcel/ESLint/Prettier & Electron download caches — rebuilt on next build.",
+      "paths": [
+        "~/.turbo/cache",
+        "~/.vite/cache",
+        "~/.cache/vite",
+        "~/.cache/webpack",
+        "~/.parcel-cache",
+        "~/.cache/eslint",
+        "~/.cache/prettier",
+        "~/.cache/electron",
+        "~/.electron",
+        "~/.cache/vscode-ripgrep",
+        "~/.cache/prisma"
+      ]
+    },
+    {
+      "icon": "📦",
+      "name": "pnpm store",
+      "method": "rm",
+      "default": true,
+      "desc": "pnpm's content-addressable package store — re-downloaded on next install.",
+      "paths": [
+        "~/Library/pnpm/store",
+        "~/Library/Caches/pnpm",
+        "~/.local/share/pnpm/store",
+        "~/.pnpm-store"
+      ]
+    },
+    {
+      "icon": "🧶",
+      "name": "Yarn cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Yarn's global package cache — re-downloaded on next install.",
+      "paths": [
+        "~/Library/Caches/Yarn",
+        "~/.yarn/cache",
+        "~/.cache/yarn"
+      ]
+    },
+    {
+      "icon": "🐘",
+      "name": "Gradle user cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Gradle downloaded dependencies, wrapper distributions, build cache & daemon state in ~/.gradle — re-fetched on build. Stop the Gradle daemon first if one is running.",
+      "paths": [
+        "~/.gradle/caches",
+        "~/.gradle/daemon",
+        "~/.gradle/workers",
+        "~/.gradle/notifications",
+        "~/.gradle/wrapper/dists",
+        "~/.gradle/.tmp",
+        "~/.gradle/kotlin-profile"
+      ]
+    },
+    {
+      "icon": "🔴",
+      "name": "Maven repository",
+      "method": "rm",
+      "default": false,
+      "desc": "Locally cached Maven artifacts (~/.m2) — re-downloaded on next build.",
+      "paths": [
+        "~/.m2/repository"
+      ]
+    },
+    {
+      "icon": "☕",
+      "name": "sbt / Ivy caches",
+      "method": "rm",
+      "default": true,
+      "desc": "sbt launchers & Ivy dependency cache — re-fetched on next build.",
+      "paths": [
+        "~/.sbt/boot",
+        "~/.sbt/launchers",
+        "~/.sbt/preloaded",
+        "~/.ivy2/cache"
+      ]
+    },
+    {
+      "icon": "🦀",
+      "name": "Cargo registry cache",
+      "method": "rmforce",
+      "default": true,
+      "desc": "Cargo's downloaded crate cache, git checkouts & rustup downloads — re-fetched on next build.",
+      "paths": [
+        "~/.cargo/registry/cache",
+        "~/.cargo/registry/src",
+        "~/.cargo/registry/index",
+        "~/.cargo/git",
+        "~/.rustup/downloads",
+        "~/.rustup/tmp"
+      ]
+    },
+    {
+      "icon": "🦀",
+      "name": "sccache compile cache",
+      "method": "rm",
+      "default": true,
+      "desc": "sccache's shared Rust/C compilation cache — rebuilt on next build. Project target/ dirs are offered per repo by the project scan.",
+      "paths": [
+        "~/Library/Caches/Mozilla.sccache",
+        "~/.cache/sccache"
+      ]
+    },
+    {
+      "icon": "🐍",
+      "name": "Python cache (pip / uv / poetry)",
+      "method": "rm",
+      "default": true,
+      "desc": "pip, uv, poetry & pyenv download caches plus ruff/mypy indexes — re-downloaded or rebuilt on next run.",
+      "paths": [
+        "~/Library/Caches/pip",
+        "~/.cache/pip",
+        "~/Library/Caches/uv",
+        "~/.cache/uv",
+        "~/Library/Caches/pypoetry",
+        "~/.cache/poetry",
+        "~/.pyenv/cache",
+        "~/.cache/ruff",
+        "~/.cache/mypy",
+        "~/.jupyter/runtime"
+      ]
+    },
+    {
+      "icon": "🤗",
+      "name": "ML model & training caches",
+      "method": "rm",
+      "default": false,
+      "desc": "Hugging Face / PyTorch / TensorFlow / Keras model downloads & W&B run cache — regenerable, but often many GB to re-download.",
+      "paths": [
+        "~/.cache/huggingface",
+        "~/.cache/torch",
+        "~/.cache/tensorflow",
+        "~/.cache/wandb",
+        "~/.wandb",
+        "~/.keras/models"
+      ]
+    },
+    {
+      "icon": "🧪",
+      "name": "Conda package cache",
+      "method": "rm",
+      "default": false,
+      "desc": "Downloaded conda packages & tarballs — re-downloaded on next install. Your environments themselves are untouched.",
+      "paths": [
+        "~/.conda/pkgs",
+        "~/anaconda3/pkgs",
+        "~/miniconda3/pkgs",
+        "~/miniforge3/pkgs",
+        "~/mambaforge/pkgs"
+      ]
+    },
+    {
+      "icon": "💎",
+      "name": "Ruby / Bundler caches",
+      "method": "rm",
+      "default": true,
+      "desc": "rbenv build cache, gem specs & Bundler package cache — re-fetched on next 'bundle install'.",
+      "paths": [
+        "~/.rbenv/cache",
+        "~/.gem/specs",
+        "~/.bundle/cache"
+      ]
+    },
+    {
+      "icon": "🥟",
+      "name": "Bun cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Bun's install cache — re-downloaded on next install.",
+      "paths": [
+        "~/.bun/install/cache"
+      ]
+    },
+    {
+      "icon": "🦕",
+      "name": "Deno cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Deno's module & compilation cache — re-fetched on next run.",
+      "paths": [
+        "~/Library/Caches/deno"
+      ]
+    },
+    {
+      "icon": "🍫",
+      "name": "CocoaPods cache",
+      "method": "rm",
+      "default": true,
+      "desc": "CocoaPods spec & pod download cache — re-fetched on next 'pod install'.",
+      "paths": [
+        "~/Library/Caches/CocoaPods"
+      ]
+    },
+    {
+      "icon": "🐦",
+      "name": "Swift Package Manager cache",
+      "method": "rm",
+      "default": true,
+      "desc": "SwiftPM's cloned-dependency & artifact cache — re-fetched on next resolve.",
+      "paths": [
+        "~/.cache/swift-package-manager",
+        "~/Library/Caches/org.swift.swiftpm"
+      ]
+    },
+    {
+      "icon": "🐳",
+      "name": "Docker buildx cache",
+      "method": "rm",
+      "default": true,
+      "desc": "buildx build cache on the host (not the daemon's data) — rebuilt on next build. Docker credentials in ~/.docker are untouched.",
+      "paths": [
+        "~/.docker/buildx/cache",
+        "~/.docker/cli-plugins/.cache"
+      ]
+    },
+    {
+      "icon": "⛅",
+      "name": "Cloud CLI caches & logs",
+      "method": "rm",
+      "default": true,
+      "desc": "kubectl / AWS / gcloud / Azure CLI caches & logs — regenerated on next command. Credentials and configs are untouched.",
+      "paths": [
+        "~/.kube/cache",
+        "~/.aws/cli/cache",
+        "~/.config/gcloud/logs",
+        "~/.azure/logs"
+      ]
+    },
+    {
+      "icon": "🐘",
+      "name": "PHP Composer cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Composer's package download cache — re-fetched on next install.",
+      "paths": [
+        "~/.composer/cache",
+        "~/Library/Caches/composer"
+      ]
+    },
+    {
+      "icon": "🟣",
+      "name": "NuGet package cache",
+      "method": "rm",
+      "default": false,
+      "desc": "Locally cached .NET NuGet packages — re-downloaded on next restore.",
+      "paths": [
+        "~/.nuget/packages"
+      ]
+    },
+    {
+      "icon": "🧱",
+      "name": "Bazel / Zig / OCaml caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Bazel & Zig build caches and opam's download cache — rebuilt or re-fetched on next build.",
+      "paths": [
+        "~/.cache/bazel",
+        "~/.cache/zig",
+        "~/.cache/opam",
+        "~/.opam/download-cache"
+      ]
+    },
+    {
+      "icon": "🎯",
+      "name": "Dart / Flutter caches",
+      "method": "rm",
+      "default": false,
+      "desc": "Flutter engine cache & the Dart pub package cache — re-downloaded on next 'pub get' / build.",
+      "paths": [
+        "~/Library/Caches/flutter_engine",
+        "~/.pub-cache/hosted",
+        "~/.pub-cache/git"
+      ]
+    },
+    {
+      "icon": "🤖",
+      "name": "AI CLI tool caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Scratch caches for terminal AI tools — regenerated on next run. Session state & credentials (~/.claude, ~/.codex) are never touched.",
+      "paths": [
+        "~/Library/Caches/claude-cli-nodejs",
+        "~/.cache/opencode"
+      ]
+    },
+    {
+      "icon": "🔁",
+      "name": "CI runner caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Local GitLab/CircleCI runner & SonarQube analysis caches — re-fetched on next run.",
+      "paths": [
+        "~/.cache/gitlab-runner",
+        "~/.circleci/cache",
+        "~/.sonar"
+      ]
+    },
+    {
+      "icon": "🐚",
+      "name": "Shell & CLI tool residue",
+      "method": "rm",
+      "default": true,
+      "desc": "zsh completion dumps, oh-my-zsh cache and curl/wget scratch state — regenerated on next shell start or download.",
+      "paths": [
+        "~/.zcompdump*",
+        "~/.oh-my-zsh/cache",
+        "~/.wget-hsts",
+        "~/.viminfo.tmp",
+        "~/.cache/curl",
+        "~/.cache/wget",
+        "~/Library/Caches/curl",
+        "~/Library/Caches/wget"
+      ]
+    },
+    {
+      "icon": "🪝",
+      "name": "pre-commit hook cache",
+      "method": "rm",
+      "default": true,
+      "desc": "pre-commit's installed hook environments — rebuilt on next run.",
+      "paths": [
+        "~/.cache/pre-commit"
+      ]
+    },
+    {
+      "icon": "🧰",
+      "name": "mise / asdf tool cache",
+      "method": "rm",
+      "default": true,
+      "desc": "mise's download cache — re-fetched on next install. Installed tool versions are untouched.",
+      "paths": [
+        "~/Library/Caches/mise",
+        "~/.cache/mise"
+      ]
+    },
+    {
+      "icon": "🧠",
+      "name": "JetBrains caches & logs",
+      "method": "rm",
+      "default": true,
+      "desc": "IntelliJ/PyCharm/etc. index caches & logs — rebuilt on next launch.",
+      "paths": [
+        "~/Library/Caches/JetBrains",
+        "~/Library/Logs/JetBrains"
+      ]
+    },
+    {
+      "icon": "🎭",
+      "name": "Playwright / Puppeteer browsers",
+      "method": "rm",
+      "default": false,
+      "desc": "Downloaded test browsers — re-installed by 'playwright install'.",
+      "paths": [
+        "~/Library/Caches/ms-playwright",
+        "~/Library/Caches/ms-playwright-go",
+        "~/.cache/puppeteer"
+      ]
+    },
+    {
+      "icon": "🍺",
+      "name": "Homebrew download cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Downloaded bottles & installers ('brew cleanup') — re-fetched on demand.",
+      "paths": [
+        "~/Library/Caches/Homebrew"
+      ]
+    },
+    {
+      "icon": "🤖",
+      "name": "Android build caches",
+      "method": "rm",
+      "default": false,
+      "desc": "Android SDK/Gradle & Android Studio transient caches, logs and interrupted SDK downloads — rebuilt by the toolchain.",
+      "paths": [
+        "~/.android/cache",
+        "~/.android/build-cache",
+        "~/Library/Caches/Google/AndroidStudio*",
+        "~/Library/Logs/Google/AndroidStudio*",
+        "~/Library/Android/sdk/.temp",
+        "~/Library/Android/sdk/.downloadIntermediates",
+        "~/Android/Sdk/.temp",
+        "~/Android/Sdk/.downloadIntermediates"
+      ]
+    },
+    {
+      "icon": "📲",
+      "name": "Android emulator snapshots",
+      "method": "rm",
+      "default": false,
+      "procs": ["qemu-system-aarch64", "qemu-system-x86_64"],
+      "desc": "Quick-boot snapshots of your AVDs — the next launch cold-boots and saves a fresh one. Apps & data installed in the AVD are kept.",
+      "paths": [
+        "~/.android/avd/*.avd/snapshots"
+      ]
+    },
+    {
+      "kind": "android-images",
+      "icon": "💿",
+      "name": "Unused Android system images",
+      "method": "rm",
+      "default": false,
+      "desc": "Emulator OS images (GBs each) that NO AVD on this Mac boots from — images an AVD still uses are never listed. Re-install from Android Studio's SDK Manager or 'sdkmanager' if you create an AVD with one later.",
+      "images": [
+        "~/Library/Android/sdk/system-images/*/*/*",
+        "~/Android/Sdk/system-images/*/*/*"
+      ]
+    },
+    {
+      "icon": "📱",
+      "name": "Expo caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Expo's downloaded client/template/schema caches — re-fetched on demand. Your Expo login (~/.expo/state.json) is untouched.",
+      "paths": [
+        "~/.expo/expo-go",
+        "~/.expo/android-apk-cache",
+        "~/.expo/ios-simulator-app-cache",
+        "~/.expo/native-modules-cache",
+        "~/.expo/schema-cache",
+        "~/.expo/template-cache",
+        "~/.expo/versions-cache"
+      ]
+    }
+  ]
+}

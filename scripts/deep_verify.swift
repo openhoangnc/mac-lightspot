@@ -101,8 +101,17 @@ struct DeepVerifier {
                 let exists = FileManager.default.fileExists(atPath: path)
                 check("Target app/folder exists: \(action.name) at \(path)", exists)
             } else {
-                // Shell command check
-                let binary = action.script.split(separator: " ").first.map(String.init) ?? ""
+                // Shell command check: it parses, and the program it starts with (or, for a
+                // toggle that starts with `case`/`if`, `defaults`) is installed.
+                let syntax = Process()
+                syntax.executableURL = URL(fileURLWithPath: "/bin/sh")
+                syntax.arguments = ["-n", "-c", action.script]
+                syntax.standardError = FileHandle.nullDevice
+                try? syntax.run()
+                syntax.waitUntilExit()
+                check("Shell command parses: \(action.name)", syntax.terminationStatus == 0)
+                var binary = action.script.split(separator: " ").first.map(String.init) ?? ""
+                if binary == "case" || binary == "if" { binary = "defaults" }
                 let exists = FileManager.default.fileExists(atPath: binary)
                     || binary == "pmset"
                     || binary == "dscacheutil"
@@ -334,6 +343,50 @@ struct DeepVerifier {
             print("     ⚠️ VS Code is not installed on this system — skipping live discovery checks")
         }
 
+        // ----------------------------------------------------
+        // SECTION 11: Clean Dev Mac (cdm) on the real home folder — measures, never deletes
+        // ----------------------------------------------------
+        print("\n--- 11. Testing Clean Dev Mac (cdm) on the real home folder ---")
+        let cdmHome = NSHomeDirectory()
+        let bundledRulesFolder = URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/Resources/cdm-rules")
+        let bundledRules = CleanDevMacRules.load(directory: bundledRulesFolder, source: .bundled)
+        check("The cdm rules shipped in the app load", bundledRules != nil)
+
+        // The rules the app fetches: cdm's live ones, still in a shape Lightspot reads.
+        let fetched = DispatchSemaphore(value: 0)
+        let liveRules = LiveRulesBox()
+        CleanDevMacRules.fetchRemote { rules in
+            liveRules.value = rules
+            fetched.signal()
+        }
+        if fetched.wait(timeout: .now() + 20) == .success, let live = liveRules.value {
+            check("cdm's live rules on GitHub parse", !live.rules.isEmpty)
+            let shipped = Set(bundledRules?.rules.map(\.name) ?? [])
+            let changed = Set(live.rules.map(\.name)).symmetricDifference(shipped)
+            if !changed.isEmpty {
+                print("     ⚠️ The shipped copy differs from cdm's live rules (\(changed.sorted().joined(separator: ", "))); refresh Resources/cdm-rules")
+            }
+        } else {
+            print("     ⚠️ GitHub unreachable — skipping the live rules check")
+        }
+
+        if let rules = bundledRules {
+            let started = Date()
+            let scan = CleanDevMacProvider(environment: .live).scanEntries(rules)
+            let paths = scan.entries.flatMap(\.paths)
+            print("Found \(scan.entries.count) categories (\(paths.count) paths, \(CleanDevMacEngine.humanKB(CleanDevMacProvider.uniqueKB(scan.entries)))) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
+            let physicalHome = CleanDevMacEngine.physicalPath(cdmHome)
+            check("Every offered path passes cdm's safety gate",
+                  paths.allSatisfy { CleanDevMacEngine.isSafeTarget($0, home: cdmHome, physicalHome: physicalHome) })
+            check("Nothing is offered in a protected folder", paths.allSatisfy { path in
+                CleanDevMacEngine.protectedFolders.allSatisfy { !path.hasPrefix(cdmHome + "/" + $0 + "/") && path != cdmHome + "/" + $0 }
+            })
+            check("Nothing is read inside other apps' containers",
+                  paths.allSatisfy { !CleanDevMacEngine.isOutOfScope($0, home: cdmHome) })
+            check("Every offered category has a size, biggest first",
+                  scan.entries.allSatisfy { $0.sizeKB > 0 } && zip(scan.entries, scan.entries.dropFirst()).allSatisfy { $0.sizeKB >= $1.sizeKB })
+        }
+
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")
         print("======================================================")
@@ -346,4 +399,9 @@ struct DeepVerifier {
             exit(1)
         }
     }
+}
+
+/// Carries the fetched rules out of their completion handler.
+final class LiveRulesBox: @unchecked Sendable {
+    var value: CleanDevMacRuleSet?
 }

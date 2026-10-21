@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ServiceManagement
 
@@ -203,6 +204,11 @@ struct TestRunner {
         testSingleInstanceGuard()
         testLegacyNetworkStores()
         testSettingsSearchTerms()
+        testCleanDevMacRules()
+        testCleanDevMacEngine()
+        testCleanDevMacProvider()
+        testToolInstallers()
+        testMacTweaks()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -2836,4 +2842,692 @@ struct TestRunner {
 
         print("✅ SettingsSearchTerms passed all tests!\n")
     }
+
+    // MARK: - Test 35: cdm's rules
+
+    /// The rules snapshot build.sh ships in the app, read from the checkout the runner starts in.
+    static var bundledCdmRules: URL {
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/Resources/cdm-rules", isDirectory: true)
+    }
+
+    static func testCleanDevMacRules() {
+        print("Testing CleanDevMac rules...")
+
+        // The snapshot shipped in the app is cdm's own rules folder, and it parses whole.
+        guard let bundled = CleanDevMacRules.load(directory: bundledCdmRules, source: .bundled) else {
+            print("❌ FAIL: Resources/cdm-rules did not load (run the tests from the repository root)")
+            exit(1)
+        }
+        func rule(_ name: String) -> CleanDevMacRule? { bundled.rules.first { $0.name == name } }
+        assertEqual(bundled.source, .bundled, "The snapshot is the bundled source")
+        assertEqual(rule("Xcode derived data & device support")?.method, .rm, "Xcode caches are deleted")
+        assertEqual(rule("Xcode derived data & device support")?.isDefault, true, "Xcode caches are a safe default")
+        assertEqual(rule("Xcode archives")?.isDefault, false, "Archives are opt-in")
+        assertEqual(rule("Go module cache")?.method, .rmforce, "The read-only Go module cache is made writable first")
+        assertEqual(rule("Empty the Trash")?.method, .emptytrash, "Emptying the Trash keeps its own method")
+        let images = rule("Unused Android system images")
+        assertEqual(images?.kind, .androidImages, "Android images keep their kind")
+        assertTrue(images?.patterns.allSatisfy { $0.contains("system-images") } == true, "Android image candidates come from `images`")
+        assertTrue(rule("Browser caches")?.procs.contains("Google Chrome") == true, "A rule's procs are read")
+        assertTrue(bundled.rules.allSatisfy { $0.patterns.allSatisfy { $0.hasPrefix("~/") } },
+                   "Every bundled pattern is under the home folder")
+        for name in ["node_modules folders", "Git-ignored files (all repos)", "Docker / Podman reclaimable data", "Orphaned app data"] {
+            assertTrue(bundled.terminalOnly.contains(name), "'\(name)' is left to cdm in the terminal")
+            assertTrue(rule(name) == nil, "'\(name)' is never cleaned here")
+        }
+
+        // cdm's defaults for missing fields, and what is left out.
+        let file = Data("""
+        {"categories": [
+          {"icon": "🧪", "name": "No method", "paths": ["~/a"], "default": true},
+          {"name": "Unknown method", "method": "shred", "paths": ["~/b"]},
+          {"name": "Unknown kind", "kind": "future", "method": "rm", "paths": ["~/c"], "images": ["~/x"]},
+          {"name": "Images", "kind": "android-images", "method": "rm", "paths": ["~/everything"], "images": ["~/img/*"]},
+          {"name": "No paths", "method": "rm"},
+          {"name": "Repo junk", "kind": "project", "method": "rm", "dirs": ["node_modules"]},
+          {"name": "Procs", "method": "trash", "paths": ["~/d"], "procs": ["Code", ""]}
+        ]}
+        """.utf8)
+        let parsed = CleanDevMacRules.parsePatternFile(file)
+        assertEqual(parsed?.rules.map(\.name), ["No method", "Unknown kind", "Images", "Procs"], "Only categories cdm would act on are kept")
+        assertEqual(parsed?.rules.first?.method, .rm, "A missing method is rm")
+        assertEqual(parsed?.rules.first?.isDefault, true, "default is read")
+        assertEqual(parsed?.rules.first?.kind, .paths, "A missing kind is paths")
+        assertEqual(parsed?.rules[1].kind, .paths, "An unknown kind is read as paths, as cdm reads it")
+        assertEqual(parsed?.rules[1].patterns, ["~/c"], "...from `paths`, never another field")
+        assertEqual(parsed?.rules[2].patterns, ["~/img/*"], "Android images never fall back to `paths`")
+        assertEqual(parsed?.rules[3].method, .trash, "trash is read")
+        assertEqual(parsed?.rules[3].procs, ["Code"], "Empty process names are dropped")
+        assertEqual(parsed?.terminalOnly, ["Repo junk"], "A project category is named, not run")
+        assertTrue(CleanDevMacRules.parsePatternFile(Data("not json".utf8)) == nil, "A broken file does not parse")
+
+        // index.json names files that get joined onto a folder or a URL.
+        for name in ["dev-caches.json", "app_caches.json", "rules2.json"] {
+            assertTrue(CleanDevMacRules.isSafeFileName(name), "'\(name)' is a rule file name")
+        }
+        for name in ["../secrets.json", "/etc/x.json", "a/b.json", ".hidden.json", "rules.txt", "x..json", ".json",
+                     "ünicode.json", "a b.json", "a%2F.json"] {
+            assertTrue(!CleanDevMacRules.isSafeFileName(name), "'\(name)' is refused")
+        }
+        let index = Data(#"{"patternFiles": ["dev.json", "../escape.json", 7, "app.json"], "orphanConfig": "orphans.json"}"#.utf8)
+        assertEqual(CleanDevMacRules.patternFileNames(fromIndex: index), ["dev.json", "app.json"], "Unsafe and non-string names are dropped")
+        assertTrue(CleanDevMacRules.patternFileNames(fromIndex: Data("[".utf8)) == nil, "A broken index does not parse")
+
+        // One parsed file at least: a load failure must not look like a clean Mac.
+        let dev = Data(#"{"categories": [{"name": "Dev", "method": "rm", "paths": ["~/dev"]}]}"#.utf8)
+        let set = CleanDevMacRules.ruleSet(index: index, files: ["dev.json": dev, "app.json": Data("{oops".utf8)], source: .remote)
+        assertEqual(set?.rules.map(\.name), ["Dev"], "A broken file is skipped, the rest kept")
+        assertEqual(set?.terminalOnly, ["Orphaned app data"], "An orphan config is left to cdm")
+        assertTrue(CleanDevMacRules.ruleSet(index: index, files: [:], source: .remote) == nil, "No file at all is a failure")
+
+        // Fetched over HTTPS from GitHub's raw host only, before and after any redirect.
+        assertTrue(CleanDevMacRules.isAllowedRemoteURL(CleanDevMacRules.remoteBase.appendingPathComponent("index.json")),
+                   "cdm's raw rules are allowed")
+        for bad in ["http://raw.githubusercontent.com/x.json", "https://raw.githubusercontent.com.evil.example/x.json",
+                    "https://github.com/cleandevmac/cdm", "https://evil.example/raw.githubusercontent.com/x.json"] {
+            assertTrue(!CleanDevMacRules.isAllowedRemoteURL(URL(string: bad)!), "\(bad) is refused")
+        }
+        assertEqual(CleanDevMacRules.localDirectory(home: "/Users/test").path, "/Users/test/.cleandevmac/rules", "cdm's local rules folder")
+
+        print("✅ CleanDevMac rules passed all tests!\n")
+    }
+
+    // MARK: - Test 36: cdm's engine — expansion, sizing, the safety gate, deletion
+
+    static func testCleanDevMacEngine() {
+        print("Testing CleanDevMac engine...")
+        let fm = FileManager.default
+        // The home is reached through a symlink, as a relocated home would be, so the
+        // lexical and the physical checks of the safety gate see different paths.
+        let realHome = NSTemporaryDirectory() + "lightspot-cdm-real-\(getpid())"
+        let home = NSTemporaryDirectory() + "lightspot-cdm-home-\(getpid())"
+        let outside = NSTemporaryDirectory() + "lightspot-cdm-outside-\(getpid())"
+        for path in [home, realHome, outside] { try? fm.removeItem(atPath: path) }
+        try? fm.createDirectory(atPath: realHome, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: outside, withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: home, withDestinationPath: realHome)
+        defer {
+            CleanDevMacEngine.makeWritable(realHome)
+            chmod(outside, 0o755)
+            for path in [home, realHome, outside] { try? fm.removeItem(atPath: path) }
+        }
+        let physicalHome = CleanDevMacEngine.physicalPath(home)
+        assertTrue(physicalHome != home && physicalHome.hasSuffix("/lightspot-cdm-real-\(getpid())"), "The home resolves through its symlink")
+
+        @discardableResult
+        func make(_ relative: String, bytes: Int = 1) -> String {
+            let path = home + "/" + relative
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(repeating: 0x61, count: bytes))
+            return path
+        }
+        @discardableResult
+        func write(_ path: String, _ text: String) -> String {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(text.utf8))
+            return path
+        }
+        @discardableResult
+        func mkdir(_ relative: String) -> String {
+            let path = home + "/" + relative
+            try? fm.createDirectory(atPath: path, withIntermediateDirectories: true)
+            return path
+        }
+
+        // 1. Paths
+        assertEqual(CleanDevMacEngine.expandTilde("~/.npm/_cacache", home: "/Users/a"), "/Users/a/.npm/_cacache", "~/ resolves against home")
+        assertEqual(CleanDevMacEngine.expandTilde("~", home: "/Users/a"), "/Users/a", "~ alone is home")
+        assertEqual(CleanDevMacEngine.expandTilde("~other/x", home: "/Users/a"), "~other/x", "~user is not expanded")
+        assertEqual(CleanDevMacEngine.expandTilde("/abs", home: "/Users/a"), "/abs", "An absolute pattern is kept")
+        assertTrue(CleanDevMacEngine.endsWithAny("/sdk/system-images/android-34/x", ["system-images/android-34/x"]), "A suffix after / matches")
+        assertTrue(!CleanDevMacEngine.endsWithAny("/sdk/system-images/android-34/x", ["roid-34/x"]), "Part of a component does not")
+        assertTrue(!CleanDevMacEngine.endsWithAny("/a", [""]), "An empty entry matches nothing")
+        assertTrue(CleanDevMacEngine.isOutOfScope(home + "/Library/Containers/*/Data", home: home), "Sandbox containers are not read")
+        assertTrue(CleanDevMacEngine.isOutOfScope(home + "/Library/Group Containers", home: home), "...nor group containers")
+        assertTrue(!CleanDevMacEngine.isOutOfScope(home + "/Library/ContainersX/a", home: home), "...and nothing else by prefix")
+
+        make(".cache/vite/deps/chunk.js", bytes: 5000)
+        mkdir(".cache/empty")
+        make("Library/Application Support/Code/Code Cache/js/0", bytes: 3000)
+        make("Library/Application Support/Slack/Code Cache/js/0", bytes: 3000)
+        make("Library/Application Support/Slack/.hidden")
+        make(".zcompdump-host-5.9")
+        make("Library/Containers/com.example.sandboxed/Data/Library/Caches/blob")
+        make("Documents/project/build/out.o")
+        let matched = CleanDevMacEngine.matchedPaths(patterns: [
+            "~/.cache/vite", "~/.cache/empty", "~/.cache/missing",
+            "~/Library/Application Support/*/Code Cache", "~/.zcompdump*",
+            "~/Library/Containers/*/Data/Library/Caches", "~/Documents/project/build", "~/.cache/vite",
+        ], home: home, physicalHome: physicalHome)
+        assertEqual(matched, [
+            home + "/.cache/vite",
+            home + "/Library/Application Support/Code/Code Cache",
+            home + "/Library/Application Support/Slack/Code Cache",
+            home + "/.zcompdump-host-5.9",
+        ], "Existing, non-empty, safe matches in pattern order, once each; empty, missing, sandboxed and protected left out")
+        assertEqual(CleanDevMacEngine.expandGlob(home + "/Library/Application Support/Slack/*"),
+                    [home + "/Library/Application Support/Slack/Code Cache"], "* never matches a leading dot, as in the shell")
+
+        // 2. Android system images an AVD boots from are never offered.
+        let sdk = "Library/Android/sdk/system-images"
+        make("\(sdk)/android-34/google_apis/arm64-v8a/system.img", bytes: 100)
+        make("\(sdk)/android-33/default/x86_64/system.img", bytes: 100)
+        make("\(sdk)/android-35/google_apis_playstore/arm64-v8a/system.img", bytes: 100)
+        make("\(sdk)/android-36/default/arm64-v8a/system.img", bytes: 100)
+        write(home + "/.android/avd/Pixel_8.avd/config.ini", "hw.cpu.arch=arm64\r\nimage.sysdir.1 = system-images/android-34/google_apis/arm64-v8a/\r\n")
+        write(home + "/.android/avd/Tablet.ini", "avd.ini.encoding=UTF-8\npath=\(outside)/Tablet.avd\n")
+        write(outside + "/Tablet.avd/config.ini", "image.sysdir.1=system-images/android-35/google_apis_playstore/arm64-v8a/")
+        write(outside + "/avdhome/Wear.avd/config.ini", "image.sysdir.1=system-images/android-36/default/arm64-v8a\n")
+        let refs = CleanDevMacEngine.avdImageRefs(home: home, environment: ["ANDROID_AVD_HOME": outside + "/avdhome"])
+        assertEqual(Set(refs), ["system-images/android-34/google_apis/arm64-v8a", "system-images/android-35/google_apis_playstore/arm64-v8a",
+                                "system-images/android-36/default/arm64-v8a"],
+                    "Images in use: an AVD's own config, one an .ini points at elsewhere, and one under ANDROID_AVD_HOME")
+        assertEqual(CleanDevMacEngine.matchedPaths(patterns: ["~/\(sdk)/*/*/*"], home: home, physicalHome: physicalHome, skip: refs),
+                    [home + "/\(sdk)/android-33/default/x86_64"], "Only the image no AVD uses is offered")
+
+        // 3. The safety gate: cdm's own test cases. Every refused path exists, so a
+        //    refusal can only come from the rule under test.
+        for folder in CleanDevMacEngine.protectedFolders { mkdir(folder) }
+        let cache = mkdir("Library/Caches/com.example.app")
+        let blob = make("Library/Caches/com.example.app/blob")
+        write(outside + "/precious", "keep")
+        try? fm.createSymbolicLink(atPath: home + "/escape-hatch", withDestinationPath: outside)
+        try? fm.createSymbolicLink(atPath: outside + "/into-home", withDestinationPath: home + "/Library/Caches")
+        func safe(_ path: String) -> Bool { CleanDevMacEngine.isSafeTarget(path, home: home, physicalHome: physicalHome) }
+        assertTrue(safe(cache), "A cache folder under home is reachable")
+        assertTrue(safe(blob), "A file under home is reachable")
+        assertTrue(safe(physicalHome + "/Library/Caches/com.example.app") == false, "Lexically outside home, through the resolved path, is refused")
+        for (path, why) in [("", "an empty path"), ("/", "root"), (home, "home itself"), (home + "/", "home with a slash"),
+                            (physicalHome, "the resolved home"), (physicalHome + "/", "the resolved home with a slash"),
+                            ("Library/Caches", "a relative path"), ("./Library/Caches", "a dot-relative path"),
+                            (home + "/Library/../../etc", "parent traversal"), (home + "/Library/Caches/../Caches", ".. even when it stays home"),
+                            (home + "/Library/Caches/nope-xyzzy", "a missing path"), ("/etc", "a system folder"),
+                            (outside, "a folder outside home"), (outside + "/precious", "a file outside home"),
+                            (home + "/escape-hatch/precious", "a symlinked component that escapes home"),
+                            (outside + "/into-home/com.example.app", "a path outside home that resolves into it")] {
+            assertTrue(!safe(path), "Refused: \(why)")
+        }
+        for folder in CleanDevMacEngine.protectedFolders {
+            assertTrue(!safe(home + "/" + folder), "Protected: ~/\(folder)")
+            assertTrue(!safe(mkdir(folder + "/child")), "Protected child: ~/\(folder)/child")
+        }
+        assertTrue(safe(home + "/escape-hatch"), "A symlink in home is itself reachable: only the link is ever removed")
+
+        // 4. Sizing matches du -sk: hard links counted once, symlinks not followed.
+        let tree = mkdir("sizing")
+        make("sizing/a.bin", bytes: 10_000)
+        make("sizing/nested/b.bin", bytes: 200_000)
+        try? fm.linkItem(atPath: tree + "/a.bin", toPath: tree + "/nested/hardlink.bin")
+        try? fm.createSymbolicLink(atPath: tree + "/to-outside", withDestinationPath: outside)
+        let du = Process()
+        du.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+        du.arguments = ["-sk", tree]
+        let pipe = Pipe()
+        du.standardOutput = pipe
+        du.standardError = FileHandle.nullDevice
+        try? du.run()
+        let duOutput = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        du.waitUntilExit()
+        let duKB = Int(duOutput.split(separator: "\t").first ?? "")
+        assertTrue((duKB ?? 0) > 200, "du measured the fixture")
+        assertEqual(CleanDevMacEngine.allocatedKB(tree), duKB, "Sizes match du -sk")
+        assertEqual(CleanDevMacEngine.allocatedKB(home + "/nope"), 0, "A missing path is 0")
+
+        // 5. Deletion, each method, through the gate.
+        func delete(_ path: String, _ method: CleanDevMacRule.Method) -> CleanDevMacEngine.DeleteOutcome {
+            CleanDevMacEngine.delete(path, method: method, home: home, physicalHome: physicalHome) { url in
+                try fm.moveItem(atPath: url.path, toPath: home + "/.Trash/" + url.lastPathComponent)
+            }
+        }
+        let rmTarget = mkdir("Library/Caches/rm-me")
+        make("Library/Caches/rm-me/x")
+        assertEqual(delete(rmTarget, .rm), .deleted, "rm deletes")
+        assertTrue(!fm.fileExists(atPath: rmTarget), "...and the folder is gone")
+        assertEqual(delete(rmTarget, .rm), .alreadyGone, "A second pass finds nothing to do")
+
+        // A read-only tree, like Go's module cache.
+        let modules = home + "/go/pkg/mod"
+        make("go/pkg/mod/example.com/m@v1.0.0/m.go", bytes: 100)
+        for file in [modules + "/example.com/m@v1.0.0/m.go"] { chmod(file, 0o444) }
+        for dir in [modules + "/example.com/m@v1.0.0", modules + "/example.com", modules] { chmod(dir, 0o555) }
+        if case .failed = delete(modules, .rm) {} else { assertTrue(false, "rm cannot delete a read-only tree") }
+        assertEqual(delete(modules, .rmforce), .deleted, "rmforce makes it writable, then deletes it")
+        assertTrue(!fm.fileExists(atPath: modules), "...all of it")
+
+        mkdir(".Trash")
+        let trashTarget = make("Library/Caches/trash-me.log")
+        assertEqual(delete(trashTarget, .trash), .trashed, "trash moves to the Trash")
+        assertTrue(!fm.fileExists(atPath: trashTarget) && fm.fileExists(atPath: home + "/.Trash/trash-me.log"), "...where it can be restored")
+
+        make(".Trash/old.txt")
+        mkdir(".Trash/old folder/sub")
+        make(".Trash/.DS_Store")
+        assertEqual(delete(home + "/.Trash", .emptytrash), .deleted, "The Trash is emptied")
+        assertEqual((try? fm.contentsOfDirectory(atPath: home + "/.Trash")) ?? ["?"], [], "...of everything, hidden files too")
+        assertTrue(fm.fileExists(atPath: home + "/.Trash"), "...and the Trash itself stays")
+        let notTrash = mkdir("Library/Caches/not-the-trash")
+        make("Library/Caches/not-the-trash/keep")
+        assertEqual(delete(notTrash, .emptytrash), .unsafe, "emptytrash empties the Trash and nothing else")
+        assertTrue(fm.fileExists(atPath: notTrash + "/keep"), "...whatever path its rule names")
+
+        let protectedFile = make("Documents/keep.txt")
+        assertEqual(delete(protectedFile, .rm), .unsafe, "The gate refuses a protected file")
+        assertTrue(fm.fileExists(atPath: protectedFile), "...which stays")
+        assertEqual(delete(home + "/escape-hatch/precious", .rmforce), .unsafe, "...and a path that leaves home through a symlink")
+        assertTrue(fm.fileExists(atPath: outside + "/precious"), "...whose target stays")
+
+        // A symlink is removed, never followed: rmforce must not chmod its target either.
+        chmod(outside, 0o555)
+        try? fm.createSymbolicLink(atPath: home + "/Library/Caches/link-out", withDestinationPath: outside)
+        assertEqual(delete(home + "/Library/Caches/link-out", .rmforce), .deleted, "A symlink is deleted")
+        var outsideInfo = stat()
+        stat(outside, &outsideInfo)
+        assertEqual(outsideInfo.st_mode & 0o777, 0o555, "...without making its target writable")
+        assertTrue(fm.fileExists(atPath: outside + "/precious"), "...or touching what it points at")
+        chmod(outside, 0o755)
+
+        // 6. Formatting, as cdm prints it.
+        assertEqual(CleanDevMacEngine.humanKB(0), "0 KB", "Zero")
+        assertEqual(CleanDevMacEngine.humanKB(1023), "1023 KB", "Under a MiB stays in KB")
+        assertEqual(CleanDevMacEngine.humanKB(1024), "1 MB", "A MiB")
+        assertEqual(CleanDevMacEngine.humanKB(1536), "2 MB", "Whole MB, rounded as cdm's awk rounds")
+        assertEqual(CleanDevMacEngine.humanKB(1_048_576), "1.00 GB", "A GiB with two decimals")
+        assertEqual(CleanDevMacEngine.humanKB(239_356_416), "228.27 GB", "A disk's worth")
+        let disk = CleanDevMacEngine.DiskStats(totalKB: 239_356_416, freeKB: 69_782_323)
+        assertEqual(disk.usedPercent, 71, "Used share, rounded")
+        assertEqual(disk.line, "228.27 GB total · 161.72 GB used (71%) · 66.55 GB free", "cdm's disk line")
+        let live = CleanDevMacEngine.diskStats(path: home)
+        assertTrue((live?.totalKB ?? 0) > 0 && (live?.freeKB ?? -1) >= 0 && (live?.freeKB ?? 0) <= (live?.totalKB ?? 0), "The home volume is measured")
+        assertEqual(CleanDevMacEngine.displayPath(home + "/Library/Caches", home: home), "~/Library/Caches", "home shows as ~")
+        assertEqual(CleanDevMacEngine.displayPath(home, home: home), "~", "home itself is ~")
+        assertEqual(CleanDevMacEngine.displayPath(home + "-other/x", home: home), home + "-other/x", "A sibling of home is not ~")
+
+        // 7. The clean log, shared with cdm and capped like cdm caps it.
+        assertTrue(CleanDevMacEngine.rotatedLog(Data("one\ntwo\n".utf8), now: Date()) == nil, "Under the cap the log is kept whole")
+        var big = Data()
+        var line = 0
+        while big.count <= CleanDevMacEngine.logMaxBytes {
+            big.append(contentsOf: "entry \(line) \(String(repeating: "x", count: line % 90))\n".utf8)
+            line += 1
+        }
+        let rotated = CleanDevMacEngine.rotatedLog(big, now: Date()) ?? Data()
+        let rotatedLines = String(decoding: rotated, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        assertTrue(rotatedLines.count > 3 && rotatedLines[1].hasPrefix("Truncated "), "A rotated log says so at the top")
+        assertTrue(rotated.count <= CleanDevMacEngine.logKeepBytes + 200, "...and keeps the newest 256 KiB")
+        assertTrue(rotatedLines[3].hasPrefix("entry "), "...starting on a whole line")
+        assertTrue(rotated.suffix(2000) == big.suffix(2000), "...through the very end")
+        CleanDevMacEngine.appendToLog("first\n", home: home)
+        CleanDevMacEngine.appendToLog("second\n", home: home)
+        assertEqual(try? String(contentsOfFile: home + "/.cleandevmac/clean.log", encoding: .utf8), "first\nsecond\n", "Runs are appended to ~/.cleandevmac/clean.log")
+
+        // 8. Running apps, by the names a rule's procs use.
+        let me = String(URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent.prefix(31))
+        assertTrue(CleanDevMacEngine.runningProcessNames().contains(me), "The process list includes this runner")
+
+        print("✅ CleanDevMac engine passed all tests!\n")
+    }
+
+    // MARK: - Test 37: cdm in Lightspot — rule sources, scan, clean, search row
+
+    static func testCleanDevMacProvider() {
+        print("Testing CleanDevMacProvider...")
+        let fm = FileManager.default
+        let home = NSTemporaryDirectory() + "lightspot-cdm-provider-\(getpid())"
+        try? fm.removeItem(atPath: home)
+        try? fm.createDirectory(atPath: home + "/.Trash", withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: home) }
+        @discardableResult
+        func make(_ relative: String, bytes: Int) -> String {
+            let path = home + "/" + relative
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(repeating: 0x61, count: bytes))
+            return path
+        }
+        func environment(remote: CleanDevMacRuleSet?) -> CleanDevMacProvider.Environment {
+            CleanDevMacProvider.Environment(
+                home: home,
+                bundledRules: bundledCdmRules,
+                processEnvironment: [:],
+                fetchRemoteRules: { completion in completion(remote) },
+                moveToTrash: { url in try FileManager.default.moveItem(atPath: url.path, toPath: home + "/.Trash/" + url.lastPathComponent) }
+            )
+        }
+        func rule(_ name: String, _ method: CleanDevMacRule.Method, _ patterns: [String], isDefault: Bool = true, procs: [String] = []) -> CleanDevMacRule {
+            CleanDevMacRule(kind: .paths, icon: "🧪", name: name, desc: "", method: method, isDefault: isDefault, patterns: patterns, procs: procs)
+        }
+        let fixture = CleanDevMacRuleSet(rules: [
+            rule("Big", .rm, ["~/big", "~/shared"], procs: ["Xcode"]),
+            rule("Small", .trash, ["~/small", "~/shared"], isDefault: false),
+            rule("Nothing", .rm, ["~/absent"]),
+            rule("Sandboxed", .rm, ["~/Library/Containers/*/Data/Library/Caches"]),
+            rule("Trash", .emptytrash, ["~/.Trash", "~/big"], isDefault: false),
+        ], terminalOnly: ["node_modules folders"], source: .remote)
+
+        // 1. Where the rules come from: cdm's local folder, else GitHub, else the app's copy.
+        func resolve(_ provider: CleanDevMacProvider) -> Result<CleanDevMacRuleSet, CleanDevMacProvider.LoadFailure>? {
+            let done = DispatchSemaphore(value: 0)
+            let box = ResultBox<Result<CleanDevMacRuleSet, CleanDevMacProvider.LoadFailure>>()
+            provider.resolveRules { result in
+                box.value = result
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + 10)
+            return box.value
+        }
+        assertEqual(try? resolve(CleanDevMacProvider(environment: environment(remote: nil)))?.get().source, .bundled,
+                    "Offline, the app's own copy is used")
+        assertEqual(try? resolve(CleanDevMacProvider(environment: environment(remote: fixture)))?.get(), fixture,
+                    "Online, cdm's live rules are used")
+        let local = home + "/.cleandevmac/rules"
+        try? fm.createDirectory(atPath: local, withIntermediateDirectories: true)
+        fm.createFile(atPath: local + "/index.json", contents: Data(#"{"patternFiles": ["mine.json"]}"#.utf8))
+        fm.createFile(atPath: local + "/mine.json", contents: Data(#"{"categories": [{"name": "Mine", "paths": ["~/mine"]}]}"#.utf8))
+        let localRules = try? resolve(CleanDevMacProvider(environment: environment(remote: fixture)))?.get()
+        assertEqual(localRules?.source, .local, "cdm's local rules folder wins over GitHub, as it does for cdm")
+        assertEqual(localRules?.rules.map(\.name), ["Mine"], "...and is read whole")
+        fm.createFile(atPath: local + "/index.json", contents: Data("{".utf8))
+        if case .failure = resolve(CleanDevMacProvider(environment: environment(remote: fixture))) {} else {
+            assertTrue(false, "Broken local rules are an error, never a reason to use other rules")
+        }
+        try? fm.removeItem(atPath: home + "/.cleandevmac/rules")
+
+        // 2. Scanning: biggest first, a shared path counted once, what is left to cdm named.
+        let bigPath = make("big/blob", bytes: 400_000)
+        let sharedPath = make("shared/blob", bytes: 100_000)
+        let smallPath = make("small/blob", bytes: 40_000)
+        make(".Trash/old", bytes: 8_000)
+        make("Library/Containers/com.example/Data/Library/Caches/blob", bytes: 1_000)
+        let provider = CleanDevMacProvider(environment: environment(remote: fixture))
+        let scan = provider.scanEntries(fixture)
+        assertEqual(scan.entries.map(\.rule.name), ["Big", "Small", "Trash"], "Found categories, biggest first; empty ones dropped")
+        assertEqual(scan.entries.map(\.id), [0, 1, 4], "An entry keeps its rule's position as its ID")
+        assertEqual(scan.terminalOnly, ["node_modules folders", "Sandboxed"], "A rule that only reads sandbox containers is left to cdm")
+        assertEqual(scan.entries[2].paths, [home + "/.Trash"], "Emptying the Trash only ever names the Trash")
+        assertEqual(scan.entries[0].sizes, [CleanDevMacEngine.allocatedKB(home + "/big"), CleanDevMacEngine.allocatedKB(home + "/shared")],
+                    "Each path is measured, aligned with the paths")
+        let unique = CleanDevMacProvider.uniqueKB(scan.entries)
+        assertEqual(unique, scan.entries.reduce(0) { $0 + $1.sizeKB } - CleanDevMacEngine.allocatedKB(home + "/shared"),
+                    "A path two categories share is counted once")
+        assertEqual(CleanDevMacProvider.runningApps(for: scan.entries, running: ["Xcode", "Finder"]), ["Xcode"], "Running owners are named")
+        assertEqual(CleanDevMacProvider.runningApps(for: scan.entries, running: []), [], "...and only running ones")
+
+        // Android images an AVD boots from are left out by the scan itself.
+        let imageRules = CleanDevMacRuleSet(rules: [
+            CleanDevMacRule(kind: .androidImages, icon: "💿", name: "Images", desc: "", method: .rm, isDefault: false,
+                            patterns: ["~/sdk/system-images/*/*/*"], procs: []),
+        ], terminalOnly: [], source: .remote)
+        make("sdk/system-images/android-34/default/arm64-v8a/system.img", bytes: 4_000)
+        make("sdk/system-images/android-33/default/arm64-v8a/system.img", bytes: 4_000)
+        try? fm.createDirectory(atPath: home + "/.android/avd/Phone.avd", withIntermediateDirectories: true)
+        fm.createFile(atPath: home + "/.android/avd/Phone.avd/config.ini",
+                      contents: Data("image.sysdir.1=system-images/android-34/default/arm64-v8a/\n".utf8))
+        assertEqual(provider.scanEntries(imageRules).entries.first?.paths, [home + "/sdk/system-images/android-33/default/arm64-v8a"],
+                    "Only the image no AVD uses is offered")
+
+        // 3. Cleaning: each method, a shared path removed and counted once, a receipt and a log.
+        let receipt = provider.performClean(Array(scan.entries.prefix(2)))
+        assertTrue(!fm.fileExists(atPath: bigPath) && !fm.fileExists(atPath: sharedPath), "rm deleted Big's paths")
+        assertTrue(!fm.fileExists(atPath: home + "/small") && fm.fileExists(atPath: home + "/.Trash/small"), "trash moved Small to the Trash")
+        assertEqual(receipt.removedCount, 3, "big, shared and small; shared only once")
+        assertEqual(receipt.freedKB, scan.entries[0].sizeKB + scan.entries[1].sizes[0], "Freed counts the shared path once")
+        assertTrue(receipt.movedToTrash, "The receipt says something went to the Trash")
+        assertEqual(receipt.problems, [], "Nothing was refused")
+        let log = (try? String(contentsOfFile: home + "/.cleandevmac/clean.log", encoding: .utf8)) ?? ""
+        for expected in ["CleanDevMac run (Lightspot): ", "▸ Big\n  deleted: ~/big\n  deleted: ~/shared\n", "▸ Small\n  trashed: ~/small\n", "Finished: "] {
+            assertTrue(log.contains(expected), "The log records '\(expected)'")
+        }
+        _ = smallPath
+        let refused = provider.performClean([CleanDevMacProvider.Entry(id: 9, rule: fixture.rules[0], paths: ["/etc/hosts"], sizes: [4])])
+        assertEqual(refused.problems, ["Skipped (unsafe): /etc/hosts"], "A path outside home is refused at clean time too")
+        assertEqual(refused.freedKB, 0, "...and frees nothing")
+
+        // 4. The state machine behind the overlay: scan, a recent scan stands, clean, rescan.
+        make("big/blob", bytes: 400_000)
+        make("shared/blob", bytes: 100_000)
+        let machine = CleanDevMacProvider(environment: environment(remote: fixture))
+        func wait(_ phase: CleanDevMacProvider.Phase) -> CleanDevMacProvider.Snapshot {
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline {
+                let snapshot = machine.snapshot
+                if snapshot.phase == phase { return snapshot }
+                usleep(10_000)
+            }
+            print("❌ FAIL: the cleaner never reached \(phase); it is at \(machine.snapshot.phase)")
+            exit(1)
+        }
+        assertEqual(machine.snapshot.phase, .idle, "A new provider has not scanned")
+        machine.startScan()
+        let ready = wait(.ready)
+        assertEqual(ready.entries.map(\.rule.name), ["Big", "Small", "Trash"], "The scan finds what is there again")
+        assertEqual(ready.source, .remote, "...with the rules it was given")
+        assertEqual(ready.generation, 1, "...and counts the scan")
+        assertTrue(ready.disk != nil && ready.scannedAt != nil, "...with the disk line and the time")
+        machine.startScan()
+        assertEqual(machine.snapshot.generation, 1, "A recent scan stands")
+        machine.clean([0])
+        let finished = wait(.finished)
+        assertTrue((finished.receipt?.freedKB ?? 0) > 0 && finished.entries.isEmpty, "Cleaning ends on a receipt")
+        assertTrue(!fm.fileExists(atPath: home + "/big"), "...having deleted what was ticked")
+        assertTrue(fm.fileExists(atPath: home + "/.Trash/old"), "...and nothing that was not")
+        machine.clean([4])
+        assertEqual(machine.snapshot.phase, .finished, "A finished scan cannot be cleaned again")
+        machine.startScan()
+        assertEqual(wait(.ready).generation, 2, "After a clean, opening the cleaner measures again")
+
+        // 5. The search row.
+        let rows = CleanDevMacProvider.shared.search(SearchQuery("cdm"))
+        assertEqual(rows.first?.id, CleanDevMacProvider.resultID, "'cdm' finds Clean Dev Mac")
+        assertEqual(rows.first?.score, 95, "...as an exact keyword")
+        if case .runQuickAction(let script, let usesOsascript) = rows.first?.action {
+            assertEqual(script, CleanDevMacProvider.openScript, "The row opens the cleaner")
+            assertTrue(!usesOsascript, "...and runs nothing itself")
+        } else {
+            assertTrue(false, "The row's action is the cleaner's sentinel")
+        }
+        assertEqual(CleanDevMacProvider.shared.search(SearchQuery("clean dev mac")).first?.score, 100, "The full name is exact")
+        assertEqual(CleanDevMacProvider.shared.search(SearchQuery("derived data")).first?.title, "Clean Dev Mac", "A cache name finds it")
+        assertTrue(CleanDevMacProvider.shared.search(SearchQuery("zzqx")).isEmpty, "Unrelated queries do not")
+        let engine = SearchEngine.shared.searchImmediate(SearchQuery("cdm"))
+        assertTrue(((engine[.topHit] ?? []) + (engine[.quickActions] ?? [])).contains { $0.id.hasSuffix(CleanDevMacProvider.resultID) },
+                   "Search shows the row")
+        assertEqual(SearchHistoryManager.persistableSubtitle(itemId: CleanDevMacProvider.resultID, subtitle: "12.00 GB reclaimable"),
+                    CleanDevMacProvider.fixedSubtitle, "Search history never keeps a scan's sizes")
+
+        var snapshot = CleanDevMacProvider.Snapshot()
+        assertTrue(CleanDevMacProvider.subtitle(for: snapshot).contains("↵ Scan"), "Before a scan the row offers one")
+        snapshot.phase = .measuring(done: 3, total: 9)
+        assertEqual(CleanDevMacProvider.subtitle(for: snapshot), "Measuring reclaimable space… 3 of 9", "A scan shows its progress")
+        snapshot.phase = .ready
+        snapshot.entries = scan.entries
+        assertTrue(CleanDevMacProvider.subtitle(for: snapshot).hasPrefix("\(CleanDevMacEngine.humanKB(unique)) reclaimable in 3 categories"),
+                   "A scan's total shows on the row")
+        snapshot.entries = []
+        assertTrue(CleanDevMacProvider.subtitle(for: snapshot).hasPrefix("Nothing to reclaim"), "A clean Mac says so")
+
+        print("✅ CleanDevMacProvider passed all tests!\n")
+    }
+
+    // MARK: - Test 38: Installers for setup-zsh, MacStats and setup-zsh's dev tools menu
+
+    /// Exit status of `shell -n -c script`: whether it parses, without running it.
+    static func parses(_ script: String, shell: String = "/bin/sh") -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-n", "-c", script]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    static func testToolInstallers() {
+        print("Testing ToolInstallersProvider...")
+        let installers = ToolInstallersProvider.installers
+        assertEqual(installers.map(\.id), ToolInstaller.ID.allCases, "One row per tool, in order")
+        assertEqual(Set(installers.map(\.script)).count, installers.count, "Each row has its own action")
+        assertEqual(Set(installers.map(\.resultID)).count, installers.count, "Each row has its own ID")
+        for installer in installers {
+            assertEqual(ToolInstallersProvider.installer(forScript: installer.script), installer, "\(installer.title) is found by its action")
+            assertTrue(!QuickActionsProvider.requiresAdministratorPrivileges(script: installer.script), "\(installer.title) never asks for admin")
+            assertTrue(installer.repository.absoluteString.hasPrefix("https://github.com/openhoangnc/"), "\(installer.title) links its repository")
+            assertEqual(SearchHistoryManager.persistableSubtitle(itemId: installer.resultID, subtitle: "Installed · live"), installer.summary,
+                        "Search history keeps \(installer.title)'s description, not its install state")
+        }
+        assertTrue(ToolInstallersProvider.installer(forScript: "internal:install:nothing") == nil, "An unknown installer is not run")
+
+        // The commands each tool's README gives, over HTTPS from the author's repositories.
+        let none = ToolInstallState()
+        let both = ToolInstallState(setupZsh: true, macStats: true)
+        let setupZsh = ToolInstallersProvider.installer(.setupZsh)
+        let macStats = ToolInstallersProvider.installer(.macStats)
+        let devTools = ToolInstallersProvider.installer(.devTools)
+        assertEqual(ToolInstallersProvider.command(for: setupZsh, state: none),
+                    "curl -fsSL https://raw.githubusercontent.com/openhoangnc/setup-zsh/main/setup.sh | bash && exec zsh -l",
+                    "setup-zsh runs its setup, then starts a zsh that loads it")
+        assertEqual(ToolInstallersProvider.command(for: setupZsh, state: both), ToolInstallersProvider.command(for: setupZsh, state: none),
+                    "Updating setup-zsh is running its setup again")
+        assertEqual(ToolInstallersProvider.command(for: macStats, state: none),
+                    "curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-stats/main/install.sh | bash", "MacStats runs its install.sh")
+        assertEqual(ToolInstallersProvider.command(for: devTools, state: both), "~/.zsh/setup-zsh/bin/install-dev-tool",
+                    "With setup-zsh, the dev tools menu runs as a file, so it reads keys from the terminal")
+        let devFirst = ToolInstallersProvider.command(for: devTools, state: none)
+        assertTrue(devFirst.hasPrefix(ToolInstallersProvider.command(for: setupZsh, state: none).replacingOccurrences(of: " && exec zsh -l", with: "")),
+                   "Without setup-zsh, the dev tools menu installs it first")
+        assertTrue(devFirst.contains("exec zsh -lic '~/.zsh/setup-zsh/bin/install-dev-tool; exec zsh -l'"), "...then opens the menu in a zsh that has it")
+        for state in [none, both] {
+            for installer in installers {
+                let command = ToolInstallersProvider.command(for: installer, state: state)
+                assertTrue(parses(command, shell: "/bin/zsh"), "\(installer.title)'s command parses in zsh: \(command)")
+                assertTrue(!command.contains("http://"), "\(installer.title) downloads over HTTPS only")
+            }
+        }
+
+        // What is installed is read off the disk, in the background, never on the keystroke path.
+        let fm = FileManager.default
+        let home = NSTemporaryDirectory() + "lightspot-installers-\(getpid())"
+        try? fm.removeItem(atPath: home)
+        try? fm.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: home) }
+        assertTrue(!ToolInstallersProvider.readInstallState(home: home).setupZsh, "No setup-zsh in an empty home")
+        let menu = ToolInstallersProvider.devToolPath(home: home)
+        try? fm.createDirectory(atPath: (menu as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        fm.createFile(atPath: menu, contents: Data("#!/bin/bash\n".utf8), attributes: [.posixPermissions: 0o755])
+        assertTrue(ToolInstallersProvider.readInstallState(home: home).setupZsh, "setup-zsh is installed once its dev tools menu is")
+        let macStatsInstalled = fm.fileExists(atPath: ToolInstallersProvider.macStatsPath)
+            || NSWorkspace.shared.urlForApplication(withBundleIdentifier: ToolInstallersProvider.macStatsBundleID) != nil
+        assertEqual(ToolInstallersProvider.readInstallState(home: home).macStats, macStatsInstalled, "MacStats is found where macOS finds it")
+        let provider = ToolInstallersProvider(home: home)
+        assertEqual(provider.installState, ToolInstallState(), "The first read returns at once, before the disk has answered")
+        let deadline = Date().addingTimeInterval(5)
+        while !provider.installState.setupZsh && Date() < deadline { usleep(10_000) }
+        assertTrue(provider.installState.setupZsh, "...and the background read lands")
+
+        // The rows.
+        assertTrue(ToolInstallersProvider.subtitle(for: setupZsh, state: none).contains("↵ Install in Terminal"), "Not installed: offers the install")
+        assertTrue(ToolInstallersProvider.subtitle(for: setupZsh, state: both).hasPrefix("Installed"), "Installed: says so")
+        assertTrue(ToolInstallersProvider.subtitle(for: macStats, state: both).hasPrefix("Installed"), "MacStats installed: says so")
+        assertTrue(ToolInstallersProvider.subtitle(for: devTools, state: none).hasPrefix("Comes with setup-zsh"), "The menu says it needs setup-zsh")
+        func top(_ query: String) -> SearchResult? { provider.search(SearchQuery(query)).max { $0.score < $1.score } }
+        assertEqual(top("setup-zsh")?.id, setupZsh.resultID, "'setup-zsh' finds its installer")
+        assertEqual(top("macstats")?.id, macStats.resultID, "'macstats' finds its installer")
+        assertEqual(top("install go")?.id, devTools.resultID, "'install go' finds the dev tools menu")
+        assertEqual(top("install node")?.id, devTools.resultID, "'install node' finds the dev tools menu")
+        assertEqual(Set(provider.search(SearchQuery("install")).map(\.id)), Set(installers.map(\.resultID)), "'install' lists all three")
+        if case .runQuickAction(let script, let usesOsascript) = top("setup-zsh")?.action {
+            assertEqual(script, setupZsh.script, "The row's action is its installer's sentinel")
+            assertTrue(!usesOsascript, "...run by Lightspot, not as AppleScript")
+        } else {
+            assertTrue(false, "The installer row is a quick action")
+        }
+        assertTrue(provider.search(SearchQuery("zzqx")).isEmpty, "Unrelated queries find no installer")
+
+        print("✅ ToolInstallersProvider passed all tests!\n")
+    }
+
+    // MARK: - Test 39: macOS tweaks
+
+    static func testMacTweaks() {
+        print("Testing MacTweaks...")
+        let all = QuickActionsProvider.defaultActions
+        for tweak in MacTweaks.actions {
+            assertTrue(all.contains { $0.id == tweak.id }, "\(tweak.name) is a quick action")
+            assertTrue(!tweak.requiresAdmin && !QuickActionsProvider.requiresAdministratorPrivileges(script: tweak.script),
+                       "\(tweak.name) needs no administrator password")
+            if !tweak.usesOsascript {
+                assertTrue(parses(tweak.script), "\(tweak.name) parses: \(tweak.script)")
+            }
+        }
+        assertEqual(Set(all.map(\.id)).count, all.count, "Quick action IDs are unique")
+        assertEqual(MacTweaks.actions.first { $0.name == "Clear Dock Icons" }?.script,
+                    "defaults write com.apple.dock persistent-apps -array && killall Dock", "Clear Dock Icons is the requested one-liner")
+
+        // The toggles, run for real against a scratch domain: never the user's settings.
+        let domain = "com.lightspot.test.tweaks"
+        func sh(_ script: String) -> String {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", script]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func read(_ key: String) -> String { sh("defaults read \(domain) \(key) 2>/dev/null") }
+        sh("defaults delete \(domain) 2>/dev/null")
+        defer {
+            sh("defaults delete \(domain) 2>/dev/null")
+            try? FileManager.default.removeItem(atPath: NSHomeDirectory() + "/Library/Preferences/\(domain).plist")
+        }
+
+        let offByDefault = MacTweaks.toggleScript(domain: domain, keys: ["Shown"], defaultValue: false)
+        sh(offByDefault)
+        assertEqual(read("Shown"), "1", "Unset and off by default: the first toggle turns it on")
+        sh(offByDefault)
+        assertEqual(read("Shown"), "0", "...and the next turns it off")
+
+        let onByDefault = MacTweaks.toggleScript(domain: domain, keys: ["Enabled"], defaultValue: true)
+        sh(onByDefault)
+        assertEqual(read("Enabled"), "0", "Unset and on by default: the first toggle turns it off")
+        sh(onByDefault)
+        assertEqual(read("Enabled"), "1", "...and the next turns it back on")
+
+        sh("defaults write \(domain) Typed -string YES")
+        sh(MacTweaks.toggleScript(domain: domain, keys: ["Typed"], defaultValue: false))
+        assertEqual(read("Typed"), "0", "A YES written as a string counts as on")
+
+        let pair = MacTweaks.toggleScript(domain: domain, keys: ["Quotes", "Dashes"], defaultValue: true)
+        sh(pair)
+        assertEqual([read("Quotes"), read("Dashes")], ["0", "0"], "Paired keys turn off together")
+        sh("defaults write \(domain) Dashes -bool true")
+        sh(pair)
+        assertEqual([read("Quotes"), read("Dashes")], ["1", "1"], "...and follow the first key's state back on")
+
+        let instant = MacTweaks.instantDockScript(domain: domain, restart: nil)
+        sh(instant)
+        assertEqual([read("autohide-delay"), read("autohide-time-modifier")], ["0", "0.15"], "Instant auto-hide sets the delay and the slide")
+        sh(instant)
+        assertEqual([read("autohide-delay"), read("autohide-time-modifier")], ["", ""], "...and toggling it back hands both to macOS")
+        assertTrue(MacTweaks.instantDockScript().hasSuffix("; killall Dock"), "The real one restarts the Dock")
+
+        // Finding them, without taking over the words other actions own.
+        let quick = QuickActionsProvider.shared
+        for (query, title) in [("clear dock", "Clear Dock Icons"), ("hidden files", "Toggle Hidden Files in Finder"),
+                               ("file extensions", "Toggle File Extensions in Finder"), ("smart quotes", "Toggle Smart Quotes & Dashes"),
+                               ("key repeat", "Toggle Press-and-Hold Accents"), ("ds_store", "Toggle .DS_Store on Network & USB Drives"),
+                               ("restart finder", "Restart Finder"), ("instant dock", "Toggle Instant Dock Auto-Hide"),
+                               ("desktop", "Show Desktop"), ("screenshot", "Take Screenshot")] {
+            assertEqual(quick.search(SearchQuery(query)).first?.title, title, "'\(query)' finds \(title)")
+        }
+
+        print("✅ MacTweaks passed all tests!\n")
+    }
+}
+
+/// Carries a completion handler's value out to the test waiting on it.
+final class ResultBox<Value>: @unchecked Sendable {
+    var value: Value?
 }

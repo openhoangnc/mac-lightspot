@@ -1,0 +1,10 @@
+{
+  "_comment": "Manifest for CleanDevMac (cdm). 'patternFiles' are loaded in order; each contributes categories. 'orphanConfig' drives orphaned-app-data detection. Add or reorder files freely — the tool reads whatever is listed here.",
+  "patternFiles": [
+    "dev-caches.json",
+    "app-caches.json",
+    "containers.json",
+    "project-junk.json"
+  ],
+  "orphanConfig": "orphans.json"
+}

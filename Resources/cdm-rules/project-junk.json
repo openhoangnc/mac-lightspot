@@ -1,0 +1,80 @@
+{
+  "title": "Project build & dependency folders",
+  "_comment": "Regenerable folders inside your CODE REPOS. The tool groups findings per project — one git repo = one row — so you can pick which repos to clean. 'scan.groups' name directories that hold a CROWD of machine-generated repos (e.g. an AI agent that keeps every session as its own git repo under ~/.gemini/antigravity/brain); every repo at or under a group root collapses into ONE aggregate row keyed by the root instead of flooding the menu with dozens of near-identical rows. Add a directory here to fold its child repos together; it is a display grouping only — each item is still deleted individually and gated by is_safe_target. 'scan.roots' are searched up to maxDepth; interior dirs named in 'prune' are skipped (this list also excludes tool/cache homes like ~/.npm, ~/.cargo, ~/.local so language caches, global npm, editor extensions and the like are never mistaken for your projects — those are covered by the dev-cache rules instead). kind:project entries only define the regenerable dir NAMES to match (and the method); they are deleted with rm. A name match only NOMINATES a directory: every one is then verified to be git-ignored (and untracked) in its own repo before it can be offered, so a tracked build/ of release scripts, a committed dist/ or a vendored Pods/ is left alone — enforced in scan_projects, not here, and a dir that no .gitignore covers is never offered however well its name matches (see docs/DESIGN.md#ignored-proof). kind:gitignore enumerates every git-ignored entry via 'git ls-files --others --ignored --directory' per repo and moves them to the Trash (recoverable — git-ignored files can include local config); .env* files are never offered for deletion regardless of rules (they hold secrets/local config nothing can regenerate — enforced in scan_projects, not here). Junk found outside any git repo is ignored. IMPORTANT: a name must NOT appear in both 'prune' and a category's 'dirs' — the find expression evaluates the prune branch first, so a pruned name can never be reported. Names matched as junk are pruned anyway (find does not descend into them), so moving a name out of 'prune' into 'dirs' costs no scan time.",
+  "scan": {
+    "roots": ["~"],
+    "maxDepth": 6,
+    "prune": ["Library", ".Trash", ".git", "vendor",
+              ".npm", ".cargo", ".rustup", ".local", ".cache", ".m2",
+              ".nuget", ".gem", ".bun", ".deno", ".nvm", ".sdkman", ".pub-cache",
+              ".cocoapods", ".vscode", ".vscode-server", ".cursor", ".claude",
+              ".docker", ".kube", ".android", "site-packages",
+              "miniconda3", "anaconda3", "miniforge3", "mambaforge"],
+    "groups": ["~/.gemini/antigravity/brain"],
+    "maxRepos": 400
+  },
+  "categories": [
+    {
+      "kind": "project",
+      "icon": "🟢",
+      "name": "node_modules folders",
+      "method": "rm",
+      "default": false,
+      "desc": "Node dependency trees — restore with npm/pnpm/yarn install.",
+      "dirs": ["node_modules"]
+    },
+    {
+      "kind": "project",
+      "icon": "📦",
+      "name": "JS/web build output",
+      "method": "rm",
+      "default": false,
+      "desc": "Bundler output (dist, build, out, .next, .nuxt, ...) — rebuilt by your build step.",
+      "dirs": ["dist", "build", "out", ".next", ".nuxt", ".output", ".svelte-kit", ".astro", ".angular", ".turbo", ".parcel-cache", "storybook-static", "coverage"]
+    },
+    {
+      "kind": "project",
+      "icon": "🦀",
+      "name": "Rust / JVM build output",
+      "method": "rm",
+      "default": false,
+      "desc": "target/ trees (Cargo, Maven, sbt) and project-local Gradle state — rebuilt on next build.",
+      "dirs": ["target", ".gradle"]
+    },
+    {
+      "kind": "project",
+      "icon": "🐍",
+      "name": "Python caches & virtualenvs",
+      "method": "rm",
+      "default": false,
+      "desc": "__pycache__, test/type-checker caches and project virtualenvs — recreate a venv with your usual install step.",
+      "dirs": ["__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".venv", "venv"]
+    },
+    {
+      "kind": "project",
+      "icon": "🍎",
+      "name": "Apple / mobile build output",
+      "method": "rm",
+      "default": false,
+      "desc": "CocoaPods Pods/, SwiftPM .build/, project-local DerivedData, Expo & NDK output — restored by pod install / next build.",
+      "dirs": ["Pods", ".build", "DerivedData", ".expo", ".cxx"]
+    },
+    {
+      "kind": "project",
+      "icon": "🎯",
+      "name": "Dart / Zig build output",
+      "method": "rm",
+      "default": false,
+      "desc": "Flutter/Dart .dart_tool and Zig cache/output — rebuilt on next build.",
+      "dirs": [".dart_tool", ".zig-cache", "zig-out"]
+    },
+    {
+      "kind": "gitignore",
+      "icon": "🙈",
+      "name": "Git-ignored files (all repos)",
+      "method": "trash",
+      "default": false,
+      "desc": "Everything 'git clean -ndX' would remove in each repo, minus .env* files (always left alone) — MAY include local config, so moved to Trash (recoverable)."
+    }
+  ]
+}

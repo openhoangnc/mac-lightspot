@@ -76,6 +76,9 @@ if [ -f "$SCRIPT_DIR/Resources/AppIcon.icns" ]; then
     cp "$SCRIPT_DIR/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 fi
 
+# cdm's rule files: what Clean Dev Mac uses when GitHub cannot be reached
+cp -R "$SCRIPT_DIR/Resources/cdm-rules" "$CONTENTS/Resources/cdm-rules"
+
 # Write PkgInfo
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
 

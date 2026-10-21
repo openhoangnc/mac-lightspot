@@ -58,6 +58,12 @@ final class SearchEngine: Sendable {
         // System Hardware HUD (sys, battery, ram, cpu)
         allResults.append(contentsOf: SystemInfoProvider.shared.search(query))
 
+        // Clean Dev Mac (cdm): reads the last scan's snapshot, never scans from here
+        allResults.append(contentsOf: CleanDevMacProvider.shared.search(query))
+
+        // setup-zsh, MacStats and setup-zsh's dev tools menu, installed in the terminal
+        allResults.append(contentsOf: ToolInstallersProvider.shared.search(query))
+
         // Default Browser Bookmarks, History & Open Tabs
         allResults.append(contentsOf: BrowserIntegrationProvider.shared.search(query))
 

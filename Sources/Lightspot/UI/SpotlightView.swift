@@ -8,7 +8,9 @@ struct SpotlightView: View {
     var body: some View {
         mainContent
             .overlay {
-                if viewModel.isCustomCommandManagerPresented {
+                if viewModel.isCleanerPresented {
+                    cleanerLayer
+                } else if viewModel.isCustomCommandManagerPresented {
                     customCommandManagerLayer
                 } else if viewModel.isPinManagerPresented {
                     pinManagerLayer
@@ -34,6 +36,25 @@ struct SpotlightView: View {
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 16)
+    }
+
+    // MARK: - Clean Dev Mac (cdm) Layer
+
+    private var cleanerLayer: some View {
+        VStack(spacing: 0) {
+            Color.clear
+                .frame(height: 76)
+
+            CleanDevMacView(
+                model: viewModel.cleaner,
+                onClose: { viewModel.hideCleaner() },
+                onOpenInTerminal: { viewModel.openCdmInTerminal() }
+            )
+            .frame(height: 450)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
     }
 
     // MARK: - Custom Commands Manager Layer

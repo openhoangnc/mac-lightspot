@@ -66,7 +66,7 @@ Lightspot不主动抓取整个硬盘，而是严格关注高级用户实际搜�
 | **RAM占用** | 500 MB – 2 GB+ | 200 MB – 500 MB | **约15 – 25 MB** (纯Swift) |
 | **应用启动** | 经常损坏；需要重建 | 可靠 | **100%可靠** (直接扫描) |
 | **搜索延迟** | 防抖处理 (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬时同步) |
-| **离线隐私** | 发送Siri遥测至Apple | 需要同步账号 | **本地运行且无遥测**（仅在可选的更新检查和您主动发起的IP查询时联网） |
+| **离线隐私** | 发送Siri遥测至Apple | 需要同步账号 | **本地运行且无遥测**（仅在可选的更新检查、您主动发起的IP查询，以及打开 Clean Dev Mac 获取 cdm 清理规则时联网） |
 
 ---
 
@@ -150,6 +150,29 @@ Lightspot自动监控以下最近工作区：
 - 每次下载都有门槛：仅限HTTPS、仅限GitHub主机（重定向后会再次校验），解压后的应用包必须带有Lightspot的包标识符、可运行的可执行文件，以及与公布版本完全一致的版本号，且绝不接受比已安装版本更旧的构建。
 - 发布版本采用临时（ad-hoc）签名（本项目不附带Developer ID），因此没有可供验证的代码签名——以上检查加上通往GitHub的HTTPS就是全部的信任模型，与 `install.sh` 已经要求的完全相同。
 
+### 11. 🧹 Clean Dev Mac (`cdm`)
+[CleanDevMac](https://github.com/cleandevmac/cdm)（`cdm`）能找出占用磁盘的开发缓存和构建产物；Lightspot 在面板中直接运行它。输入 `cdm`、`clean dev mac` 或缓存名称（`derived data`、`npm cache`）并按下 **`↵`**：
+- **先测量，不盲目勾选**：cdm 规则涵盖的每个类别（Xcode DerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、浏览器和 Electron 应用缓存、未使用的 Android 镜像等）都会像 `du` 一样测量，按大小从大到小排列，并按 cdm 的安全默认值勾选。面板会显示清理前后的磁盘状态。
+- **按键**：`↑↓` 选择（选中的行会显示其路径和大小），`Space` 勾选，`↵` 显示逐项清理计划，再按一次 `↵` 开始清理，`⌥↵` 在访达中显示所选缓存，`Esc` 返回。
+- **与 cdm 相同的规则**：Lightspot 读取 cdm 自己的规则文件：如果有 `~/.cleandevmac/rules` 就用它，否则使用 GitHub 上 cdm 的最新规则，再否则使用应用内置的副本。因此 cdm 能清理的缓存，Lightspot 也能清理。
+- **与 cdm 相同的安全性**：执行任何操作之前，每个路径都要通过 cdm 的安全检查：必须位于您的主文件夹内（解析符号链接后），并且绝不触碰 `~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music`、`~/.ssh`、`~/.gnupg` 和 iCloud 云盘。清理之前，计划会列出仍在运行、会重新写入其缓存的应用（请先退出它们）。每次清理都会记录到 `~/.cleandevmac/clean.log`，与 cdm 使用同一份日志。
+- **其余一键直达**：代码库中的项目垃圾（`node_modules`、构建目录、被 git 忽略的文件）、Docker / Podman、已卸载应用的残留数据以及沙盒应用的缓存需要 git、容器引擎或对应用的扫描，因此 `⌘↵` 会在您首选的终端中直接从最新发布版本运行完整的 cdm。
+
+### 12. 📦 一键安装：setup-zsh、MacStats 与开发工具
+输入 `install`（或工具名称）并按下 **`↵`**：Lightspot 会在您首选的终端中运行该工具自己的安装程序，每一步都清晰可见。
+- **Install setup-zsh**（[setup-zsh](https://github.com/openhoangnc/setup-zsh)）：可匹配历史记录任意位置的 zsh 自动建议、语法高亮，以及显示 git 状态的提示符。运行 `setup.sh` 后，打开一个加载了它的新 zsh。安装后，同一行可用于更新。
+- **Install MacStats**（[mac-stats](https://github.com/openhoangnc/mac-stats)）：在菜单栏显示 CPU、内存、网速和 CPU 温度。运行其 `install.sh`，将其安装到 `/Applications` 并启动。
+- **Install Dev Tools**：setup-zsh 的 `install-dev-tool` 菜单：Homebrew、Node.js、Go、Python 与 uv、Rust、JDK、Bun、Git、VS Code、Chrome、OrbStack、Android Studio 等，还能更新您的全局软件包。输入 `install node`、`install go`、`install rust` 等即可；如果没有 setup-zsh，该行会先安装它。
+- 每一行都会显示工具是否已安装；**`⌥↵`** 打开其 GitHub 页面。
+
+### 13. 🎛️ macOS 调整
+那些您通常会从 dotfiles 的 README 中复制的 `defaults write` 单行命令，现在是快捷操作。每个开关都会读取当前设置并将其反转，因此同一行即可恢复：
+- **程序坞**：**Clear Dock Icons**（移除所有固定的应用并重启程序坞：`defaults write com.apple.dock persistent-apps -array && killall Dock`）、**Toggle Dock Auto-Hide**、**Toggle Instant Dock Auto-Hide**（无延迟）、**Toggle Dock Recent Apps**、**Restart Dock**。
+- **访达**：**Toggle Hidden Files in Finder**、**Toggle File Extensions in Finder**、**Toggle Finder Path Bar**、**Toggle Desktop Icons**（屏幕共享前很实用）、**Toggle .DS_Store on Network & USB Drives**、**Restart Finder**。
+- **输入与截图**：**Toggle Press-and-Hold Accents**（按住按键即可重复输入）、**Toggle Smart Quotes & Dashes**、**Toggle Screenshot Shadows**。
+
+均无需管理员密码。Clear Dock Icons 无法撤销；开关类操作可以恢复。
+
 ---
 
 ## ✨ 额外的内置功能
@@ -213,12 +236,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. 测试与验证
-Lightspot没有XCTest目标。`scripts/` 下有两个独立脚本，会随源码一起即时编译：逻辑与引擎测试运行器（34个测试块）和实时系统验证器（10个部分，在配置齐全的机器上共88项检查；例如没有zsh历史记录或未安装VS Code时，部分检查会被跳过）：
+Lightspot没有XCTest目标。`scripts/` 下有两个独立脚本，会随源码一起即时编译，并需在仓库根目录下运行：逻辑与引擎测试运行器（40个测试块）和实时系统验证器（11个部分，在配置齐全的机器上共132项检查；例如没有zsh历史记录、未安装VS Code或无法访问GitHub时，部分检查会被跳过）：
 ```bash
-# 核心逻辑与引擎测试 (34个测试块)
+# 核心逻辑与引擎测试 (40个测试块)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
-# 实时系统检查 (10个部分，配置齐全的机器上共88项检查)
+# 实时系统检查 (11个部分，配置齐全的机器上共132项检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
@@ -232,10 +255,11 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`↓` / `↑`** | 在搜索结果中导航 |
 | **`Return` (`↵`)** | 打开所选应用、在IDE中打开项目、运行命令或复制计算结果 |
 | **`⌘Return` (`⌘↵`)** | 在首选终端中打开所选项目 |
-| **`⌥Return` (`⌥↵`)** | 在Finder中显示项目 / 强制终止所选进程 (`SIGKILL`) |
+| **`⌥Return` (`⌥↵`)** | 在Finder中显示项目 / 强制终止所选进程 (`SIGKILL`) / 打开安装项的 GitHub 页面 |
 | **`⌘P`** | 固定或取消固定所选终端历史记录命令 |
 | **`⌘⇧P`** | 打开固定命令管理器浮层 |
 | **`⌘⇧C`** | 打开自定义命令管理器浮层 |
+| **`Space`** | 在 Clean Dev Mac 中勾选或取消勾选类别 |
 | **`⌘Y` / `⌘⇧H`** | 打开搜索历史记录管理器浮层 |
 | **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot |
 | **点击外部** | 自动关闭悬浮面板 |
@@ -246,15 +270,16 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 ## 🔒 隐私与安全保证
 
-- **零文件索引**：Lightspot绝不会对您的个人文件、文档、下载或代码库进行索引。
+- **零文件索引**：Lightspot绝不会对您的个人文件、文档、下载或代码库进行索引。Clean Dev Mac 只测量 cdm 规则所指定的缓存文件夹，且仅在您打开它时进行，除大小外不保留任何内容；它从不读取其他应用的沙盒容器。
 - **纯RAM的临时剪贴板**：剪贴板历史记录仅保留在易失性内存中，并主动忽略隐藏/密码管理器类型（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）。它从不写入磁盘，也不会进入搜索历史；搜索历史同样不会保存您从计算器、开发者工具或代码段结果中复制的文本。
 - **默认浏览器隔离**：书签、已打开的标签页和近期浏览历史仅在本机从您配置的默认浏览器中读取，避免跨浏览器抓取。
 - **由用户触发的命令**：您的命令、脚本和快捷操作只有在明确的用户操作（`Return` 或 `⌘↵`）下才会运行。
-- **零遥测，仅与两个由您掌控的服务通信**：没有分析统计、没有追踪、无需账号。Lightspot 自身只与两个服务通信，且两者都由您决定。第一个是用于更新的 GitHub：向公共发布 API（`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`）发出未经身份验证的 `GET` 请求，`User-Agent` 为 `Lightspot/<版本> (+https://github.com/openhoangnc/mac-lightspot)`；它在启动后不久以及打开菜单栏菜单时发出，但检查成功后每天最多一次（检查失败会在下次启动或打开菜单时重试）。在菜单栏中关闭 **`Automatically Check for Updates`**，它便不会自行发出。安装您接受的更新时，会从 GitHub 下载其 zip 文件（`User-Agent: Lightspot/<版本>`）。两者都使用临时（ephemeral）会话，因此不会在磁盘上保存任何响应或 Cookie。旧版本使用的是 macOS 的共享会话（更新检查直到 1.2.0，IP 查询在 1.2.0 之前），会把响应留在 `~/Library/Caches/com.lightspot.app`，把 Cookie 留在 `~/Library/HTTPStorages`；Lightspot 会在启动时删除这些残留，卸载程序也会将其删除。第二个是 ipify：`GET https://api.ipify.org`（第三方服务），用于获取您的公网IP，并且只在您主动查询时发出：输入明确指向它的查询（`ip`, `my ip`, `public ip`, `ipv4`），或在 **IP Address** 行上按下 `Return`。与任何网站一样，ipify 会看到您的IP地址和一个标准的 macOS User-Agent。查询结果仅在内存中缓存 15 分钟，从不写入磁盘。网页搜索、URL 和书签由您的浏览器打开，且仅在您按下 `Return` 时才会打开。
-- **写入磁盘的内容**：Lightspot 自身的偏好设置（`UserDefaults`，位于 `~/Library/Preferences/com.lightspot.app.plist`）、一个锁文件，以及安装更新期间的临时文件：
+- **零遥测，仅与两个由您掌控的服务通信**：没有分析统计、没有追踪、无需账号。Lightspot 自身只与两个服务通信，且两者都由您决定。第一个是用于更新的 GitHub：向公共发布 API（`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`）发出未经身份验证的 `GET` 请求，`User-Agent` 为 `Lightspot/<版本> (+https://github.com/openhoangnc/mac-lightspot)`；它在启动后不久以及打开菜单栏菜单时发出，但检查成功后每天最多一次（检查失败会在下次启动或打开菜单时重试）。在菜单栏中关闭 **`Automatically Check for Updates`**，它便不会自行发出。安装您接受的更新时，会从 GitHub 下载其 zip 文件（`User-Agent: Lightspot/<版本>`）。两者都使用临时（ephemeral）会话，因此不会在磁盘上保存任何响应或 Cookie。旧版本使用的是 macOS 的共享会话（更新检查直到 1.2.0，IP 查询在 1.2.0 之前），会把响应留在 `~/Library/Caches/com.lightspot.app`，把 Cookie 留在 `~/Library/HTTPStorages`；Lightspot 会在启动时删除这些残留，卸载程序也会将其删除。第二个是 ipify：`GET https://api.ipify.org`（第三方服务），用于获取您的公网IP，并且只在您主动查询时发出：输入明确指向它的查询（`ip`, `my ip`, `public ip`, `ipv4`），或在 **IP Address** 行上按下 `Return`。与任何网站一样，ipify 会看到您的IP地址和一个标准的 macOS User-Agent。查询结果仅在内存中缓存 15 分钟，从不写入磁盘。打开 **Clean Dev Mac** 时，还会向 GitHub 请求 cdm 的规则文件（`GET https://raw.githubusercontent.com/cleandevmac/cdm/main/rules/index.json` 及其中列出的文件，使用标准的 macOS User-Agent，通过临时会话发出），每小时最多一次；规则只保存在内存中，没有网络时使用应用内置的副本。将您自己的规则放在 `~/.cleandevmac/rules` 中即可完全不发出此请求。在终端中运行 cdm（`⌘↵`）会从 cdm 的 GitHub 发布版本下载其脚本，与 cdm 自己的说明一致。安装类的行也是如此：每一行都在您的终端中运行对应工具的安装程序，从 GitHub 下载的是该脚本，而不是 Lightspot。网页搜索、URL 和书签由您的浏览器打开，且仅在您按下 `Return` 时才会打开。
+- **写入磁盘的内容**：Lightspot 自身的偏好设置（`UserDefaults`，位于 `~/Library/Preferences/com.lightspot.app.plist`）、一个锁文件、安装更新期间的临时文件，以及清理时写入 cdm 日志的记录：
   - 设置：`lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state`（最近一次检测到的 Spotlight 状态，用于菜单显示）、`lightspot_auto_update_enabled`, `lightspot_last_update_check`, `lightspot_skipped_version`（自动更新检查）。
   - 您创建的内容：`lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`。
   - 使用记录：`lightspot_recent_app_bundle_ids`（最近启动的应用）和 `lightspot_search_history`：您输入的查询和打开的结果（标题、应用与项目路径、URL、Shell 命令），以及用于排序的选择次数。可在搜索历史管理器（`⌘Y`）中查看或清除。剪贴板、计算器和开发者工具的选择从不记录；代码段和硬件报告的选择只保留查询词和次数，绝不保存复制的文本。
+  - `~/.cleandevmac/clean.log`：仅在您使用 Clean Dev Mac 清理时写入。每次清理删除或移到废纸篓的内容，会追加到 cdm 自己使用的日志中（与 cdm 一样以 1 MiB 为上限）。您在清理器中确认的内容会被永久删除，标记为 Trash 的类别除外，它们会被移到废纸篓。
   - `~/Library/Application Support/Lightspot/com.lightspot.app.lock`：防止启动第二个副本。其中记录正在运行的进程的 PID，以及其可执行文件的路径、inode 和修改时间，以便新的启动能区分是同一构建还是更新的构建。
   - 安装您接受的更新期间：下载的文件、解压后的应用包和一个小型辅助脚本位于 macOS 临时目录（`NSTemporaryDirectory()`，文件夹 `lightspot-update-…` 与 `lightspot-updater-…`）中，旧版本会以 `Lightspot.app.lightspot-old` 保留在应用旁边，直到新版本就位。辅助脚本完成后会将它们全部删除。
   - **Export Settings** 只会将 JSON 备份（包含搜索历史）写入您选择的文件。

@@ -37,8 +37,10 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 35 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, and System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks).
-- `deep_verify.swift`: 10 sections of live system checks (95 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript syntax, terminal commands, applications scan, and system invariants.
+- `test_engine.swift`: 40 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `deep_verify.swift`: 11 sections of live system checks (132 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder (measures only; it never deletes).
+
+Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
@@ -65,11 +67,12 @@ mac-lightspot/
 │       └── release.yml           # GitHub Actions CI for multi-arch releases
 ├── Resources/
 │   ├── Info.plist                # LSUIElement=1, permissions, bundle metadata
-│   └── AppIcon.icns              # Multi-size macOS application icon
+│   ├── AppIcon.icns              # Multi-size macOS application icon
+│   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (35 test blocks)
-│   └── deep_verify.swift         # Live-system verification (10 sections, 95 checks)
+│   ├── test_engine.swift         # Automated test runner (40 test blocks)
+│   └── deep_verify.swift         # Live-system verification (11 sections, 132 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -78,11 +81,15 @@ mac-lightspot/
         │   ├── AppScanner.swift         # Fast async app scanner & memory icon cache
         │   ├── BrowserIntegrationProvider.swift # Default browser bookmarks, tabs & history
         │   ├── CalculatorEngine.swift   # Math parser & conversion dispatcher
+        │   ├── CleanDevMacEngine.swift  # cdm ported: glob, du-exact sizing, safety gate, deletion, clean log
+        │   ├── CleanDevMacProvider.swift # "Clean Dev Mac" row, scan/clean state machine, cdm in Terminal
+        │   ├── CleanDevMacRules.swift   # cdm's rule files: parsing, local / GitHub / bundled sources
         │   ├── ClipboardHistoryManager.swift    # In-memory ephemeral clipboard ring buffer
         │   ├── ConversionEngine.swift   # Unit, currency, base, & temperature engine
         │   ├── CustomCommandsStore.swift# Custom user commands model & persistence
         │   ├── CustomIconCache.swift    # Base64 custom command icon decoding/cache
         │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
+        │   ├── MacTweaks.swift          # `defaults` tweaks (Dock, Finder, keyboard…) as quick actions
         │   ├── Models.swift             # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
         │   ├── NetworkInfoProvider.swift# Local IPv4 & public internet IP address
         │   ├── ProcessKillerProvider.swift # Name, PID, and port process terminator
@@ -97,6 +104,7 @@ mac-lightspot/
         │   ├── ShellHistoryProvider.swift # zsh history parser & pinned commands
         │   ├── SnippetsStore.swift      # Text expansion snippets with variable interpolation
         │   ├── SystemInfoProvider.swift # Zero-subprocess Mach/IOKit hardware dashboard
+        │   ├── ToolInstallersProvider.swift # Install rows for setup-zsh, MacStats & install-dev-tool
         │   ├── VSCodeProjectsProvider.swift # VS Code state.vscdb recent project extractor
         │   └── WebSearchProvider.swift  # Multi-engine search & prefix shortcuts
         ├── System/
@@ -113,6 +121,8 @@ mac-lightspot/
         │   └── UpdateManager.swift      # GitHub release check, verified download & self-replacement
         └── UI/
             ├── AppGridView.swift        # Compact 5-column app launcher grid
+            ├── CleanDevMacModel.swift   # Cleaner overlay state: ticks, cursor, plan confirmation
+            ├── CleanDevMacView.swift    # Clean Dev Mac (cdm) overlay: list, plan, receipt
             ├── CustomCommandsView.swift # Custom command manager overlay
             ├── LazyAppIconView.swift    # Asynchronous non-blocking app icon loader
             ├── PinnedCommandsView.swift # Pinned command manager overlay
@@ -189,6 +199,56 @@ tiers apply. Titles score ×0.9; index words score ×0.55, which caps them at 55
 60 a Top Hit needs, because many are generic ("show", "top", "word"). A row matched
 this way names the setting in its subtitle.
 
+### Clean Dev Mac (cdm)
+
+CleanDevMac (`cdm`, https://github.com/cleandevmac/cdm) is a bash TUI that reclaims disk from
+dev caches. Lightspot runs the part of it that needs nothing but the file system natively:
+the "Clean Dev Mac" row (`cdm`, `clean dev mac`, `derived data`, …) opens an overlay that
+measures, ticks cdm's safe defaults, shows an itemized plan, cleans and prints a receipt.
+
+- **The rules are cdm's.** `CleanDevMacRules` reads cdm's own `rules/` format (`index.json`
+  plus pattern files), from cdm's local override `~/.cleandevmac/rules` if it exists, else
+  cdm's live rules on GitHub (`raw.githubusercontent.com/cleandevmac/cdm/main/rules/`, the
+  same files piped `cdm` reads), else `Resources/cdm-rules`, which build.sh copies into the
+  bundle. A rule added to cdm reaches Lightspot without a release; the bundled copy only
+  covers being offline. Refresh it by copying cdm's `rules/*.json` over `Resources/cdm-rules/`
+  (deep_verify names the categories where they differ).
+- **Native vs. terminal.** `paths` and `android-images` categories with the methods `rm`,
+  `rmforce`, `trash` and `emptytrash` run here. `project`, `gitignore` and `container`
+  categories (git-ignored repo junk, Docker / Podman), cdm's orphaned-app-data scan, and
+  rules that only read other apps' sandbox containers are named in the overlay and left to
+  cdm itself: ⌘↵ runs `curl -fsSL …/releases/latest/download/cdm | bash` in the preferred
+  terminal (`CleanDevMacProvider.openInTerminal`).
+- **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
+  shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list,
+  `is_safe_target`, `delete_path`, `human_kb`, the disk line and the log cap. Keep the two
+  in step: when cdm changes one of these, port the change and its test.
+- **State.** `CleanDevMacProvider` runs scans and cleans on its own queue and publishes a
+  `Snapshot`; `search()` and `CleanDevMacModel` (the overlay) only read it. A scan stands
+  for five minutes; a clean ends in `.finished` and the next open rescans. Ticks reset to
+  each rule's `default` on every scan, as cdm's menu does.
+- **Receipts** go to `~/.cleandevmac/clean.log`, cdm's own log, marked
+  `CleanDevMac run (Lightspot)`, so one file records every clean either tool ran.
+
+### Installers & macOS tweaks
+
+- **`ToolInstallersProvider`** offers three rows: **Install setup-zsh**, **Install MacStats** and
+  **Install Dev Tools** (setup-zsh's `install-dev-tool` menu). Each runs the tool's own
+  documented installer in the preferred terminal (`curl -fsSL …/setup.sh | bash && exec zsh -l`,
+  `curl -fsSL …/install.sh | bash`, `~/.zsh/setup-zsh/bin/install-dev-tool`), so its output and
+  prompts stay in front of the user. The action is an `internal:install:<id>` sentinel resolved
+  by `QuickActionsProvider.execute` when it runs, so search history keeps the row rather than a
+  command that depended on what was installed then. `install-dev-tool` reads keys from the
+  terminal (never pipe it) and writes into setup-zsh's `env.zsh`, so without setup-zsh the row
+  installs it first. Whether each tool is installed is a cached snapshot read on a background
+  queue (invariant 0), primed when the panel opens; ⌥↵ opens the tool's GitHub page.
+- **`MacTweaks`** adds `defaults` one-liners to the quick actions. All but **Clear Dock Icons**
+  (`defaults write com.apple.dock persistent-apps -array && killall Dock`) are toggles built by
+  `toggleScript`, which reads the current value, treats an unset key as macOS's default, and
+  writes the opposite. Get a new toggle's default right: `ApplePressAndHoldEnabled` is on while
+  unset, `AppleShowAllFiles` is off, and a wrong one makes the first press do nothing. Keep
+  destructive ones off bare words ("clean", "dock") that other rows answer to.
+
 ### Keyboard Shortcuts & Action Modifiers
 
 - **Return (`↵`)**:
@@ -205,6 +265,7 @@ this way names the setting in its subtitle.
   - Projects: Reveal project folder in Finder
   - Process Killer: Force kill process (`SIGKILL`)
   - Apps: Reveal application bundle in Finder
+  - Installer rows: Open the tool's GitHub page
 - **Management Overlays**:
   - `⌘P`: Pin / unpin selected shell history command
   - `⌘⇧P`: Open pinned commands manager
@@ -212,6 +273,12 @@ this way names the setting in its subtitle.
   - `⌘Y` or `⌘⇧H`: Open search history manager
   - `⌫` (search history manager open): Delete the selected entry
   - `Escape`: Clear search or dismiss panel
+- **Clean Dev Mac overlay** (`↵` on its row, or the menu bar's **Clean Dev Mac...**):
+  - `Space`: Tick / untick the selected category (`SpotlightFieldEditor.keyDown`
+    intercepts it, never mid-composition, so it types nothing)
+  - `↵`: Review the itemized plan; `↵` again cleans, `Escape` goes back
+  - `⌥↵`: Show the selected category's first path in Finder
+  - `⌘↵` (also on the row itself): Run cdm in the preferred terminal
 
 ### Key Invariants & Safety Rules
 
@@ -261,6 +328,15 @@ this way names the setting in its subtitle.
    - System Settings' pane bundles, once at launch: each `Info.plist` under
      `/System/Library/ExtensionKit/Extensions`, System Settings.app's `PlugIns` and the
      Safari cryptex's `CoreServices`, and the `.searchTerms` files they name
+   - Whether setup-zsh (`~/.zsh/setup-zsh/bin/install-dev-tool`) and MacStats
+     (`/Applications/MacStats.app`, or wherever LaunchServices knows it) are installed, for the
+     installer rows, on a background queue
+   - The cache folders cdm's rules name, and only when the user opens Clean Dev Mac: the
+     patterns are expanded and each match measured, on the provider's queue. Nothing is
+     kept but the sizes. `~/Library/Containers` and `~/Library/Group Containers` are never
+     read (`CleanDevMacEngine.outOfScopeFolders`): inside another app's container macOS asks
+     the user whether Lightspot may "access data from other apps", and with an ad-hoc
+     signature it would ask again after every update.
 4. **Clipboard History Privacy**:
    `ClipboardHistoryManager` is 100% ephemeral in-memory (max 50 items). It is never written to disk and strictly filters out concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 5. **AppleScript & Automation Entitlements**:
@@ -363,7 +439,7 @@ this way names the setting in its subtitle.
    The shared session writes every response to `~/Library/Caches/<bundle id>/Cache.db` and
    cookies and HSTS state to `~/Library/HTTPStorages`, which is how the update check (≤ 1.2.0)
    and the public-IP lookup (< 1.2.0) put the user's IP on disk. Use an ephemeral session
-   (`UpdateManager.session`, `NetworkInfoProvider.lookupSession`). Merely reading
+   (`UpdateManager.session`, `NetworkInfoProvider.lookupSession`, `CleanDevMacRules.session`). Merely reading
    `URLCache.shared`, even to call `removeAllCachedResponses()`, creates `Cache.db` (measured).
    `LegacyNetworkStores` deletes what older versions left: at every launch, after the
    single-instance guard, off the main thread, by known path and only where the file exists,
@@ -381,3 +457,17 @@ this way names the setting in its subtitle.
    `deep_verify` checks every link against the installed panes. macOS renames and merges
    panes (Control Center became Menu Bar and Screen Saver moved into Wallpaper in macOS 26),
    so a renamed pane passes `id:` to keep the search-history key it had.
+
+14. **Clean Dev Mac deletes only through cdm's safety gate**:
+   `CleanDevMacEngine.isSafeTarget` is cdm's `is_safe_target`, and the whole trust story of
+   the cleaner, as it is of cdm: a path must be absolute, exist, carry no `..`, lie outside
+   cdm's protected folders (`~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`,
+   `~/Movies`, `~/Music`, `~/.ssh`, `~/.gnupg`, iCloud Drive), and sit under the home folder
+   both as written and with its parent's symlinks resolved. No rule can opt out of it, and
+   rules may come from the network. It is applied twice: a match it refuses is never
+   offered (cdm lists it and skips it at clean time), and `delete` checks again before it
+   acts, because the plan was shown a while ago. `.emptytrash` only ever empties
+   `~/.Trash`, whatever path its rule names; a symlink is removed, never followed, by every
+   method. Nothing is deleted without the itemized plan and a second `↵`. Treat a change to
+   any of this as high-risk, and give it a test that fails without it: `test_engine` covers
+   each check (mutating one out fails the run), against cdm's own fixtures.

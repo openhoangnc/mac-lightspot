@@ -1,0 +1,15 @@
+{
+  "title": "Container engines (Docker / Podman)",
+  "_comment": "kind:container categories reclaim space from container engines. For each engine listed in 'engines' that is (a) one of the built-in whitelist docker/podman/nerdctl, (b) installed, and (c) running, the tool measures reclaimable space via '<engine> system df' and, on clean, runs the FIXED command '<engine> system prune -af'. The command is hard-coded (never taken from JSON) and volumes are NEVER pruned, so named volumes / databases stay safe.",
+  "categories": [
+    {
+      "kind": "container",
+      "icon": "🐳",
+      "name": "Docker / Podman reclaimable data",
+      "method": "prune",
+      "default": false,
+      "desc": "Stopped containers, unused images & build cache ('system prune -af'). Named volumes are never touched.",
+      "engines": ["docker", "podman", "nerdctl"]
+    }
+  ]
+}

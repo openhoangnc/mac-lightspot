@@ -66,7 +66,7 @@ Instead of aggressively crawling your entire hard drive, Lightspot focuses stric
 | **RAM Footprint** | 500 MB – 2 GB+ | 200 MB – 500 MB | **~15 – 25 MB** (Pure Swift) |
 | **App Launching** | Frequently breaks; requires rebuilds | Reliable | **100% Reliable** (Direct scanning) |
 | **Search Latency** | Debounced (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (instant synchronous) |
-| **Offline Privacy** | Sends Siri telemetry to Apple | Account required for sync | **Local & Telemetry-Free** (network only for an optional update check and an IP lookup you ask for) |
+| **Offline Privacy** | Sends Siri telemetry to Apple | Account required for sync | **Local & Telemetry-Free** (network only for an optional update check, an IP lookup you ask for, and cdm's cleanup rules when you open Clean Dev Mac) |
 
 ---
 
@@ -150,6 +150,29 @@ Execute privileged maintenance actions (`Flush DNS Cache`, `Purge Inactive Memor
 - Every download is gated: HTTPS only, GitHub hosts only (re-checked after redirects), the unpacked bundle must carry Lightspot's bundle identifier, a runnable executable and exactly the advertised version, and a build older than the one installed is never accepted.
 - Releases are ad-hoc signed (this project ships no Developer ID), so there is no code signature to verify — the checks above and HTTPS to GitHub are the whole trust model, the same one `install.sh` already asks for.
 
+### 11. 🧹 Clean Dev Mac (`cdm`)
+[CleanDevMac](https://github.com/cleandevmac/cdm) (`cdm`) finds the dev caches and build artifacts eating your disk; Lightspot runs it inside the panel. Type `cdm`, `clean dev mac` or a cache name (`derived data`, `npm cache`) and press **`↵`**:
+- **Measured first, nothing ticked blindly**: every category cdm's rules know (Xcode DerivedData, Go, npm/pnpm/Yarn, Gradle, Cargo, pip/uv, CocoaPods, JetBrains, browser and Electron caches, unused Android images, …) is measured like `du`, listed biggest first, and ticked to cdm's safe defaults. The panel shows the disk before and after.
+- **Keys**: `↑↓` select (the selected row shows its paths and sizes), `Space` ticks, `↵` shows the itemized plan and `↵` again cleans, `⌥↵` shows the selected cache in Finder, `Esc` steps back.
+- **The same rules as cdm**: Lightspot reads cdm's own rule files — your `~/.cleandevmac/rules` if you have one, else cdm's live rules from GitHub, else the copy built into the app — so a cache cdm learns to clean, Lightspot cleans too.
+- **The same safety as cdm**: every path passes cdm's safety check before anything happens: it must be under your home folder (symlinks resolved), and `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`, `~/Movies`, `~/Music`, `~/.ssh`, `~/.gnupg` and iCloud Drive are never touched. Before cleaning, the plan names any app still running that would rewrite its caches (quit it first). Every clean is logged to `~/.cleandevmac/clean.log`, the same log cdm keeps.
+- **The rest is one key away**: project junk in your repos (`node_modules`, build folders, git-ignored files), Docker / Podman, orphaned app data and sandboxed app caches need git, a container engine or a scan of your apps, so `⌘↵` runs the full cdm in your preferred terminal, straight from its latest release.
+
+### 12. 📦 One-Keystroke Installs: setup-zsh, MacStats & Dev Tools
+Type `install` (or a tool's name) and press **`↵`**: Lightspot runs the tool's own installer in your preferred terminal, so you see every step.
+- **Install setup-zsh** ([setup-zsh](https://github.com/openhoangnc/setup-zsh)): zsh autosuggestions that match anywhere in your history, syntax highlighting and a git-aware prompt. Runs `setup.sh`, then opens a fresh zsh that loads it. Once it is installed, the same row updates it.
+- **Install MacStats** ([mac-stats](https://github.com/openhoangnc/mac-stats)): CPU, RAM, network speed and CPU temperature in the menu bar. Runs its `install.sh`, which puts it in `/Applications` and starts it.
+- **Install Dev Tools**: setup-zsh's `install-dev-tool` menu: Homebrew, Node.js, Go, Python & uv, Rust, JDK, Bun, Git, VS Code, Chrome, OrbStack, Android Studio and more, plus updates for your global packages. Type `install node`, `install go`, `install rust`…; without setup-zsh, the row installs it first.
+- Each row says whether the tool is already installed; **`⌥↵`** opens its GitHub page.
+
+### 13. 🎛️ macOS Tweaks
+The `defaults write` one-liners you would otherwise copy from a dotfiles README, as quick actions. Each toggle reads the current setting and flips it, so the same row turns it back:
+- **Dock**: **Clear Dock Icons** (removes every pinned app and restarts the Dock: `defaults write com.apple.dock persistent-apps -array && killall Dock`), **Toggle Dock Auto-Hide**, **Toggle Instant Dock Auto-Hide** (no delay), **Toggle Dock Recent Apps**, **Restart Dock**.
+- **Finder**: **Toggle Hidden Files in Finder**, **Toggle File Extensions in Finder**, **Toggle Finder Path Bar**, **Toggle Desktop Icons** (handy before a screen share), **Toggle .DS_Store on Network & USB Drives**, **Restart Finder**.
+- **Typing & screenshots**: **Toggle Press-and-Hold Accents** (hold a key to repeat it), **Toggle Smart Quotes & Dashes**, **Toggle Screenshot Shadows**.
+
+None needs an administrator password. Clear Dock Icons cannot be undone; the toggles can.
+
 ---
 
 ## ✨ Additional Built-in Capabilities
@@ -213,12 +236,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. Tests & Verification
-Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources: a logic and engine test runner (34 test blocks) and a live-system verifier (10 sections, 88 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation):
+Lightspot has no XCTest target. Two standalone scripts under `scripts/` are compiled ad hoc against the sources, and are run from the repository root: a logic and engine test runner (40 test blocks) and a live-system verifier (11 sections, 132 checks on a fully equipped machine; a few are skipped if, for example, there is no zsh history or VS Code installation, or GitHub cannot be reached):
 ```bash
-# Core logic & engine tests (34 test blocks)
+# Core logic & engine tests (40 test blocks)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
-# Live system checks (10 sections, 88 checks on a fully equipped machine)
+# Live system checks (11 sections, 132 checks on a fully equipped machine)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
@@ -232,10 +255,11 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`↓` / `↑`** | Navigate through search results |
 | **`Return` (`↵`)** | Open selected app, project in IDE, run command, or copy calculation |
 | **`⌘Return` (`⌘↵`)** | Open selected project in preferred Terminal |
-| **`⌥Return` (`⌥↵`)** | Reveal project in Finder / Force kill selected process (`SIGKILL`) |
+| **`⌥Return` (`⌥↵`)** | Reveal project in Finder / Force kill selected process (`SIGKILL`) / Open an installer's GitHub page |
 | **`⌘P`** | Pin or unpin selected Terminal History command |
 | **`⌘⇧P`** | Open pinned commands manager overlay |
 | **`⌘⇧C`** | Open custom commands manager overlay |
+| **`Space`** | Tick or untick a category in Clean Dev Mac |
 | **`⌘Y` / `⌘⇧H`** | Open search history manager overlay |
 | **`Escape`** | Dismiss overlays, clear search field, or close Lightspot |
 | **Click Outside** | Automatically dismisses the floating panel |
@@ -246,15 +270,16 @@ The summon shortcut is whichever of the four you pick under **Shortcut** in the 
 
 ## 🔒 Privacy & Security Guarantees
 
-- **Zero File Indexing**: Lightspot never indexes your personal files, documents, downloads, or code repositories.
+- **Zero File Indexing**: Lightspot never indexes your personal files, documents, downloads, or code repositories. Clean Dev Mac measures only the cache folders cdm's rules name, only while you have it open, and keeps nothing but the sizes; it never reads other apps' sandbox containers.
 - **RAM-Only Ephemeral Clipboard**: Clipboard history stays exclusively in volatile memory and actively ignores concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`). It is never written to disk, not even into search history, which also never keeps the text you copy from calculator, dev-tool or snippet results.
 - **Default Browser Isolation**: Bookmarks, open tabs and recent history are read locally and solely from your configured default browser, avoiding cross-browser scraping.
 - **User-Triggered Commands**: Your commands, scripts and quick actions run only upon explicit user action (`Return` or `⌘↵`).
-- **No Telemetry, Two Services You Control**: No analytics, no tracking, no accounts. Lightspot itself talks to exactly two services, and you decide on both. The first is GitHub, for updates: an unauthenticated `GET` to the public releases API (`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`) with `User-Agent: Lightspot/<version> (+https://github.com/openhoangnc/mac-lightspot)`, shortly after launch and when you open the menu bar menu, but no more than once a day after a successful check (a failed check is retried at the next launch or menu open). Switch off **`Automatically Check for Updates`** in the menu bar and it never runs on its own. Installing an update you accepted downloads its zip from GitHub (`User-Agent: Lightspot/<version>`). Both go through an ephemeral session, so no response or cookie is stored on disk. Older versions used macOS's shared session instead (the update check up to 1.2.0, the IP lookup before 1.2.0), which kept the responses in `~/Library/Caches/com.lightspot.app` and cookies in `~/Library/HTTPStorages`; Lightspot deletes those leftovers at launch, and the uninstaller removes them too. The second is ipify: `GET https://api.ipify.org` (a third-party service) to learn your public IP, and only when you ask for it: by typing a query that names it (`ip`, `my ip`, `public ip`, `ipv4`) or by pressing `Return` on the **IP Address** row. ipify sees your IP address and a standard macOS user agent, as any web server would. The answer is kept in memory for 15 minutes and never written to disk. Web searches, URLs and bookmarks are opened by your browser, and only when you press `Return`.
-- **What Is Written to Disk**: Lightspot's own preferences (`UserDefaults`, in `~/Library/Preferences/com.lightspot.app.plist`), one lock file, and temporary files while an update installs:
+- **No Telemetry, Two Services You Control**: No analytics, no tracking, no accounts. Lightspot itself talks to exactly two services, and you decide on both. The first is GitHub, for updates: an unauthenticated `GET` to the public releases API (`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`) with `User-Agent: Lightspot/<version> (+https://github.com/openhoangnc/mac-lightspot)`, shortly after launch and when you open the menu bar menu, but no more than once a day after a successful check (a failed check is retried at the next launch or menu open). Switch off **`Automatically Check for Updates`** in the menu bar and it never runs on its own. Installing an update you accepted downloads its zip from GitHub (`User-Agent: Lightspot/<version>`). Both go through an ephemeral session, so no response or cookie is stored on disk. Older versions used macOS's shared session instead (the update check up to 1.2.0, the IP lookup before 1.2.0), which kept the responses in `~/Library/Caches/com.lightspot.app` and cookies in `~/Library/HTTPStorages`; Lightspot deletes those leftovers at launch, and the uninstaller removes them too. The second is ipify: `GET https://api.ipify.org` (a third-party service) to learn your public IP, and only when you ask for it: by typing a query that names it (`ip`, `my ip`, `public ip`, `ipv4`) or by pressing `Return` on the **IP Address** row. ipify sees your IP address and a standard macOS user agent, as any web server would. The answer is kept in memory for 15 minutes and never written to disk. Opening **Clean Dev Mac** also asks GitHub for cdm's rule files (`GET https://raw.githubusercontent.com/cleandevmac/cdm/main/rules/index.json` and the files it lists, with a standard macOS user agent, through an ephemeral session), at most once an hour; they stay in memory, and without a connection the copy built into the app is used. You skip it entirely by keeping your own rules in `~/.cleandevmac/rules`. Running cdm in the terminal (`⌘↵`) downloads its script from cdm's GitHub release, as cdm's own instructions do. The installer rows work the same way: each runs its tool's installer in your terminal, and that script, not Lightspot, downloads from GitHub. Web searches, URLs and bookmarks are opened by your browser, and only when you press `Return`.
+- **What Is Written to Disk**: Lightspot's own preferences (`UserDefaults`, in `~/Library/Preferences/com.lightspot.app.plist`), one lock file, temporary files while an update installs, and a receipt in cdm's log when you clean:
   - Settings: `lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state` (last known Spotlight status, for the menu labels), `lightspot_auto_update_enabled`, `lightspot_last_update_check`, `lightspot_skipped_version` (automatic update checks).
   - What you create: `lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`.
   - Usage: `lightspot_recent_app_bundle_ids` (recently launched apps) and `lightspot_search_history`: the queries you typed and the results you opened (titles, app and project paths, URLs, shell commands), plus selection counts for ranking. Review or clear it in the search history manager (`⌘Y`). Clipboard, calculator and dev-tool selections are never recorded; snippet and hardware-report selections keep only the query and a count, never the copied text.
+  - `~/.cleandevmac/clean.log`, only when you clean with Clean Dev Mac: what each clean deleted or moved to the Trash, appended to the log cdm itself keeps (capped at 1 MiB, like cdm's). What you confirm in the cleaner is deleted for good, except categories marked Trash, which go to the Trash.
   - `~/Library/Application Support/Lightspot/com.lightspot.app.lock`, which keeps a second copy from starting. It holds the running process's PID and its executable's path, inode and modification time, so a new launch can tell the same build from a newer one.
   - While an update you accepted installs: the download, the unpacked bundle and a small helper script in the macOS temporary directory (`NSTemporaryDirectory()`, folders `lightspot-update-…` and `lightspot-updater-…`), and the previous version kept as `Lightspot.app.lightspot-old` beside the app until the new one is in place. The helper deletes all of them when it finishes.
   - **Export Settings** writes a JSON backup, search history included, only to a file you choose.

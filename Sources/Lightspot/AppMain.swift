@@ -164,6 +164,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onDeleteKey = { [weak self] in
             self?.viewModel.handleDeleteKey() ?? false
         }
+        panel.onSpaceKey = { [weak self] in
+            self?.viewModel.handleSpaceKey() ?? false
+        }
 
         // Set up hotkey
         hotkeyManager = HotkeyManager()
@@ -200,6 +203,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.showPanel()
             }
             self.viewModel.showHistoryManager()
+        }
+        menuBarController.onOpenCleaner = { [weak self] in
+            guard let self = self else { return }
+            if !self.panel.isVisible {
+                self.showPanel()
+            }
+            self.viewModel.showCleaner()
         }
         menuBarController.onEnsurePanelVisible = { [weak self] in
             guard let self = self else { return false }
@@ -309,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // to match against; both return immediately and refresh in the background.
         BrowserIntegrationProvider.shared.warmUp()
         ProcessKillerProvider.shared.warmUp()
+        ToolInstallersProvider.shared.warmUp()
         refreshSystemState()
         viewModel.reset()
 

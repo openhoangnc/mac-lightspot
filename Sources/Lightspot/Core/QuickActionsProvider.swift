@@ -169,7 +169,7 @@ final class QuickActionsProvider: Sendable {
             usesOsascript: false,
             requiresAdmin: true
         )
-    ]
+    ] + MacTweaks.actions
 
     // MARK: - Search
 
@@ -501,6 +501,8 @@ final class QuickActionsProvider: Sendable {
                 TerminalLauncher.openFinderCurrentFolderInTerminal()
             } else if script == "internal:toggle-touchid-sudo" {
                 _ = toggleTouchIdForSudo()
+            } else if let installer = ToolInstallersProvider.installer(forScript: script) {
+                ToolInstallersProvider.shared.run(installer)
             } else if requiresAdministratorPrivileges(script: script, requiresAdmin: requiresAdmin) {
                 executePrivilegedWithTouchID(command: script)
             } else if usesOsascript {

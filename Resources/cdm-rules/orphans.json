@@ -1,0 +1,42 @@
+{
+  "title": "Orphaned application data",
+  "_comment": "Config for detecting leftover data from apps that are no longer installed. The tool scans each location for reverse-DNS (bundle-id) named folders whose bundle id is NOT registered with LaunchServices and is NOT covered by skipPrefixes/sharedComponents, then offers to move them to the Trash. 'strip' removes a filename suffix before treating a name as a bundle id. 'sharedComponents' are prefix-matched: they name updaters, crash/analytics SDKs and security agents that legitimately live on disk without an app of their own bundle id being installed — without them they look exactly like orphans.",
+  "locations": [
+    { "path": "~/Library/Application Support" },
+    { "path": "~/Library/Caches" },
+    { "path": "~/Library/HTTPStorages" },
+    { "path": "~/Library/WebKit" },
+    { "path": "~/Library/Logs" },
+    { "path": "~/Library/Preferences", "strip": ".plist" },
+    { "path": "~/Library/Saved Application State", "strip": ".savedState" }
+  ],
+  "skipPrefixes": [
+    "com.apple.",
+    "group.com.apple.",
+    "systemgroup.",
+    "org.swift.",
+    "com.apple"
+  ],
+  "sharedComponents": [
+    "com.google.Keystone",
+    "com.google.GoogleUpdater",
+    "com.google.SoftwareUpdate",
+    "com.microsoft.autoupdate",
+    "com.microsoft.office",
+    "org.sparkle-project.Sparkle",
+    "com.crashlytics",
+    "io.crashlytics",
+    "io.sentry",
+    "com.segment",
+    "org.chromium",
+    "com.crowdstrike.",
+    "com.sentinelone.",
+    "com.sentinel-labs.",
+    "com.eset.",
+    "com.jamf.",
+    "com.jamfsoftware.",
+    "com.paloaltonetworks.",
+    "com.cisco.anyconnect",
+    "com.cisco.secureclient"
+  ]
+}

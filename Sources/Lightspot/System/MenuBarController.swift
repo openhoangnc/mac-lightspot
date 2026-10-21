@@ -9,6 +9,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     var onManageCustomCommands: (() -> Void)?
     var onManagePins: (() -> Void)?
     var onManageHistory: (() -> Void)?
+    var onOpenCleaner: (() -> Void)?
     var onEnsurePanelVisible: (() -> Bool)?
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -130,7 +131,14 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 6. Shortcut submenu
+        // 6. Clean Dev Mac (cdm)
+        let cleanerItem = NSMenuItem(title: "Clean Dev Mac...", action: #selector(openCleanerAction), keyEquivalent: "")
+        cleanerItem.target = self
+        menu.addItem(cleanerItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 7. Shortcut submenu
         //
         // A combination macOS already binds still registers and still opens the panel,
         // so the only symptom is the system shortcut firing too (⌃Space switches the
@@ -168,7 +176,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         shortcutParentItem.submenu = shortcutMenu
         menu.addItem(shortcutParentItem)
 
-        // 7. Search Engine submenu
+        // 8. Search Engine submenu
         let searchEngineMenu = NSMenu()
         let currentEngine = WebSearchProvider.shared.defaultEngine
         for option in SearchEngineOption.allCases {
@@ -183,7 +191,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         searchEngineParentItem.submenu = searchEngineMenu
         menu.addItem(searchEngineParentItem)
 
-        // 8. Browser History submenu
+        // 9. Browser History submenu
         let browserHistoryMenu = NSMenu()
         let currentHistoryLimit = BrowserIntegrationProvider.shared.historyLimitDays
         for option in BrowserHistoryDays.allCases {
@@ -198,7 +206,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         browserHistoryParentItem.submenu = browserHistoryMenu
         menu.addItem(browserHistoryParentItem)
 
-        // 9. Terminal App submenu
+        // 10. Terminal App submenu
         let terminalMenu = NSMenu()
         let currentTerminal = TerminalLauncher.currentTerminal
         for option in TerminalAppOption.installedOptions {
@@ -213,7 +221,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         terminalParentItem.submenu = terminalMenu
         menu.addItem(terminalParentItem)
 
-        // 10. System Spotlight Management submenu
+        // 11. System Spotlight Management submenu
         let spotlightMenu = NSMenu()
         let isShortcutOn = SpotlightManager.isShortcutEnabled()
         let isServiceDisabled = SpotlightManager.isServiceDisabled()
@@ -284,7 +292,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         spotlightParentItem.submenu = spotlightMenu
         menu.addItem(spotlightParentItem)
 
-        // 11. Auto-start / Launch at Login toggle
+        // 12. Auto-start / Launch at Login toggle
         let isAutoStartOn = AutoStartManager.isEnabled
         let autoStartItem = NSMenuItem(
             title: "Launch at Login",
@@ -295,7 +303,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         autoStartItem.state = isAutoStartOn ? .on : .off
         menu.addItem(autoStartItem)
 
-        // 12. Hide Menu Bar Icon toggle
+        // 13. Hide Menu Bar Icon toggle
         let hideIconItem = NSMenuItem(
             title: isMenuBarIconHidden ? "Show Menu Bar Icon" : "Hide Menu Bar Icon",
             action: #selector(toggleHideMenuBarIconAction),
@@ -306,17 +314,17 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
         menu.addItem(NSMenuItem.separator())
 
-        // 13. Export Settings...
+        // 14. Export Settings...
         let exportItem = NSMenuItem(title: "Export Settings...", action: #selector(exportSettingsAction), keyEquivalent: "")
         exportItem.target = self
         menu.addItem(exportItem)
 
-        // 14. Import Settings...
+        // 15. Import Settings...
         let importItem = NSMenuItem(title: "Import Settings...", action: #selector(importSettingsAction), keyEquivalent: "")
         importItem.target = self
         menu.addItem(importItem)
 
-        // 15. Clear Clipboard History
+        // 16. Clear Clipboard History
         let clearClipItem = NSMenuItem(title: "Clear Clipboard History", action: #selector(clearClipboardAction), keyEquivalent: "")
         clearClipItem.target = self
         menu.addItem(clearClipItem)
@@ -336,7 +344,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
             menu.addItem(NSMenuItem.separator())
         }
 
-        // 16. Software Update
+        // 17. Software Update
         let updater = UpdateManager.shared
         if updater.hasPromptableUpdate, let pending = updater.availableUpdate {
             let updateItem = NSMenuItem(title: "Update to \(pending.displayVersion)...",
@@ -444,6 +452,10 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
     @objc private func manageHistoryAction() {
         onManageHistory?()
+    }
+
+    @objc private func openCleanerAction() {
+        onOpenCleaner?()
     }
 
     @objc private func exportSettingsAction() {

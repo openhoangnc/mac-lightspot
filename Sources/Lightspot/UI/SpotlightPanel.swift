@@ -22,8 +22,18 @@ final class SpotlightFieldEditor: NSTextView {
     /// ⌫ / ⌦. Returns true when a manager overlay consumed the key; otherwise the
     /// key edits the query as usual.
     var onDeleteKey: (@MainActor () -> Bool)?
+    /// Space. Returns true when an overlay consumed it (the cleaner ticks a row);
+    /// otherwise it types a space as usual.
+    var onSpaceKey: (@MainActor () -> Bool)?
 
     override func keyDown(with event: NSEvent) {
+        // Space, before the input method sees it — but never in the middle of a
+        // composition, where it converts or commits the word being typed.
+        if event.keyCode == 49,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock).isEmpty,
+           !hasMarkedText(), onSpaceKey?() == true {
+            return
+        }
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         if isReturn {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -232,6 +242,7 @@ final class SpotlightPanel: NSPanel {
     var onManageHistory: (() -> Void)?
     var onManageCustomCommands: (() -> Void)?
     var onDeleteKey: (() -> Bool)?
+    var onSpaceKey: (() -> Bool)?
     /// Click-outside dismissal. Routed to the owner so it hides the same way Esc and
     /// the hotkey do (including the memory reclaim); without an owner, just hide.
     var onDismiss: (() -> Void)?
@@ -294,6 +305,7 @@ final class SpotlightPanel: NSPanel {
             editor.onManageHistory = { [weak self] in self?.onManageHistory?() }
             editor.onManageCustomCommands = { [weak self] in self?.onManageCustomCommands?() }
             editor.onDeleteKey = { [weak self] in self?.onDeleteKey?() ?? false }
+            editor.onSpaceKey = { [weak self] in self?.onSpaceKey?() ?? false }
             fieldEditor = editor
         }
         return fieldEditor

@@ -394,9 +394,11 @@ final class SearchHistoryManager: @unchecked Sendable {
     }
 
     /// Built-in quick actions are stored with their fixed subtitle: the live one can embed
-    /// the local and public IP or the frontmost Finder folder.
+    /// the local and public IP, the frontmost Finder folder, or the cleaner's last scan.
     private static let quickActionSubtitles: [String: String] = Dictionary(
-        QuickActionsProvider.defaultActions.map { ($0.id, $0.subtitle) },
+        QuickActionsProvider.defaultActions.map { ($0.id, $0.subtitle) }
+            + [(CleanDevMacProvider.resultID, CleanDevMacProvider.fixedSubtitle)]
+            + ToolInstallersProvider.installers.map { ($0.resultID, $0.summary) },
         uniquingKeysWith: { first, _ in first }
     )
 

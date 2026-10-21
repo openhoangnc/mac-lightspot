@@ -1,0 +1,245 @@
+{
+  "title": "Browser & application caches",
+  "_comment": "Application-level caches. The Electron/Chromium entry uses * globs to match the Cache/GPUCache/etc. folders that Electron apps (VS Code, Claude, Slack, Discord, ...) create under Application Support. These hold only re-fetchable data. Chromium *browsers* keep their per-profile caches one level deeper (Google/Chrome/<profile>/...), so they need their own entry — the depth-2 glob above does not reach them. method: emptytrash empties ~/.Trash (irreversible). Note: only 'Service Worker/CacheStorage' is listed, never 'Service Worker/ScriptCache' — the latter holds MV3 extension bytecode and removing it breaks extension service workers mid-session. 'procs' lists the macOS process names of the apps that rewrite a category's caches while running; cdm warns before deleting under a running app. Names must match `pgrep -x` exactly (the CFBundleExecutable, e.g. 'Code' for VS Code) — an unknown name simply never matches, so a wrong entry costs a missing warning, never a false one.",
+  "categories": [
+    {
+      "icon": "⚡",
+      "name": "Electron / Chromium app caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Disk/GPU/code caches inside Electron apps (VS Code, Claude, Slack, ...) and their per-webview partitions (e.g. one per Claude Code preview) — rebuilt on launch. Cookies & local storage are kept.",
+      "procs": [
+        "Code", "Claude", "Slack", "Discord", "Notion",
+        "Figma", "Obsidian", "Postman", "Spotify"
+      ],
+      "paths": [
+        "~/Library/Application Support/*/Cache",
+        "~/Library/Application Support/*/Code Cache",
+        "~/Library/Application Support/*/GPUCache",
+        "~/Library/Application Support/*/CachedData",
+        "~/Library/Application Support/*/CachedExtensionVSIXs",
+        "~/Library/Application Support/*/CachedProfilesData",
+        "~/Library/Application Support/*/DawnCache",
+        "~/Library/Application Support/*/DawnGraphiteCache",
+        "~/Library/Application Support/*/DawnWebGPUCache",
+        "~/Library/Application Support/*/GrShaderCache",
+        "~/Library/Application Support/*/GraphiteDawnCache",
+        "~/Library/Application Support/*/ShaderCache",
+        "~/Library/Application Support/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/*/WebStorage/*/CacheStorage",
+        "~/Library/Application Support/*/Crashpad/completed",
+        "~/Library/Application Support/*/Shared Dictionary",
+        "~/Library/Application Support/*/Partitions/*/Cache",
+        "~/Library/Application Support/*/Partitions/*/Code Cache",
+        "~/Library/Application Support/*/Partitions/*/GPUCache",
+        "~/Library/Application Support/*/Partitions/*/DawnWebGPUCache",
+        "~/Library/Application Support/*/Partitions/*/DawnGraphiteCache",
+        "~/Library/Application Support/*/Partitions/*/Shared Dictionary",
+        "~/Library/Application Support/*/Partitions/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/*/component_crx_cache",
+        "~/Library/Application Support/*/extensions_crx_cache",
+        "~/Library/Application Support/*/logs"
+      ]
+    },
+    {
+      "icon": "🌐",
+      "name": "Browser caches",
+      "method": "rm",
+      "default": true,
+      "desc": "HTTP/disk caches for Chrome, Brave, Edge, Vivaldi, Arc, Firefox — safe to clear.",
+      "procs": [
+        "Google Chrome", "Chromium", "Brave Browser", "Microsoft Edge",
+        "Vivaldi", "Arc", "Dia", "Opera", "firefox", "Safari", "Orion", "zen"
+      ],
+      "paths": [
+        "~/Library/Caches/Google",
+        "~/Library/Caches/com.google.Chrome",
+        "~/Library/Caches/Chromium",
+        "~/Library/Caches/BraveSoftware",
+        "~/Library/Caches/com.microsoft.edgemac",
+        "~/Library/Caches/Microsoft Edge",
+        "~/Library/Caches/company.thebrowser.Browser",
+        "~/Library/Caches/company.thebrowser.dia",
+        "~/Library/Caches/Vivaldi",
+        "~/Library/Caches/com.vivaldi.Vivaldi",
+        "~/Library/Caches/com.operasoftware.Opera",
+        "~/Library/Caches/Firefox",
+        "~/Library/Caches/Mozilla",
+        "~/Library/Caches/com.apple.Safari",
+        "~/Library/Caches/com.kagi.kagimacOS",
+        "~/Library/Caches/zen"
+      ]
+    },
+    {
+      "icon": "🧭",
+      "name": "Chromium browser profile caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Per-profile code/GPU/shader caches for Chrome, Brave, Arc, Vivaldi & Edge — rebuilt on launch. Quit the browser first so it does not rewrite them mid-clean.",
+      "procs": [
+        "Google Chrome", "Brave Browser", "Microsoft Edge",
+        "Vivaldi", "Arc", "firefox"
+      ],
+      "paths": [
+        "~/Library/Application Support/Google/Chrome/*/Code Cache",
+        "~/Library/Application Support/Google/Chrome/*/GPUCache",
+        "~/Library/Application Support/Google/Chrome/*/DawnCache",
+        "~/Library/Application Support/Google/Chrome/*/GrShaderCache",
+        "~/Library/Application Support/Google/Chrome/*/GraphiteDawnCache",
+        "~/Library/Application Support/Google/Chrome/*/Application Cache",
+        "~/Library/Application Support/Google/Chrome/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/Google/Chrome/ShaderCache",
+        "~/Library/Application Support/Google/Chrome/GrShaderCache",
+        "~/Library/Application Support/Google/Chrome/GraphiteDawnCache",
+        "~/Library/Application Support/Google/Chrome/component_crx_cache",
+        "~/Library/Application Support/Google/Chrome/Crashpad/completed",
+        "~/Library/Application Support/Google/GoogleUpdater/crx_cache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/Code Cache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/GPUCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/DawnCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/GrShaderCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/GraphiteDawnCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/Application Cache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/component_crx_cache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/ShaderCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/GrShaderCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/GraphiteDawnCache",
+        "~/Library/Application Support/BraveSoftware/Brave-Browser/Crashpad/completed",
+        "~/Library/Application Support/Arc/User Data/*/Code Cache",
+        "~/Library/Application Support/Arc/User Data/*/GPUCache",
+        "~/Library/Application Support/Arc/User Data/*/DawnCache",
+        "~/Library/Application Support/Arc/User Data/*/GrShaderCache",
+        "~/Library/Application Support/Arc/User Data/*/GraphiteDawnCache",
+        "~/Library/Application Support/Arc/User Data/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/Arc/User Data/component_crx_cache",
+        "~/Library/Application Support/Arc/User Data/extensions_crx_cache",
+        "~/Library/Application Support/Arc/User Data/ShaderCache",
+        "~/Library/Application Support/Arc/User Data/GrShaderCache",
+        "~/Library/Application Support/Arc/User Data/GraphiteDawnCache",
+        "~/Library/Application Support/Arc/User Data/Crashpad/completed",
+        "~/Library/Application Support/Vivaldi/*/Code Cache",
+        "~/Library/Application Support/Vivaldi/*/GPUCache",
+        "~/Library/Application Support/Vivaldi/*/DawnCache",
+        "~/Library/Application Support/Vivaldi/*/GrShaderCache",
+        "~/Library/Application Support/Vivaldi/*/GraphiteDawnCache",
+        "~/Library/Application Support/Vivaldi/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/Vivaldi/ShaderCache",
+        "~/Library/Application Support/Vivaldi/GrShaderCache",
+        "~/Library/Application Support/Vivaldi/GraphiteDawnCache",
+        "~/Library/Application Support/Vivaldi/Crashpad/completed",
+        "~/Library/Application Support/Microsoft Edge/*/Code Cache",
+        "~/Library/Application Support/Microsoft Edge/*/GPUCache",
+        "~/Library/Application Support/Microsoft Edge/*/GrShaderCache",
+        "~/Library/Application Support/Microsoft Edge/*/GraphiteDawnCache",
+        "~/Library/Application Support/Microsoft Edge/*/Service Worker/CacheStorage",
+        "~/Library/Application Support/Microsoft Edge/ShaderCache",
+        "~/Library/Application Support/Microsoft Edge/component_crx_cache",
+        "~/Library/Application Support/Microsoft Edge/Crashpad/completed",
+        "~/Library/Application Support/Firefox/Profiles/*/cache2"
+      ]
+    },
+    {
+      "icon": "🧬",
+      "name": "Chrome on-device AI models",
+      "method": "rm",
+      "default": false,
+      "desc": "Chrome's downloaded on-device AI / optimization-guide models — regenerable, but several GB to re-download if you use those features.",
+      "procs": ["Google Chrome"],
+      "paths": [
+        "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel",
+        "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceClassifierModel",
+        "~/Library/Application Support/Google/Chrome/optimization_guide_model_store"
+      ]
+    },
+    {
+      "icon": "📀",
+      "name": "Claude desktop VM image",
+      "method": "rm",
+      "default": false,
+      "procs": ["Claude"],
+      "desc": "The Linux VM image Claude desktop runs Cowork / local agent sessions in (~10 GB unpacked) — re-downloaded (~1.2 GB) the next time you use them. Your VM session data (sessiondata.img) is kept.",
+      "paths": [
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/rootfs.img",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.rootfs.img.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/vmlinuz",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.vmlinuz.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/initrd",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.initrd.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/initrd-micro",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.initrd-micro.origin",
+        "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/*.partial",
+        "~/Library/Application Support/Claude/vm_bundles/.wvm-tmp-*"
+      ]
+    },
+    {
+      "icon": "📡",
+      "name": "Crash-reporter & telemetry SDK caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Queued crash/analytics payloads & updater caches dropped by embedded SDKs (Sentry, Crashlytics, Sparkle, Keystone, Segment, ...) — regenerated as needed.",
+      "paths": [
+        "~/Library/Caches/SentryCrash",
+        "~/Library/Caches/io.sentry",
+        "~/Library/Caches/KSCrash",
+        "~/Library/Caches/com.crashlytics",
+        "~/Library/Caches/com.crashlytics.data",
+        "~/Library/Caches/org.sparkle-project.Sparkle",
+        "~/Library/Caches/com.google.SoftwareUpdate",
+        "~/Library/Caches/com.google.Keystone",
+        "~/Library/Caches/com.segment.analytics",
+        "~/Library/Caches/Rollbar",
+        "~/Library/Caches/Amplitude",
+        "~/Library/Caches/Realm",
+        "~/Library/Caches/Parse",
+        "~/Library/Caches/CCTClearcutLogger"
+      ]
+    },
+    {
+      "icon": "📥",
+      "name": "App updater staging caches",
+      "method": "rm",
+      "default": true,
+      "desc": "Downloaded update payloads left behind by Squirrel/Sparkle, electron-updater & Google's updater after installing — re-fetched only if an update is pending.",
+      "paths": [
+        "~/Library/Caches/*.ShipIt",
+        "~/Library/Caches/*-updater/pending",
+        "~/Library/Caches/com.google.antigravity/pending",
+        "~/Library/Caches/com.google.antigravity/update.zip",
+        "~/Library/Application Support/Google/GoogleUpdater/*.old",
+        "~/Library/Application Support/Caches/*.ShipIt"
+      ]
+    },
+    {
+      "icon": "📦",
+      "name": "Sandboxed app caches",
+      "method": "rm",
+      "default": false,
+      "desc": "Caches inside sandboxed (App Store) apps' containers — rebuilt as needed.",
+      "paths": [
+        "~/Library/Containers/*/Data/Library/Caches"
+      ]
+    },
+    {
+      "icon": "📋",
+      "name": "Crash & diagnostic logs",
+      "method": "rm",
+      "default": false,
+      "desc": "Old crash reports & simulator diagnostic logs — regenerated as needed.",
+      "paths": [
+        "~/Library/Logs/DiagnosticReports",
+        "~/Library/Logs/CoreSimulator"
+      ]
+    },
+    {
+      "icon": "🚮",
+      "name": "Empty the Trash",
+      "method": "emptytrash",
+      "default": false,
+      "desc": "Permanently erase everything currently in the Trash — cannot be undone.",
+      "paths": [
+        "~/.Trash"
+      ]
+    }
+  ]
+}
