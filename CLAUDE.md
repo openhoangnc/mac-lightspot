@@ -37,7 +37,7 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 42 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `test_engine.swift`: 42 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions), every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
 - `deep_verify.swift`: 11 sections of live system checks (136 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos (measures only; it never deletes).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
@@ -215,14 +215,27 @@ cleans and prints a receipt.
   bundle. A rule added to cdm reaches Lightspot without a release; the bundled copy only
   covers being offline. Refresh it by copying cdm's `rules/*.json` over `Resources/cdm-rules/`
   (deep_verify names the categories where they differ).
-- **Native vs. terminal.** `paths` and `android-images` categories with the methods `rm`,
-  `rmforce`, `trash` and `emptytrash` run here, and so do `project` and `gitignore` ones
-  through the repo scan below. `container` categories (Docker / Podman), cdm's
+- **Native vs. terminal.** `paths`, `android-images`, `android-idle-images`,
+  `older-versions` and `claude-transcripts` categories with the methods `rm`, `rmforce`,
+  `trash` and `emptytrash` run here, and so do `project` and `gitignore` ones through the
+  repo scan below. `container` categories (Docker / Podman), `rust-toolchains` (its clean
+  is `rustup toolchain uninstall`, a command, like a container prune), cdm's
   orphaned-app-data scan, and rules that only read other apps' sandbox containers are named
   in the overlay and left to cdm itself: ⌘↵ runs `curl -fsSL …/releases/latest/download/cdm | bash`
   in the preferred terminal (`CleanDevMacProvider.openInTerminal`). Without a real git
   binary (`CleanDevMacProjects.gitExecutable`; never `/usr/bin/git`, which opens the
   Command Line Tools installer when they are missing) the repo scan is cdm's too.
+- **The kinds that work out their offer** read their globs from `images` or `candidates`,
+  never `paths` (`CleanDevMacRules.patternField`), so an interpreter that does not know a
+  kind offers nothing; the idle ones also need `idleDays`, or the rule is dropped.
+  `android-idle-images` offers each image only AVDs idle that long boot, one row per image
+  (IDs from `itemIDBase`), naming the AVDs and the sdkmanager package; an AVD's age is its
+  folder's newest file but `config.ini`, which Android Studio rewrites without booting
+  anything. `older-versions` keeps the newest of each glob's family by cdm's version order
+  (`versionKey`: numeric fields, a release above its own pre-release). `claude-transcripts`
+  offers `<uuid>.jsonl` sessions untouched that long, with their `<uuid>/` folders, never one
+  `~/.claude/sessions/*.json` names as running, and is always `trash` and unticked, whatever
+  the rule says: a transcript is the one record of a conversation.
 - **The repo scan is cdm's `scan_projects`, ported** (`CleanDevMacProjects`), and like cdm
   it is asked, not run: after the cache scan the overlay asks "Also scan your code repos
   for build/dependency junk?" and ⇥ (or the button) starts it. One fts pass over the rules'
@@ -244,9 +257,13 @@ cleans and prints a receipt.
   without asking. On a real home folder it offers what cdm's own `scan_projects` does, except
   a folder holding a nested repo, which cdm offers.
 - **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
-  shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list,
-  `is_safe_target`, `delete_path`, `human_kb`, the disk line and the log cap. Keep the two
-  in step: when cdm changes one of these, port the change and its test.
+  shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list
+  and idle check, `newest_version`, `register_transcripts`, `is_safe_target`, `delete_path`,
+  `human_kb`, the disk line and the log cap. Keep the two in step: when cdm changes one of
+  these, port the change and its test. One difference is deliberate: cdm sizes a row with one
+  `du` over all its paths (to save forks), so a file hard-linked into two paths of one row
+  counts once there; Lightspot measures each path on its own, in process, because the
+  receipt counts what each removed path freed. cdm's restart estimate is not ported.
 - **State.** `CleanDevMacProvider` runs scans and cleans on its own queue and publishes a
   `Snapshot`; `search()` and `CleanDevMacModel` (the overlay) only read it. A scan stands
   for five minutes; a clean ends in `.finished` and the next open rescans. Ticks reset to
@@ -360,7 +377,10 @@ cleans and prints a receipt.
      installer rows, on a background queue
    - The cache folders cdm's rules name, and only when the user opens Clean Dev Mac: the
      patterns are expanded and each match measured, on the provider's queue. Nothing is
-     kept but the sizes. `~/Library/Containers` and `~/Library/Group Containers` are never
+     kept but the sizes. The idle kinds also read file dates: in each AVD folder, and in the
+     Claude Code project folders the rules name, plus the small `~/.claude/sessions/*.json`
+     files that name running sessions — never a transcript's contents.
+     `~/Library/Containers` and `~/Library/Group Containers` are never
      read (`CleanDevMacEngine.outOfScopeFolders`): inside another app's container macOS asks
      the user whether Lightspot may "access data from other apps", and with an ad-hoc
      signature it would ask again after every update.

@@ -3044,11 +3044,25 @@ struct TestRunner {
         assertEqual(images?.kind, .androidImages, "Android images keep their kind")
         assertTrue(images?.patterns.allSatisfy { $0.contains("system-images") } == true, "Android image candidates come from `images`")
         assertTrue(rule("Browser caches")?.procs.contains("Google Chrome") == true, "A rule's procs are read")
+        let idle = rule("Idle AVD image")
+        assertEqual(idle?.kind, .androidIdleImages, "Idle AVDs' images keep their kind")
+        assertEqual(idle?.idleDays, 60, "...and go by 60 days")
+        assertTrue(idle?.patterns.allSatisfy { $0.contains("system-images") } == true, "...from `images`")
+        let older = rule("Older Android build-tools & platforms")
+        assertEqual(older?.kind, .olderVersions, "Older SDK versions keep their kind")
+        assertTrue(older?.patterns.contains("~/Library/Android/sdk/build-tools/*") == true, "...from `candidates`")
+        let transcripts = rule("Claude Code transcripts older than 30 days")
+        assertEqual(transcripts?.kind, .claudeTranscripts, "Old Claude Code transcripts keep their kind")
+        assertEqual(transcripts?.patterns, ["~/.claude/projects/*"], "...from `candidates`")
+        assertEqual(transcripts?.idleDays, 30, "...go by 30 days")
+        assertEqual(transcripts?.method, .trash, "...go to the Trash")
+        assertEqual(transcripts?.isDefault, false, "...and are never ticked")
+        assertEqual(rule("PlatformIO platforms & toolchains")?.isDefault, false, "Installed toolchains are opt-in")
         assertTrue(bundled.rules.allSatisfy { $0.patterns.allSatisfy { $0.hasPrefix("~/") } },
                    "Every bundled pattern is under the home folder")
-        assertEqual(bundled.terminalOnly, ["Docker / Podman reclaimable data", "Orphaned app data"],
-                    "Only Docker / Podman and orphaned app data are left to cdm in the terminal")
-        for name in ["node_modules folders", "Git-ignored files (all repos)", "Docker / Podman reclaimable data", "Orphaned app data"] {
+        assertEqual(bundled.terminalOnly, ["Rust toolchain", "Docker / Podman reclaimable data", "Orphaned app data"],
+                    "Rust toolchains, Docker / Podman and orphaned app data are left to cdm in the terminal")
+        for name in ["node_modules folders", "Git-ignored files (all repos)", "Docker / Podman reclaimable data", "Orphaned app data", "Rust toolchain"] {
             assertTrue(rule(name) == nil, "'\(name)' is not a cache rule")
         }
         let projects = bundled.projects
@@ -3099,6 +3113,33 @@ struct TestRunner {
         assertEqual(scanFile?.maxDepth, 6, "A maxDepth that is not a number falls back to 6, as in cdm")
         assertEqual(scanFile?.maxRepos, 12, "maxRepos is read")
         assertTrue(CleanDevMacRules.parsePatternFile(Data("not json".utf8)) == nil, "A broken file does not parse")
+
+        // The kinds that work out their offer read their globs from a field of their own,
+        // and the idle ones need an age.
+        let kinds = Data("""
+        {"categories": [
+          {"name": "Older", "kind": "older-versions", "method": "rm", "paths": ["~/all"], "candidates": ["~/sdk/build-tools/*"]},
+          {"name": "Idle", "kind": "android-idle-images", "method": "rm", "idleDays": 60, "paths": ["~/all"], "images": ["~/img/*"]},
+          {"name": "Idle, as text", "kind": "android-idle-images", "idleDays": "7", "images": ["~/img/*"]},
+          {"name": "Idle, no age", "kind": "android-idle-images", "images": ["~/img/*"]},
+          {"name": "Idle, bad age", "kind": "android-idle-images", "idleDays": 6.5, "images": ["~/img/*"]},
+          {"name": "Talks", "kind": "claude-transcripts", "method": "rm", "default": true, "idleDays": 30, "candidates": ["~/.claude/projects/*"]},
+          {"name": "Talks, no age", "kind": "claude-transcripts", "method": "trash", "idleDays": -1, "candidates": ["~/p/*"]},
+          {"name": "Rust", "kind": "rust-toolchains", "method": "rustup", "candidates": ["~/.rustup/toolchains/*"]}
+        ]}
+        """.utf8)
+        let parsedKinds = CleanDevMacRules.parsePatternFile(kinds)
+        assertEqual(parsedKinds?.rules.map(\.name), ["Older", "Idle", "Idle, as text", "Talks"],
+                    "An idle kind without a whole number of days, 0 or more, offers nothing")
+        assertEqual(parsedKinds?.rules[0].kind, .olderVersions, "older-versions is read")
+        assertEqual(parsedKinds?.rules[0].patterns, ["~/sdk/build-tools/*"], "...from `candidates`, never `paths`")
+        assertEqual(parsedKinds?.rules[1].patterns, ["~/img/*"], "android-idle-images is read from `images`")
+        assertEqual(parsedKinds?.rules[1].idleDays, 60, "...with its age")
+        assertEqual(parsedKinds?.rules[2].idleDays, 7, "An age written as digits is read, as cdm reads it")
+        assertEqual(parsedKinds?.rules[3].method, .trash, "Transcripts go to the Trash, whatever the rule says")
+        assertEqual(parsedKinds?.rules[3].isDefault, false, "...and are never ticked, whatever the rule says")
+        assertEqual(parsedKinds?.terminalOnly, ["Rust"], "rust-toolchains is left to cdm, which removes them with rustup")
+        assertTrue(parsedKinds?.rules.allSatisfy { $0.patterns != ["~/all"] } == true, "No new kind ever reads `paths`")
 
         // index.json names files that get joined onto a folder or a URL.
         for name in ["dev-caches.json", "app_caches.json", "rules2.json"] {
@@ -3223,6 +3264,94 @@ struct TestRunner {
                     "Images in use: an AVD's own config, one an .ini points at elsewhere, and one under ANDROID_AVD_HOME")
         assertEqual(CleanDevMacEngine.matchedPaths(patterns: ["~/\(sdk)/*/*/*"], home: home, physicalHome: physicalHome, skip: refs),
                     [home + "/\(sdk)/android-33/default/x86_64"], "Only the image no AVD uses is offered")
+
+        // 2b. An image only idle AVDs boot is offered, naming them (cdm's android-idle-images).
+        //     config.ini is written today, as Android Studio rewrites it without booting.
+        @discardableResult
+        func age(_ path: String, days: Double) -> String {
+            try? fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -days * 86_400)], ofItemAtPath: path)
+            return path
+        }
+        let idleAVDs = outside + "/idle-avds"
+        func avd(_ name: String, image: String, ranDaysAgo days: Double) {
+            let folder = idleAVDs + "/\(name).avd"
+            write(folder + "/config.ini", "image.sysdir.1=system-images/\(image)/\n")
+            write(idleAVDs + "/\(name).ini", "path=\(folder)\n")
+            for file in ["hardware-qemu.ini", "userdata-qemu.img.qcow2"] { age(write(folder + "/" + file, "x"), days: days) }
+        }
+        make("\(sdk)/android-30/android-tv/arm64-v8a/system.img", bytes: 100)
+        make("\(sdk)/android-31/google_apis/arm64-v8a/system.img", bytes: 100)
+        avd("atv", image: "android-30/android-tv/arm64-v8a", ranDaysAgo: 81)
+        avd("pixel", image: "android-31/google_apis/arm64-v8a", ranDaysAgo: 3)
+        let idleEnvironment = ["ANDROID_AVD_HOME": idleAVDs]
+        let now = Int(Date().timeIntervalSince1970)
+        func idle(_ days: Int) -> [CleanDevMacEngine.IdleImage] {
+            CleanDevMacEngine.idleImages(patterns: ["~/\(sdk)/*/*/*"], users: CleanDevMacEngine.avdImageUsers(home: home, environment: idleEnvironment),
+                                         days: days, now: now, home: home, physicalHome: physicalHome)
+        }
+        let atvLast = CleanDevMacEngine.avdLastStarted(idleAVDs + "/atv.avd")
+        assertTrue((now - atvLast) / 86_400 == 81, "An AVD last ran when its newest file but config.ini was written")
+        assertEqual(idle(60).map(\.path), [home + "/\(sdk)/android-30/android-tv/arm64-v8a"], "Only the image only an idle AVD boots is offered")
+        assertEqual(idle(60).first?.avds, ["atv"], "...naming the AVD once, though it is found twice")
+        assertEqual(idle(60).first?.lastStarted, atvLast, "...and when it last ran")
+        assertEqual(idle(90), [], "At 90 days, an AVD last run 81 days ago is not idle")
+        avd("tv2", image: "android-30/android-tv/arm64-v8a", ranDaysAgo: 1)
+        assertEqual(idle(60), [], "One recently run AVD keeps the image, however idle the others")
+        try? fm.removeItem(atPath: idleAVDs + "/tv2.avd")
+        try? fm.removeItem(atPath: idleAVDs + "/tv2.ini")
+        avd("tv3", image: "android-30/android-tv/arm64-v8a", ranDaysAgo: 200)
+        assertEqual(idle(60).first?.avds, ["atv", "tv3"], "Every idle AVD on the image is named")
+        let neverRun = age(write(idleAVDs + "/new.avd/config.ini", "image.sysdir.1=x/\n"), days: 5)
+        let configDate = (try? fm.attributesOfItem(atPath: neverRun)[.modificationDate] as? Date)?.map { Int($0.timeIntervalSince1970) }
+        assertEqual(CleanDevMacEngine.avdLastStarted(idleAVDs + "/new.avd"), configDate, "An AVD that never ran is as old as its config.ini")
+        assertEqual(CleanDevMacEngine.avdLastStarted(home + "/no-such.avd"), 0, "No folder: 0")
+
+        // 2c. All but the newest version of each family (cdm's older-versions).
+        func newest(_ names: [String]) -> String? {
+            CleanDevMacEngine.newestVersion(names.map { "/x/" + $0 }).map { ($0 as NSString).lastPathComponent }
+        }
+        assertEqual(newest(["34.0.0", "37.0.0", "36.1.0", "35.0.0", "36.0.0"]), "37.0.0", "The highest build-tools version")
+        assertEqual(newest(["9.0.0", "10.0.0"]), "10.0.0", "10 is newer than 9: numbers, not strings")
+        assertEqual(newest(["android-35", "android-37.0", "android-36.1"]), "android-37.0", "37.0 above 36.1 above 35")
+        assertEqual(newest(["android-36.1", "android-36"]), "android-36.1", "android-36.1 is newer than android-36")
+        assertEqual(newest(["36.0.0-rc1", "36.0.0"]), "36.0.0", "A release outranks its own pre-release")
+        assertEqual(newest(["36.0.0", "36.0.1-rc1"]), "36.0.1-rc1", "A pre-release of a later version still wins")
+        assertEqual(newest(["android-UpsideDownCake", "android-34"]), "android-34", "A codename with no number is oldest")
+        assertEqual(newest(["6.9", "07.1"]), "07.1", "A leading zero does not make a field smaller")
+        for version in ["34.0.0", "35.0.0", "36.1.0", "37.0.0"] { make("sdk2/build-tools/\(version)/aapt", bytes: 10) }
+        for platform in ["android-35", "android-36.1"] { make("sdk2/platforms/\(platform)/android.jar", bytes: 10) }
+        make("sdk2/ndk/25.2.9519653/source.properties", bytes: 10)
+        mkdir("sdk2/build-tools/38.0.0")
+        let olderPaths = CleanDevMacEngine.olderVersionPaths(
+            patterns: ["~/sdk2/build-tools/*", "~/sdk2/platforms/*", "~/sdk2/ndk/*", "~/sdk2/build-tools/3*"],
+            home: home, physicalHome: physicalHome)
+        assertEqual(Set(olderPaths), Set(["build-tools/34.0.0", "build-tools/35.0.0", "build-tools/36.1.0", "platforms/android-35"].map { home + "/sdk2/" + $0 }),
+                    "All but the newest of each family; a family of one and an empty folder offer nothing")
+        assertEqual(olderPaths.count, Set(olderPaths).count, "A version two patterns reach is offered once")
+
+        // 2d. Old Claude Code sessions (cdm's claude-transcripts): each transcript with its
+        //     folder; never a running session, a fresh one, or anything but a session id.
+        let project = home + "/.claude/projects/-Users-me-app"
+        let oldID = "11111111-1111-4111-8111-111111111111", liveID = "33333333-3333-4333-8333-333333333333"
+        age(write(project + "/\(oldID).jsonl", "{}"), days: 45)
+        write(project + "/\(oldID)/subagents/agent-a.jsonl", "{}")
+        age(write(project + "/\(liveID).jsonl", "{}"), days: 45)
+        age(write(project + "/44444444-4444-4444-8444-444444444444.jsonl", "{}"), days: 2)
+        age(write(project + "/notes.jsonl", "{}"), days: 45)
+        age(write(project + "/memory/MEMORY.md", "note"), days: 45)
+        write(home + "/.claude/sessions/4242.json", #"{"pid":4242,"sessionId":"\#(liveID)","kind":"interactive"}"#)
+        func transcripts(_ days: Int) -> CleanDevMacEngine.OldTranscripts {
+            CleanDevMacEngine.oldTranscripts(patterns: ["~/.claude/projects/*"], days: days, now: now, home: home, physicalHome: physicalHome)
+        }
+        assertEqual(transcripts(30).paths, [project + "/\(oldID).jsonl", project + "/\(oldID)"],
+                    "The old session's transcript and folder; not the running one, the fresh one, notes or memory/")
+        assertEqual(transcripts(30).sessions, 1, "One session")
+        assertEqual(transcripts(60).sessions, 0, "At 60 days, a 45-day-old session is kept")
+        assertEqual(CleanDevMacEngine.runningSessionIDs(claudeFolder: home + "/.claude"), [liveID], "Running sessions are read from sessions/")
+        try? fm.removeItem(atPath: home + "/.claude/sessions/4242.json")
+        assertEqual(transcripts(30).sessions, 2, "Once its process has gone, the old session is offered too")
+        assertTrue(CleanDevMacEngine.isSessionID(oldID) && !CleanDevMacEngine.isSessionID("memory")
+                   && !CleanDevMacEngine.isSessionID(String(repeating: "ア", count: 36)), "A session id is a UUID")
 
         // 3. The safety gate: cdm's own test cases. Every refused path exists, so a
         //    refusal can only come from the rule under test.
@@ -3462,6 +3591,47 @@ struct TestRunner {
                       contents: Data("image.sysdir.1=system-images/android-34/default/arm64-v8a/\n".utf8))
         assertEqual(provider.scanEntries(imageRules).entries.first?.paths, [home + "/sdk/system-images/android-33/default/arm64-v8a"],
                     "Only the image no AVD uses is offered")
+
+        // The kinds that work out their offer: an idle AVD's image (one row per image, IDs
+        // from itemIDBase), old Claude Code sessions, and all but the newest version.
+        func aged(_ relative: String, days: Double) {
+            try? fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -days * 86_400)], ofItemAtPath: home + "/" + relative)
+        }
+        make("sdk/system-images/android-35/android-tv/arm64-v8a/system.img", bytes: 4_000)
+        try? fm.createDirectory(atPath: home + "/.android/avd/TV.avd", withIntermediateDirectories: true)
+        fm.createFile(atPath: home + "/.android/avd/TV.avd/config.ini",
+                      contents: Data("image.sysdir.1=system-images/android-35/android-tv/arm64-v8a/\n".utf8))
+        make(".android/avd/TV.avd/userdata-qemu.img.qcow2", bytes: 100)
+        aged(".android/avd/TV.avd/userdata-qemu.img.qcow2", days: 90)
+        let session = "11111111-1111-4111-8111-111111111111"
+        make(".claude/projects/-Users-me-app/\(session).jsonl", bytes: 2_000)
+        aged(".claude/projects/-Users-me-app/\(session).jsonl", days: 40)
+        make("sdk2/build-tools/36.0.0/aapt", bytes: 3_000)
+        make("sdk2/build-tools/37.0.0/aapt", bytes: 3_000)
+        let computed = CleanDevMacRuleSet(rules: [
+            CleanDevMacRule(kind: .androidIdleImages, icon: "💿", name: "Idle AVD image", desc: "D.", method: .rm, isDefault: false,
+                            patterns: ["~/sdk/system-images/*/*/*"], procs: [], idleDays: 60),
+            CleanDevMacRule(kind: .claudeTranscripts, icon: "💬", name: "Old transcripts", desc: "T.", method: .trash, isDefault: false,
+                            patterns: ["~/.claude/projects/*"], procs: [], idleDays: 30),
+            CleanDevMacRule(kind: .olderVersions, icon: "🤖", name: "Older build-tools", desc: "", method: .rm, isDefault: false,
+                            patterns: ["~/sdk2/build-tools/*"], procs: []),
+        ], terminalOnly: [], source: .remote)
+        let computedScan = provider.scanEntries(computed).entries
+        func entry(_ name: String) -> CleanDevMacProvider.Entry? { computedScan.first { $0.rule.name == name } }
+        let tvRow = entry("Idle AVD image: android-35/android-tv/arm64-v8a")
+        assertEqual(tvRow?.id, CleanDevMacProvider.itemIDBase, "An idle image is its own row, numbered from itemIDBase")
+        assertEqual(tvRow?.paths, [home + "/sdk/system-images/android-35/android-tv/arm64-v8a"], "...deleting that image only")
+        assertTrue(tvRow?.rule.desc.hasPrefix("Booted only by TV, last started ") == true, "...naming the AVD it would stop booting")
+        assertTrue(tvRow?.rule.desc.hasSuffix("D. Reinstall: sdkmanager \"system-images;android-35;android-tv;arm64-v8a\"") == true,
+                   "...and the package to reinstall")
+        assertTrue(computedScan.allSatisfy { !$0.paths.contains(home + "/sdk/system-images/android-34/default/arm64-v8a") },
+                   "An image a recently used AVD boots is never offered")
+        let talkRow = entry("Old transcripts")
+        assertEqual(talkRow?.paths, [home + "/.claude/projects/-Users-me-app/\(session).jsonl"], "The old session's transcript")
+        assertEqual(talkRow?.methods, [.trash], "...goes to the Trash")
+        assertEqual(talkRow?.rule.isDefault, false, "...unticked")
+        assertEqual(talkRow?.rule.desc, "1 session. T.", "...and its row counts the sessions")
+        assertEqual(entry("Older build-tools")?.paths, [home + "/sdk2/build-tools/36.0.0"], "All but the newest version")
 
         // 3. Cleaning: each method, a shared path removed and counted once, a receipt and a log.
         let receipt = provider.performClean(Array(scan.entries.prefix(2)))

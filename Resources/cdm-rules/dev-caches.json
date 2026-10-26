@@ -1,6 +1,6 @@
 {
   "title": "Developer caches & build artifacts",
-  "_comment": "Regenerable caches created by developer tools. method: rm = delete permanently, rmforce = chmod +w then delete (for read-only caches like Go modules & Cargo sources). Paths may use ~ and * globs. default:true = pre-selected. Rule of thumb for default: true means 'costs a rebuild or a small re-download'; false means 'costs a large re-download, or the data may not regenerate on its own'.",
+  "_comment": "Regenerable caches created by developer tools. method: rm = delete permanently, rmforce = chmod +w then delete (for read-only caches like Go modules & Cargo sources). Paths may use ~ and * globs. default:true = pre-selected. Rule of thumb for default: true means 'costs a rebuild or a small re-download'; false means 'costs a large re-download, or the data may not regenerate on its own' — and anything that removes installed software is false. A 'kind' works out its offer in the script and takes its globs from 'images' or 'candidates', never 'paths', so a cdm too old to know the kind offers nothing: android-images (system images no AVD boots), android-idle-images (images only AVDs idle for 'idleDays' boot, one row each), older-versions (each glob is one family of versions; all but the newest), rust-toolchains (toolchains other than the default and stable, removed with 'rustup toolchain uninstall'), claude-transcripts (Claude Code sessions untouched for 'idleDays', always to the Trash and never pre-selected). See docs/DESIGN.md.",
   "categories": [
     {
       "icon": "🔨",
@@ -171,6 +171,17 @@
         "~/.cargo/git",
         "~/.rustup/downloads",
         "~/.rustup/tmp"
+      ]
+    },
+    {
+      "kind": "rust-toolchains",
+      "icon": "🦀",
+      "name": "Rust toolchain",
+      "method": "rustup",
+      "default": false,
+      "desc": "An installed toolchain that is neither your default nor stable (GBs each) — removed with 'rustup toolchain uninstall'; rustup downloads it again if a project asks for it.",
+      "candidates": [
+        "~/.rustup/toolchains/*"
       ]
     },
     {
@@ -360,10 +371,22 @@
       "name": "AI CLI tool caches",
       "method": "rm",
       "default": true,
-      "desc": "Scratch caches for terminal AI tools — regenerated on next run. Session state & credentials (~/.claude, ~/.codex) are never touched.",
+      "desc": "Scratch caches for terminal AI tools — regenerated on next run. Sessions, settings & credentials (~/.claude, ~/.codex) are not part of this row.",
       "paths": [
         "~/Library/Caches/claude-cli-nodejs",
         "~/.cache/opencode"
+      ]
+    },
+    {
+      "kind": "claude-transcripts",
+      "icon": "💬",
+      "name": "Claude Code transcripts older than 30 days",
+      "method": "trash",
+      "default": false,
+      "idleDays": 30,
+      "desc": "Sessions untouched for 30+ days — each transcript with its subagent & tool-output folder — moved to the Trash. A trashed session cannot be resumed or reopened (in Claude Desktop too) until you put it back. Running sessions, auto memory & settings are never touched. To stop them piling up, set desktopSessionCleanupPeriodDays in ~/.claude/settings.json.",
+      "candidates": [
+        "~/.claude/projects/*"
       ]
     },
     {
@@ -450,6 +473,29 @@
       ]
     },
     {
+      "icon": "🔌",
+      "name": "PlatformIO download cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Downloaded package archives & registry cache ('pio system prune --cache'), and the archives ESP32 tools were unpacked from — re-fetched on demand. Installed platforms & toolchains are their own unchecked row.",
+      "paths": [
+        "~/.platformio/.cache",
+        "~/.platformio/dist"
+      ]
+    },
+    {
+      "icon": "🔌",
+      "name": "PlatformIO platforms & toolchains",
+      "method": "rm",
+      "default": false,
+      "desc": "Installed dev platforms, toolchains & frameworks (GBs) — the next 'pio run' downloads what its project needs again (network needed). PlatformIO itself (~/.platformio/penv) and its settings stay.",
+      "paths": [
+        "~/.platformio/packages/*",
+        "~/.platformio/platforms/*",
+        "~/.platformio/tools/*"
+      ]
+    },
+    {
       "icon": "🤖",
       "name": "Android build caches",
       "method": "rm",
@@ -483,10 +529,54 @@
       "name": "Unused Android system images",
       "method": "rm",
       "default": false,
-      "desc": "Emulator OS images (GBs each) that NO AVD on this Mac boots from — images an AVD still uses are never listed. Re-install from Android Studio's SDK Manager or 'sdkmanager' if you create an AVD with one later.",
+      "desc": "Emulator OS images (GBs each) that NO AVD on this Mac boots from — an image an AVD uses is never in this row. Re-install from Android Studio's SDK Manager or 'sdkmanager' if you create an AVD with one later.",
       "images": [
         "~/Library/Android/sdk/system-images/*/*/*",
         "~/Android/Sdk/system-images/*/*/*"
+      ]
+    },
+    {
+      "kind": "android-idle-images",
+      "icon": "💿",
+      "name": "Idle AVD image",
+      "method": "rm",
+      "default": false,
+      "idleDays": 60,
+      "desc": "Every AVD that boots this emulator image has gone 60+ days without running. Deleting it keeps their apps & data, but they will not boot until it is reinstalled from Android Studio's SDK Manager.",
+      "images": [
+        "~/Library/Android/sdk/system-images/*/*/*",
+        "~/Android/Sdk/system-images/*/*/*"
+      ]
+    },
+    {
+      "icon": "🤖",
+      "name": "Android NDK, CMake & SDK sources",
+      "method": "rm",
+      "default": false,
+      "desc": "C/C++ toolchains (NDK, CMake — GBs) and the framework sources the IDE shows — a Java/Kotlin-only build needs none of them. Gradle (AGP 4.2+) installs an NDK or CMake again when a build needs one; or reinstall from Android Studio's SDK Manager.",
+      "paths": [
+        "~/Library/Android/sdk/ndk/*",
+        "~/Library/Android/sdk/ndk-bundle",
+        "~/Library/Android/sdk/cmake/*",
+        "~/Library/Android/sdk/sources/*",
+        "~/Android/Sdk/ndk/*",
+        "~/Android/Sdk/ndk-bundle",
+        "~/Android/Sdk/cmake/*",
+        "~/Android/Sdk/sources/*"
+      ]
+    },
+    {
+      "kind": "older-versions",
+      "icon": "🤖",
+      "name": "Older Android build-tools & platforms",
+      "method": "rm",
+      "default": false,
+      "desc": "Every SDK build-tools and platform version except the newest of each — a project that targets an older one has Gradle or Android Studio download it again on its next build.",
+      "candidates": [
+        "~/Library/Android/sdk/build-tools/*",
+        "~/Library/Android/sdk/platforms/*",
+        "~/Android/Sdk/build-tools/*",
+        "~/Android/Sdk/platforms/*"
       ]
     },
     {

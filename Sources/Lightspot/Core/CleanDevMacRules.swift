@@ -6,8 +6,8 @@ import Foundation
 // in code: `rules/index.json` lists the pattern files, and each pattern file contributes
 // categories (`icon`, `name`, `desc`, `method`, `default`, `paths`, optionally `procs`).
 // Lightspot reads the same files, so a rule added to cdm reaches both tools. The cache
-// categories and cdm's per-repo project scan run natively; Docker / Podman and orphaned
-// app data stay with cdm itself, one ⌘↵ away in a terminal.
+// categories and cdm's per-repo project scan run natively; Docker / Podman, Rust
+// toolchains and orphaned app data stay with cdm itself, one ⌘↵ away in a terminal.
 
 /// One category of a cdm pattern file that Lightspot can clean on its own.
 struct CleanDevMacRule: Sendable, Equatable {
@@ -17,6 +17,15 @@ struct CleanDevMacRule: Sendable, Equatable {
         /// AVD still boots from. cdm keeps them out of `paths` so that an interpreter that
         /// does not know this kind offers nothing rather than every image.
         case androidImages = "android-images"
+        /// The system images, from `images`, that only AVDs idle for `idleDays` boot: one
+        /// row each, naming the AVDs that would no longer boot.
+        case androidIdleImages = "android-idle-images"
+        /// Each `candidates` glob is a family of versions (build-tools/*); all but the
+        /// newest of each are offered.
+        case olderVersions = "older-versions"
+        /// Claude Code sessions, in the project folders `candidates` names, untouched for
+        /// `idleDays`: always to the Trash and never ticked, whatever the rule says.
+        case claudeTranscripts = "claude-transcripts"
         /// One code repo's junk, found by the repo scan. Never read from a rule file: cdm's
         /// `project` and `gitignore` categories become `CleanDevMacProjectRules` instead.
         case project
@@ -42,10 +51,13 @@ struct CleanDevMacRule: Sendable, Equatable {
     let method: Method
     /// Pre-selected: the rule's `default`. A true one costs a rebuild or a small re-download.
     let isDefault: Bool
-    /// `~` and `*` patterns: the rule's `paths`, or its `images` for `.androidImages`.
+    /// `~` and `*` patterns: the rule's `paths`, its `images` for the Android image kinds,
+    /// or its `candidates` for `.olderVersions` and `.claudeTranscripts`.
     let patterns: [String]
     /// Process names of the apps that rewrite this category's caches while they run.
     let procs: [String]
+    /// The age in days the idle kinds go by (`idleDays`); nil for every other kind.
+    var idleDays: Int? = nil
 }
 
 /// What cdm's repo scan looks for (`scan` plus its `project` and `gitignore` categories):
@@ -100,8 +112,8 @@ struct CleanDevMacRuleSet: Sendable, Equatable {
     }
 
     let rules: [CleanDevMacRule]
-    /// Categories only cdm itself cleans (Docker / Podman, orphaned app data). They are
-    /// named in the cleaner and handed to the terminal, never run here.
+    /// Categories only cdm itself cleans (Docker / Podman, Rust toolchains, orphaned app
+    /// data). They are named in the cleaner and handed to the terminal, never run here.
     let terminalOnly: [String]
     var projects = CleanDevMacProjectRules()
     let source: Source
@@ -116,8 +128,9 @@ enum CleanDevMacRules {
     static let maxFileBytes = 2 * 1024 * 1024
     static let maxPatternFiles = 32
 
-    /// The kinds only cdm runs: a container engine's prune.
-    static let terminalOnlyKinds: Set<String> = ["container"]
+    /// The kinds only cdm runs, because their clean is a command rather than a file
+    /// operation: a container engine's prune, and `rustup toolchain uninstall`.
+    static let terminalOnlyKinds: Set<String> = ["container", "rust-toolchains"]
 
     /// Ephemeral, like every other request Lightspot makes (invariant 12): nothing of the
     /// fetch lands in `~/Library/Caches` or `~/Library/HTTPStorages`.
@@ -212,20 +225,53 @@ enum CleanDevMacRules {
                 continue
             }
             let kind = CleanDevMacRule.Kind(rawValue: kindName).flatMap { $0 == .project ? nil : $0 } ?? .paths
-            let patterns = strings(category[kind == .androidImages ? "images" : "paths"])
+            let patterns = strings(category[patternField(kind)])
             guard !patterns.isEmpty else { continue }
+            // The idle kinds go by an age; without a usable one cdm offers nothing for them.
+            var idleDays: Int?
+            if kind == .androidIdleImages || kind == .claudeTranscripts {
+                guard let days = dayCount(category["idleDays"]) else { continue }
+                idleDays = days
+            }
+            // A transcript is the one record of a conversation: cdm only ever moves it to
+            // the Trash, and never ticks it, whatever the rule says.
+            let transcripts = kind == .claudeTranscripts
             file.rules.append(CleanDevMacRule(
                 kind: kind,
                 icon: category["icon"] as? String ?? "",
                 name: name,
                 desc: category["desc"] as? String ?? "",
-                method: method,
-                isDefault: category["default"] as? Bool ?? false,
+                method: transcripts ? .trash : method,
+                isDefault: transcripts ? false : category["default"] as? Bool ?? false,
                 patterns: patterns,
-                procs: strings(category["procs"])
+                procs: strings(category["procs"]),
+                idleDays: idleDays
             ))
         }
         return file
+    }
+
+    /// Where a kind's patterns live. A kind that works out its offer keeps them out of
+    /// `paths`, so an interpreter that does not know it offers nothing.
+    static func patternField(_ kind: CleanDevMacRule.Kind) -> String {
+        switch kind {
+        case .androidImages, .androidIdleImages: return "images"
+        case .olderVersions, .claudeTranscripts: return "candidates"
+        case .paths, .project: return "paths"
+        }
+    }
+
+    /// `idleDays` as cdm reads it: a whole number of days, 0 or more, written as a number
+    /// or as a string of digits; nil for anything else.
+    private static func dayCount(_ value: Any?) -> Int? {
+        if let text = value as? String {
+            guard !text.isEmpty, text.utf8.count <= 9, text.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
+            return Int(text)
+        }
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue == number.doubleValue.rounded(), number.doubleValue >= 0,
+              number.doubleValue < 1_000_000_000 else { return nil }
+        return number.intValue
     }
 
     private static func strings(_ value: Any?) -> [String] {

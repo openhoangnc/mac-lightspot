@@ -1,6 +1,6 @@
 {
   "title": "Container engines (Docker / Podman)",
-  "_comment": "kind:container categories reclaim space from container engines. For each engine listed in 'engines' that is (a) one of the built-in whitelist docker/podman/nerdctl, (b) installed, and (c) running, the tool measures reclaimable space via '<engine> system df' and, on clean, runs the FIXED command '<engine> system prune -af'. The command is hard-coded (never taken from JSON) and volumes are NEVER pruned, so named volumes / databases stay safe.",
+  "_comment": "kind:container categories reclaim space from container engines. For each engine listed in 'engines' that is (a) one of the built-in whitelist docker/podman/nerdctl, (b) installed, and (c) running, the tool measures reclaimable space via '<engine> system df' and, on clean, runs the FIXED command '<engine> system prune -af'. The command is hard-coded (never taken from JSON) and volumes are NEVER pruned, so named volumes / databases stay safe. For docker it first empties each docker-container buildx builder's BuildKit cache — a named volume (buildx_buildkit_<node>_state) that 'system df' counts as in use, so 'system prune' never frees it. It is sized from that volume and cleaned with the FIXED 'docker buildx prune --builder <name> -af' (a stopped builder is started for it and stopped again), so even that volume is never deleted. See docs/DESIGN.md#buildx-builders.",
   "categories": [
     {
       "kind": "container",
@@ -8,7 +8,7 @@
       "name": "Docker / Podman reclaimable data",
       "method": "prune",
       "default": false,
-      "desc": "Stopped containers, unused images & build cache ('system prune -af'). Named volumes are never touched.",
+      "desc": "Stopped containers, unused images, build cache & buildx builders' caches ('system prune -af', 'buildx prune -af'). Named volumes are never deleted.",
       "engines": ["docker", "podman", "nerdctl"]
     }
   ]

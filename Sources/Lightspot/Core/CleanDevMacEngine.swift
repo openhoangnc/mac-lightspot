@@ -122,20 +122,225 @@ enum CleanDevMacEngine {
         return configs
     }
 
-    /// cdm's `avd_image_refs`: the SDK-relative system-image folders the AVDs boot from
-    /// (each `image.sysdir.N=` value, without surrounding spaces or a trailing slash).
-    static func avdImageRefs(home: String, environment: [String: String]) -> [String] {
-        var refs: [String] = []
+    /// One AVD booting one system image (a line of cdm's `avd_image_users`).
+    struct AVDImageUser: Equatable, Sendable {
+        /// The SDK-relative image folder (`image.sysdir.N=`).
+        let ref: String
+        /// The AVD's folder name without `.avd`.
+        let avd: String
+        /// When it last ran, in seconds since 1970 (`avdLastStarted`).
+        let lastStarted: Int
+    }
+
+    /// cdm's `avd_image_users`: every image each AVD boots from (each `image.sysdir.N=`
+    /// value, without surrounding spaces or a trailing slash), with the AVD's name and
+    /// when it last ran.
+    static func avdImageUsers(home: String, environment: [String: String]) -> [AVDImageUser] {
+        var users: [AVDImageUser] = []
         for config in avdConfigFiles(home: home, environment: environment) {
+            let folder = (config as NSString).deletingLastPathComponent
+            var avd = (folder as NSString).lastPathComponent
+            if avd.hasSuffix(".avd") { avd = String(avd.dropLast(".avd".count)) }
+            let lastStarted = avdLastStarted(folder)
             for line in lines(of: config) where line.hasPrefix("image.sysdir.") {
                 guard let equals = line.firstIndex(of: "=") else { continue }
                 var value = Substring(line[line.index(after: equals)...])
                 while value.hasPrefix(" ") { value = value.dropFirst() }
                 while value.hasSuffix(" ") || value.hasSuffix("/") { value = value.dropLast() }
-                if !value.isEmpty { refs.append(String(value)) }
+                if !value.isEmpty { users.append(AVDImageUser(ref: String(value), avd: avd, lastStarted: lastStarted)) }
             }
         }
-        return refs
+        return users
+    }
+
+    /// cdm's `avd_image_refs`: the SDK-relative system-image folders the AVDs boot from.
+    static func avdImageRefs(home: String, environment: [String: String]) -> [String] {
+        avdImageUsers(home: home, environment: environment).map(\.ref)
+    }
+
+    /// cdm's `avd_last_started`: when an AVD last ran, as the newest modification time
+    /// (seconds since 1970) of what its folder holds — the emulator rewrites
+    /// hardware-qemu.ini and its userdata image every run. config.ini counts only when
+    /// nothing else is there: Android Studio rewrites it without booting anything. 0 for
+    /// a folder that holds nothing.
+    static func avdLastStarted(_ folder: String) -> Int {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder) else { return 0 }
+        var newest = 0
+        var config = 0
+        // Like the shell's `*` cdm reads them with: hidden names are not looked at, and a
+        // symlink is dated by itself, not by what it points at.
+        for name in names where !name.hasPrefix(".") {
+            var info = stat()
+            guard lstat(folder + "/" + name, &info) == 0 else { continue }
+            let modified = Int(info.st_mtimespec.tv_sec)
+            if name == "config.ini" { config = modified } else { newest = max(newest, modified) }
+        }
+        return newest > 0 ? newest : config
+    }
+
+    /// A system image only idle AVDs boot (cdm's `register_idle_images`).
+    struct IdleImage: Equatable, Sendable {
+        let path: String
+        /// The AVDs that boot it, each once, in the order they were found.
+        let avds: [String]
+        /// When the most recently run of them last ran.
+        let lastStarted: Int
+    }
+
+    /// cdm's `register_idle_images`: each existing, non-empty match of `patterns` that some
+    /// AVD in `users` boots, when none of the AVDs booting it has run in `days` days
+    /// before `now`. An image no AVD boots is the `.androidImages` row's, not this one's.
+    static func idleImages(patterns: [String], users: [AVDImageUser], days: Int, now: Int,
+                           home: String, physicalHome: String) -> [IdleImage] {
+        let cutoff = now - days * 86_400
+        var found: [IdleImage] = []
+        var seen = Set<String>()
+        for pattern in patterns where !pattern.isEmpty {
+            let expanded = expandTilde(pattern, home: home)
+            guard !isOutOfScope(expanded, home: home) else { continue }
+            for match in expandGlob(expanded) where seen.insert(match).inserted && isNonEmpty(match) {
+                let booting = users.filter { endsWithAny(match, [$0.ref]) }
+                guard !booting.isEmpty, booting.allSatisfy({ $0.lastStarted < cutoff }),
+                      isSafeTarget(match, home: home, physicalHome: physicalHome) else { continue }
+                var avds: [String] = []
+                // One AVD is found twice: as <home>/<name>.avd and through <name>.ini.
+                for user in booting where !avds.contains(user.avd) { avds.append(user.avd) }
+                found.append(IdleImage(path: match, avds: avds, lastStarted: booting.map(\.lastStarted).max() ?? 0))
+            }
+        }
+        return found
+    }
+
+    // MARK: Older versions
+
+    /// cdm's `newest_version`: the path whose name carries the highest version. Numeric
+    /// fields compare as numbers (36.1 above 36, 37.0 above 36.1), and a release ranks
+    /// above its own pre-release (36.0.0 above 36.0.0-rc1); equal versions go by path.
+    static func newestVersion(_ paths: [String]) -> String? {
+        paths.max { versionKey($0).utf8.lexicographicallyPrecedes(versionKey($1).utf8) }
+    }
+
+    /// The sort key cdm builds in awk: the name's first run of digits and dots, as eight
+    /// fields zero-padded to 20 digits (a missing field is 0), then `~` for a release or
+    /// `!` when anything follows the version; and the path itself, for a tie.
+    static func versionKey(_ path: String) -> String {
+        let name = path.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init) ?? path
+        var version = ""
+        var tail = name
+        if let start = name.firstIndex(where: { $0.isASCII && $0.isNumber }) {
+            let run = name[start...].prefix { ($0.isASCII && $0.isNumber) || $0 == "." }
+            version = String(run)
+            tail = String(name[run.endIndex...])
+        }
+        let fields = version.split(separator: ".", omittingEmptySubsequences: false)
+        var key = ""
+        for index in 0..<8 {
+            let field = index < fields.count && !fields[index].isEmpty ? String(fields[index]) : "0"
+            key += String(repeating: "0", count: max(0, 20 - field.count)) + field + "."
+        }
+        return key + (!version.isEmpty && tail.isEmpty ? "~" : "!") + "\t" + path
+    }
+
+    /// cdm's `register_older`: each pattern is one family of sibling versions, and every
+    /// existing, non-empty match but the family's newest is offered — once, and only when
+    /// the safety gate would let it go. A family of one offers nothing.
+    static func olderVersionPaths(patterns: [String], home: String, physicalHome: String) -> [String] {
+        var found: [String] = []
+        var seen = Set<String>()
+        for pattern in patterns where !pattern.isEmpty {
+            let expanded = expandTilde(pattern, home: home)
+            guard !isOutOfScope(expanded, home: home) else { continue }
+            let family = expandGlob(expanded).filter(isNonEmpty)
+            guard family.count > 1, let newest = newestVersion(family) else { continue }
+            for path in family where path != newest && isSafeTarget(path, home: home, physicalHome: physicalHome)
+                && seen.insert(path).inserted {
+                found.append(path)
+            }
+        }
+        return found
+    }
+
+    // MARK: Claude Code transcripts
+
+    /// A Claude Code session id: a UUID, 36 characters of ASCII hex digits and dashes.
+    static func isSessionID(_ name: String) -> Bool {
+        name.utf8.count == 36 && name.utf8.allSatisfy { byte in
+            (0x30...0x39).contains(byte) || (0x41...0x46).contains(byte) || (0x61...0x66).contains(byte) || byte == 0x2D
+        }
+    }
+
+    /// The session ids Claude Code's `sessions/*.json` files name: its running sessions.
+    /// A listed id counts whether or not its process is still alive, since a crash leaves
+    /// the file until the next launch. Read the way cdm greps them, so a file that is not
+    /// valid JSON still names its session.
+    static func runningSessionIDs(claudeFolder: String) -> Set<String> {
+        let folder = claudeFolder + "/sessions"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder),
+              let pattern = try? NSRegularExpression(pattern: #""sessionId"\s*:\s*"([^"]*)""#) else { return [] }
+        var ids = Set<String>()
+        for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") {
+            guard fileType(folder + "/" + name) == S_IFREG,
+                  let text = try? String(contentsOfFile: folder + "/" + name, encoding: .utf8), text.utf8.count <= 1 << 20,
+                  let match = pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let range = Range(match.range(at: 1), in: text), !text[range].isEmpty else { continue }
+            ids.insert(String(text[range]))
+        }
+        return ids
+    }
+
+    /// The old sessions cdm's `register_transcripts` offers.
+    struct OldTranscripts: Equatable, Sendable {
+        /// Each session's transcript, then its folder when it has one.
+        let paths: [String]
+        let sessions: Int
+    }
+
+    /// cdm's `register_transcripts`: in each project folder `patterns` match, the
+    /// `<id>.jsonl` transcripts unchanged for more than `days` days before `now`, each
+    /// with its `<id>/` folder of subagent transcripts and tool output. Never a running
+    /// session's, and never a name that is not a session id — so never auto memory's
+    /// `memory/`.
+    static func oldTranscripts(patterns: [String], days: Int, now: Int, home: String, physicalHome: String) -> OldTranscripts {
+        var folders: [String] = []
+        var seen = Set<String>()
+        for pattern in patterns where !pattern.isEmpty {
+            let expanded = expandTilde(pattern, home: home)
+            guard !isOutOfScope(expanded, home: home) else { continue }
+            for match in expandGlob(expanded) where fileType(match) == S_IFDIR && seen.insert(match).inserted {
+                folders.append(match)
+            }
+        }
+        // The sessions/ that lists running sessions sits beside projects/.
+        var running = Set<String>()
+        var roots = Set<String>()
+        for folder in folders {
+            guard let projects = folder.range(of: "/projects/", options: .backwards) else { continue }
+            let root = String(folder[..<projects.lowerBound])
+            if roots.insert(root).inserted { running.formUnion(runningSessionIDs(claudeFolder: root)) }
+        }
+        let cutoff = now - days * 86_400
+        var paths: [String] = []
+        var sessions = 0
+        for folder in folders {
+            let names = ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []).sorted()
+            for name in names where name.hasSuffix(".jsonl") {
+                let id = String(name.dropLast(".jsonl".count))
+                let transcript = folder + "/" + name
+                var info = stat()
+                guard isSessionID(id), !running.contains(id), lstat(transcript, &info) == 0,
+                      info.st_mode & S_IFMT == S_IFREG, Int(info.st_mtimespec.tv_sec) < cutoff,
+                      isSafeTarget(transcript, home: home, physicalHome: physicalHome) else { continue }
+                paths.append(transcript)
+                sessions += 1
+                let sessionFolder = folder + "/" + id
+                var folderInfo = stat()
+                if lstat(sessionFolder, &folderInfo) == 0, folderInfo.st_mode & S_IFMT == S_IFDIR,
+                   isSafeTarget(sessionFolder, home: home, physicalHome: physicalHome) {
+                    paths.append(sessionFolder)
+                }
+            }
+        }
+        return OldTranscripts(paths: paths, sessions: sessions)
     }
 
     /// The lines of a small text file, each without its trailing `\r`.

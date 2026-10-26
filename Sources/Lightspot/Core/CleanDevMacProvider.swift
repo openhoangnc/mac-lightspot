@@ -31,9 +31,9 @@ final class CleanDevMacProvider: @unchecked Sendable {
     ]
     private static let lowercaseTitle = title.lowercased()
 
-    /// The whole cdm, for what only it can clean (Docker / Podman, orphaned app data, and
-    /// project junk on a Mac without git): run the way its README runs it, straight from
-    /// the latest release, with nothing installed.
+    /// The whole cdm, for what only it can clean (Docker / Podman, Rust toolchains,
+    /// orphaned app data, and project junk on a Mac without git): run the way its README
+    /// runs it, straight from the latest release, with nothing installed.
     static let terminalCommand = "curl -fsSL https://github.com/cleandevmac/cdm/releases/latest/download/cdm | bash"
 
     static func openInTerminal() {
@@ -346,41 +346,92 @@ final class CleanDevMacProvider: @unchecked Sendable {
         }
     }
 
+    /// Where the IDs of a rule's rows start when it offers one row per item (an idle
+    /// AVD's image): above every rule's position, below `projectIDBase`.
+    static let itemIDBase = 50_000
+
     /// Blocking: what `rules` find under the home folder, biggest first, plus the names of
     /// the categories left to cdm (its own terminal-only ones, and any whose every pattern
     /// lies in a folder Lightspot does not read).
-    func scanEntries(_ rules: CleanDevMacRuleSet,
+    func scanEntries(_ rules: CleanDevMacRuleSet, now: Date = Date(),
                      progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) -> (entries: [Entry], terminalOnly: [String]) {
         let home = environment.home
         let physicalHome = CleanDevMacEngine.physicalPath(home)
-        let imagesInUse = rules.rules.contains { $0.kind == .androidImages }
-            ? CleanDevMacEngine.avdImageRefs(home: home, environment: environment.processEnvironment)
+        let seconds = Int(now.timeIntervalSince1970)
+        let avdUsers = rules.rules.contains { $0.kind == .androidImages || $0.kind == .androidIdleImages }
+            ? CleanDevMacEngine.avdImageUsers(home: home, environment: environment.processEnvironment)
             : []
+        let imagesInUse = avdUsers.map(\.ref)
         var terminalOnly = rules.terminalOnly
         if !rules.projects.isEmpty && environment.git == nil {
             // Nothing can be proven ignored without git, so the repo scan stays with cdm.
             terminalOnly += rules.projects.categoryNames
         }
         var candidates: [(id: Int, rule: CleanDevMacRule, paths: [String])] = []
+        var nextItemID = Self.itemIDBase
         for (id, rule) in rules.rules.enumerated() {
             if rule.patterns.allSatisfy({ CleanDevMacEngine.isOutOfScope(CleanDevMacEngine.expandTilde($0, home: home), home: home) }) {
                 terminalOnly.append(rule.name)
                 continue
             }
-            var paths = CleanDevMacEngine.matchedPaths(
-                patterns: rule.patterns, home: home, physicalHome: physicalHome,
-                skip: rule.kind == .androidImages ? imagesInUse : []
-            )
-            if rule.method == .emptytrash {
-                paths = paths.filter { $0 == CleanDevMacEngine.trashPath(home: home) }
+            switch rule.kind {
+            case .androidIdleImages:
+                guard let days = rule.idleDays else { continue }
+                for image in CleanDevMacEngine.idleImages(patterns: rule.patterns, users: avdUsers, days: days, now: seconds,
+                                                          home: home, physicalHome: physicalHome) {
+                    candidates.append((nextItemID, Self.idleImageRule(rule, image), [image.path]))
+                    nextItemID += 1
+                }
+            case .claudeTranscripts:
+                guard let days = rule.idleDays else { continue }
+                let old = CleanDevMacEngine.oldTranscripts(patterns: rule.patterns, days: days, now: seconds,
+                                                           home: home, physicalHome: physicalHome)
+                if old.sessions > 0 { candidates.append((id, Self.transcriptsRule(rule, sessions: old.sessions), old.paths)) }
+            case .olderVersions:
+                let paths = CleanDevMacEngine.olderVersionPaths(patterns: rule.patterns, home: home, physicalHome: physicalHome)
+                if !paths.isEmpty { candidates.append((id, rule, paths)) }
+            case .paths, .androidImages, .project:
+                var paths = CleanDevMacEngine.matchedPaths(
+                    patterns: rule.patterns, home: home, physicalHome: physicalHome,
+                    skip: rule.kind == .androidImages ? imagesInUse : []
+                )
+                if rule.method == .emptytrash {
+                    paths = paths.filter { $0 == CleanDevMacEngine.trashPath(home: home) }
+                }
+                if !paths.isEmpty { candidates.append((id, rule, paths)) }
             }
-            if !paths.isEmpty { candidates.append((id, rule, paths)) }
         }
 
         let measured = Self.measure(candidates.map(\.paths), progress: progress)
         let entries = candidates.enumerated()
             .map { Entry(id: $0.element.id, rule: $0.element.rule, paths: $0.element.paths, sizes: measured[$0.offset]) }
         return (Self.biggestFirst(entries), terminalOnly)
+    }
+
+    /// One idle image's row, as cdm writes it: named after the image, and saying which
+    /// AVDs would no longer boot and how to reinstall it.
+    static func idleImageRule(_ rule: CleanDevMacRule, _ image: CleanDevMacEngine.IdleImage) -> CleanDevMacRule {
+        let relative = image.path.range(of: "/system-images/").map { String(image.path[$0.upperBound...]) }
+            ?? (image.path as NSString).lastPathComponent
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let since = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(image.lastStarted)))
+        let package = "system-images;" + relative.replacingOccurrences(of: "/", with: ";")
+        return CleanDevMacRule(
+            kind: rule.kind, icon: rule.icon, name: "\(rule.name): \(relative)",
+            desc: "Booted only by \(image.avds.joined(separator: ", ")), last started \(since). \(rule.desc) Reinstall: sdkmanager \"\(package)\"",
+            method: rule.method, isDefault: rule.isDefault, patterns: rule.patterns, procs: rule.procs, idleDays: rule.idleDays
+        )
+    }
+
+    /// The old transcripts' row, saying how many sessions it holds, as cdm's row does.
+    static func transcriptsRule(_ rule: CleanDevMacRule, sessions: Int) -> CleanDevMacRule {
+        CleanDevMacRule(
+            kind: rule.kind, icon: rule.icon, name: rule.name,
+            desc: "\(sessions) \(sessions == 1 ? "session" : "sessions"). \(rule.desc)",
+            method: rule.method, isDefault: rule.isDefault, patterns: rule.patterns, procs: rule.procs, idleDays: rule.idleDays
+        )
     }
 
     /// Measures every path, several at a time: it is file-system walking, and the big
