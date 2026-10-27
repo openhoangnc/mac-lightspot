@@ -37,8 +37,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 42 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions), every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
-- `deep_verify.swift`: 11 sections of live system checks (140 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac (measures only; it never deletes).
+- `test_engine.swift`: 43 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `deep_verify.swift`: 11 sections of live system checks (141 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac (measures only; it never deletes).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
@@ -71,8 +71,8 @@ mac-lightspot/
 │   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (42 test blocks)
-│   └── deep_verify.swift         # Live-system verification (11 sections, 140 checks)
+│   ├── test_engine.swift         # Automated test runner (43 test blocks)
+│   └── deep_verify.swift         # Live-system verification (11 sections, 141 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -216,10 +216,11 @@ cleans and prints a receipt.
   covers being offline. Refresh it by copying cdm's `rules/*.json` over `Resources/cdm-rules/`
   (deep_verify names the categories where they differ).
 - **Native vs. terminal.** `paths`, `android-images`, `android-idle-images`,
-  `older-versions` and `claude-transcripts` categories with the methods `rm`, `rmforce`,
-  `trash` and `emptytrash` run here, and so do `project` and `gitignore` ones through the
-  repo scan below. `container` categories (Docker / Podman), `rust-toolchains` (its clean
-  is `rustup toolchain uninstall`, a command, like a container prune), cdm's
+  `older-versions`, `claude-transcripts` and `code-sign-clones` categories with the methods
+  `rm`, `rmforce`, `trash` and `emptytrash` run here, and so do `project` and `gitignore`
+  ones through the repo scan below. `container` categories (Docker / Podman),
+  `rust-toolchains` and `rust-docs` (their cleans are `rustup toolchain uninstall` and
+  `rustup component remove rust-docs`, commands, like a container prune), cdm's
   orphaned-app-data scan, and rules that only read other apps' sandbox containers are named
   in the overlay and left to cdm itself: ⌘↵ runs `curl -fsSL …/releases/latest/download/cdm | bash`
   in the preferred terminal (`CleanDevMacProvider.openInTerminal`). Without a real git
@@ -239,6 +240,26 @@ cleans and prints a receipt.
   whole days, as macOS's `find -mtime +30` in cdm counts it (`isOlder`): 31 days, not 30 and
   23 hours, whatever find's man page says about rounding up. The AVD check is cdm's
   arithmetic in seconds instead.
+- **The user's own temp folders.** A pattern may start with `@cache/`, `@temp/` or
+  `@boot-temp/`: the C, T and X of `/private/var/folders/<xx>/<hash>`, cdm's `USER_FOLDER`
+  (`CleanDevMacEngine.userFolder()`, the resolved parent of `DARWIN_USER_CACHE_DIR`, kept
+  only with exactly that shape, not a symlink and owned by the user: `isUserFolder`). It
+  reaches the engine through `Environment.userFolder`, nil in every test environment that
+  does not set one, and with none a token stays relative and matches nothing. The safety
+  gate's second branch (`inUserFolder`, cdm's `in_user_folder`) is the only way off the
+  home folder: strictly inside C, T or X, as written and with the parent's symlinks
+  resolved, never a `.` segment, the folder itself or its `0`.
+- **Chrome's leftover copies** (`code-sign-clones`, `codeSignClones`, cdm's
+  `register_clones`): a Chromium browser clones its app bundle into X at every launch and
+  deletes the copy only on a clean exit. Offered: every copy but one born within five
+  minutes after a running process of its app started, one younger than five minutes, one
+  of unknown age; nothing at all without a process list. Processes come from the process
+  table (`runningAppProcesses`: `proc_pidinfo`'s start time and `proc_pidpath`, the app
+  being the bundle name before `.app/Contents/MacOS/`), through `Environment.appProcesses`.
+  The row comes sized, never measured: du counts each copy's shared blocks again (730 MB
+  for a 248 KB copy of Chrome), so it is each version's entries over `cloneEntriesPerKB`,
+  plus the blocks of a version no installed app carries any more, spread over its copies
+  so they add up to cdm's figure. Its clean writes one receipt line for the lot.
 - **The repo scan is cdm's `scan_projects`, ported** (`CleanDevMacProjects`), and like cdm
   it is asked, not run: after the cache scan the overlay asks "Also scan your code repos
   for build/dependency junk?" and ⇥ (or the button) starts it. One fts pass over the rules'
@@ -260,8 +281,9 @@ cleans and prints a receipt.
   without asking. On a real home folder it offers what cdm's own `scan_projects` does, except
   a folder holding a nested repo, which cdm offers.
 - **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
-  shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list
-  and idle check, `newest_version`, `register_transcripts`, `is_safe_target`, `delete_path`,
+  shell's rules and `expand_tilde`'s tokens, `is_nonempty`, `du -sk`-exact sizing over
+  fts(3), the AVD image skip list and idle check, `newest_version`, `register_transcripts`,
+  `register_clones`, `is_safe_target` with `in_user_folder`, `delete_path`,
   `human_kb`, the disk line with its restart estimate, the Claude Code note and the log cap.
   Keep the two in step: when cdm changes one of these, port the change and its test.
 - **A row is sized as cdm's `paths_kb` sizes it**, with one `du -sk` over all its paths, so
@@ -407,7 +429,11 @@ cleans and prints a receipt.
      temp folders a boot empties (`DARWIN_USER_TEMP_DIR`, `/private/tmp`) and of Claude Code's
      `projects/`, `lsof -a +L1` on the home volume (kept: the total and the three biggest
      holders' names), and two keys of Claude Code's `settings.json`, never written.
-     `~/Library/Containers` and `~/Library/Group Containers` are never
+     The rules may also name the user's own temp folders under `/private/var/folders`
+     (clang's module cache, Node's compile cache, Chrome's leftover copies); for those
+     copies the scan reads their creation dates and bundle names, and the start time and
+     executable path of the user's own running processes (kept: the app name and start,
+     for that scan only). `~/Library/Containers` and `~/Library/Group Containers` are never
      read (`CleanDevMacEngine.outOfScopeFolders`): inside another app's container macOS asks
      the user whether Lightspot may "access data from other apps", and with an ad-hoc
      signature it would ask again after every update.
@@ -557,7 +583,9 @@ cleans and prints a receipt.
    the cleaner, as it is of cdm: a path must be absolute, exist, carry no `..`, lie outside
    cdm's protected folders (`~/Documents`, `~/Desktop`, `~/Downloads`, `~/Pictures`,
    `~/Movies`, `~/Music`, `~/.ssh`, `~/.gnupg`, iCloud Drive), and sit under the home folder
-   both as written and with its parent's symlinks resolved. No rule can opt out of it, and
+   both as written and with its parent's symlinks resolved — or, the one way off it,
+   strictly inside the C, T or X of the user's own `/private/var/folders` folder, checked
+   the same two ways (`inUserFolder`). No rule can opt out of it, and
    rules may come from the network. It is applied twice: a match it refuses is never
    offered (cdm lists it and skips it at clean time), and `delete` checks again before it
    acts, because the plan was shown a while ago. `.emptytrash` only ever empties

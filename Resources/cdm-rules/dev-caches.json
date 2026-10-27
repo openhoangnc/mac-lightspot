@@ -1,6 +1,6 @@
 {
   "title": "Developer caches & build artifacts",
-  "_comment": "Regenerable caches created by developer tools. method: rm = delete permanently, rmforce = chmod +w then delete (for read-only caches like Go modules & Cargo sources). Paths may use ~ and * globs. default:true = pre-selected. Rule of thumb for default: true means 'costs a rebuild or a small re-download'; false means 'costs a large re-download, or the data may not regenerate on its own' — and anything that removes installed software is false. A 'kind' works out its offer in the script and takes its globs from 'images' or 'candidates', never 'paths', so a cdm too old to know the kind offers nothing: android-images (system images no AVD boots), android-idle-images (images only AVDs idle for 'idleDays' boot, one row each), older-versions (each glob is one family of versions; all but the newest), rust-toolchains (toolchains other than the default and stable, removed with 'rustup toolchain uninstall'), claude-transcripts (Claude Code sessions untouched for 'idleDays', always to the Trash and never pre-selected). See docs/DESIGN.md.",
+  "_comment": "Regenerable caches created by developer tools. method: rm = delete permanently, rmforce = chmod +w then delete (for read-only caches like Go modules & Cargo sources). Paths may use ~ and * globs, and may start with @cache/, @temp/ or @boot-temp/ for this user's own C, T and X under /private/var/folders (docs/DESIGN.md#user-folder). default:true = pre-selected. Rule of thumb for default: true means 'costs a rebuild or a small re-download'; false means 'costs a large re-download, or the data may not regenerate on its own' — and anything that removes installed software is false. A 'kind' works out its offer in the script and takes its globs from 'images' or 'candidates', never 'paths', so a cdm too old to know the kind offers nothing: android-images (system images no AVD boots), android-idle-images (images only AVDs idle for 'idleDays' boot, one row each), older-versions (each glob is one family of versions; all but the newest), rust-toolchains (toolchains other than the default and stable, removed with 'rustup toolchain uninstall'), rust-docs (each toolchain's installed rust-docs component, removed with 'rustup component remove rust-docs'), claude-transcripts (Claude Code sessions untouched for 'idleDays', always to the Trash and never pre-selected). See docs/DESIGN.md.",
   "categories": [
     {
       "icon": "🔨",
@@ -20,6 +20,16 @@
         "~/Library/Developer/CoreSimulator/Caches",
         "~/Library/Caches/com.apple.dt.Xcode",
         "~/Library/Logs/CoreSimulator"
+      ]
+    },
+    {
+      "icon": "📚",
+      "name": "Clang module cache",
+      "method": "rm",
+      "default": true,
+      "desc": "Precompiled modules clang & swiftc keep for builds outside Xcode's DerivedData (command-line, SwiftPM, CMake) in your user cache folder — rebuilt by the next build.",
+      "paths": [
+        "@cache/clang/ModuleCache"
       ]
     },
     {
@@ -60,8 +70,9 @@
       "name": "Node / npm cache",
       "method": "rm",
       "default": true,
-      "desc": "npm download cache, npx package cache, logs & prebuilt binaries — re-fetched on install.",
+      "desc": "npm download cache, npx package cache, logs, prebuilt binaries & Node's compile cache — re-fetched on install or rebuilt on the next run.",
       "paths": [
+        "@temp/node-compile-cache",
         "~/.npm/_cacache",
         "~/.npm/_npx",
         "~/.npm/_logs",
@@ -180,6 +191,17 @@
       "method": "rustup",
       "default": false,
       "desc": "An installed toolchain that is neither your default nor stable (GBs each) — removed with 'rustup toolchain uninstall'; rustup downloads it again if a project asks for it.",
+      "candidates": [
+        "~/.rustup/toolchains/*"
+      ]
+    },
+    {
+      "kind": "rust-docs",
+      "icon": "📖",
+      "name": "Rust offline docs",
+      "method": "rustup",
+      "default": false,
+      "desc": "The rust-docs component of each toolchain (~0.9 GB apiece) that 'rustup doc' opens offline — removed with 'rustup component remove rust-docs'; 'rustup component add rust-docs' brings it back.",
       "candidates": [
         "~/.rustup/toolchains/*"
       ]
@@ -312,12 +334,14 @@
       "name": "Cloud CLI caches & logs",
       "method": "rm",
       "default": true,
-      "desc": "kubectl / AWS / gcloud / Azure CLI caches & logs — regenerated on next command. Credentials and configs are untouched.",
+      "desc": "kubectl / AWS / gcloud / Azure / wrangler CLI caches & logs — regenerated on next command. Credentials and configs are untouched.",
       "paths": [
         "~/.kube/cache",
         "~/.aws/cli/cache",
         "~/.config/gcloud/logs",
-        "~/.azure/logs"
+        "~/.azure/logs",
+        "~/.wrangler/logs",
+        "~/Library/Preferences/.wrangler/logs"
       ]
     },
     {
@@ -448,6 +472,22 @@
       "paths": [
         "~/Library/Caches/JetBrains",
         "~/Library/Logs/JetBrains"
+      ]
+    },
+    {
+      "icon": "📝",
+      "name": "Zed language servers & logs",
+      "method": "rm",
+      "default": true,
+      "procs": ["zed"],
+      "desc": "Language servers, Node.js & Prettier that Zed downloads on demand, plus its logs & hang traces — fetched again when a file needs them. Settings, extensions & agent threads are kept.",
+      "paths": [
+        "~/Library/Application Support/Zed/languages",
+        "~/Library/Application Support/Zed/node",
+        "~/Library/Application Support/Zed/prettier",
+        "~/Library/Application Support/Zed/hang_traces",
+        "~/Library/Caches/Zed",
+        "~/Library/Logs/Zed"
       ]
     },
     {

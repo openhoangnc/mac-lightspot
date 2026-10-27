@@ -185,6 +185,12 @@ final class CleanDevMacProvider: @unchecked Sendable {
         /// cdm's restart estimate, measured with each scan; nil leaves it out. It reads the
         /// whole machine, not the home folder, so only the live environment measures it.
         var restartEstimate: @Sendable () -> CleanDevMacEngine.RestartEstimate? = { nil }
+        /// This user's own temp folders (cdm's `USER_FOLDER`), the one place off the home
+        /// folder the safety gate lets a rule reach; nil keeps every rule at home.
+        var userFolder: String? = nil
+        /// This user's running app processes, which the clone kind keeps the copies of; with
+        /// none it offers nothing.
+        var appProcesses: @Sendable () -> [CleanDevMacEngine.AppProcess] = { [] }
 
         static var live: Environment {
             let home = NSHomeDirectory()
@@ -194,7 +200,9 @@ final class CleanDevMacProvider: @unchecked Sendable {
                 processEnvironment: ProcessInfo.processInfo.environment,
                 fetchRemoteRules: { CleanDevMacRules.fetchRemote(completion: $0) },
                 moveToTrash: { try CleanDevMacEngine.moveToTrash($0) },
-                restartEstimate: { CleanDevMacEngine.restartEstimate(home: home) }
+                restartEstimate: { CleanDevMacEngine.restartEstimate(home: home) },
+                userFolder: CleanDevMacEngine.userFolder(),
+                appProcesses: { CleanDevMacEngine.runningAppProcesses() }
             )
         }
     }
@@ -389,7 +397,9 @@ final class CleanDevMacProvider: @unchecked Sendable {
                      progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) -> (entries: [Entry], terminalOnly: [String]) {
         let home = environment.home
         let physicalHome = CleanDevMacEngine.physicalPath(home)
+        let userFolder = environment.userFolder
         let seconds = Int(now.timeIntervalSince1970)
+        let processes = rules.rules.contains { $0.kind == .codeSignClones } ? environment.appProcesses() : []
         let avdUsers = rules.rules.contains { $0.kind == .androidImages || $0.kind == .androidIdleImages }
             ? CleanDevMacEngine.avdImageUsers(home: home, environment: environment.processEnvironment)
             : []
@@ -400,6 +410,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
             terminalOnly += rules.projects.categoryNames
         }
         var candidates: [(id: Int, rule: CleanDevMacRule, paths: [String])] = []
+        // Rows that come sized: du would count a clone's shared blocks once per copy.
+        var sized: [Entry] = []
         var nextItemID = Self.itemIDBase
         for (id, rule) in rules.rules.enumerated() {
             if rule.patterns.allSatisfy({ CleanDevMacEngine.isOutOfScope(CleanDevMacEngine.expandTilde($0, home: home), home: home) }) {
@@ -422,9 +434,15 @@ final class CleanDevMacProvider: @unchecked Sendable {
             case .olderVersions:
                 let paths = CleanDevMacEngine.olderVersionPaths(patterns: rule.patterns, home: home, physicalHome: physicalHome)
                 if !paths.isEmpty { candidates.append((id, rule, paths)) }
+            case .codeSignClones:
+                let clones = CleanDevMacEngine.codeSignClones(patterns: rule.patterns, processes: processes, now: seconds,
+                                                              home: home, physicalHome: physicalHome, userFolder: userFolder)
+                if !clones.paths.isEmpty {
+                    sized.append(Entry(id: id, rule: Self.clonesRule(rule, copies: clones.paths.count), paths: clones.paths, sizes: clones.sizes))
+                }
             case .paths, .androidImages, .project:
                 var paths = CleanDevMacEngine.matchedPaths(
-                    patterns: rule.patterns, home: home, physicalHome: physicalHome,
+                    patterns: rule.patterns, home: home, physicalHome: physicalHome, userFolder: userFolder,
                     skip: rule.kind == .androidImages ? imagesInUse : []
                 )
                 if rule.method == .emptytrash {
@@ -437,7 +455,16 @@ final class CleanDevMacProvider: @unchecked Sendable {
         let measured = Self.measure(candidates.map(\.paths), progress: progress)
         let entries = candidates.enumerated()
             .map { Entry(id: $0.element.id, rule: $0.element.rule, paths: $0.element.paths, sizes: measured[$0.offset]) }
-        return (Self.biggestFirst(entries), terminalOnly)
+        return (Self.biggestFirst(entries + sized), terminalOnly)
+    }
+
+    /// The leftover copies' row, saying how many it holds, as cdm's row does.
+    static func clonesRule(_ rule: CleanDevMacRule, copies: Int) -> CleanDevMacRule {
+        CleanDevMacRule(
+            kind: rule.kind, icon: rule.icon, name: rule.name,
+            desc: "\(copies) \(copies == 1 ? "copy" : "copies"). \(rule.desc)",
+            method: rule.method, isDefault: rule.isDefault, patterns: rule.patterns, procs: rule.procs, idleDays: rule.idleDays
+        )
     }
 
     /// One idle image's row, as cdm writes it: named after the image, and saying which
@@ -625,15 +652,21 @@ final class CleanDevMacProvider: @unchecked Sendable {
         var done = 0
         for entry in entries {
             log += "▸ \(entry.rule.name)\n"
+            // One line for a clone row's copies, as cdm writes it: a test script can leave
+            // a thousand.
+            let oneLine = entry.rule.kind == .codeSignClones
+            var copies = 0
             for (index, path) in entry.paths.enumerated() {
                 let size = entry.sizes[index]
                 let method = entry.methods[index]
                 let shown = CleanDevMacEngine.displayPath(path, home: home)
-                let outcome = CleanDevMacEngine.delete(path, method: method, home: home,
-                                                       physicalHome: physicalHome, trash: environment.moveToTrash)
+                let outcome = CleanDevMacEngine.delete(path, method: method, home: home, physicalHome: physicalHome,
+                                                       userFolder: environment.userFolder, trash: environment.moveToTrash)
                 switch outcome {
                 case .alreadyGone:
                     break
+                case .deleted where oneLine:
+                    copies += 1
                 case .deleted:
                     switch method {
                     case .emptytrash: log += "  Trash emptied.\n"
@@ -658,6 +691,7 @@ final class CleanDevMacProvider: @unchecked Sendable {
                 done += 1
                 progress?(done)
             }
+            if oneLine { log += "  deleted: \(copies) copies\n" }
         }
         log += "\(rule)\nFinished: \(CleanDevMacEngine.logDate(Date()))\n\(rule)\n"
         CleanDevMacEngine.appendToLog(log, home: home, now: now)

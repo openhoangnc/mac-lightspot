@@ -207,6 +207,7 @@ struct TestRunner {
         testSettingsSearchTerms()
         testCleanDevMacRules()
         testCleanDevMacEngine()
+        testCleanDevMacUserFolder()
         testCleanDevMacProvider()
         testToolInstallers()
         testMacTweaks()
@@ -3058,11 +3059,19 @@ struct TestRunner {
         assertEqual(transcripts?.method, .trash, "...go to the Trash")
         assertEqual(transcripts?.isDefault, false, "...and are never ticked")
         assertEqual(rule("PlatformIO platforms & toolchains")?.isDefault, false, "Installed toolchains are opt-in")
-        assertTrue(bundled.rules.allSatisfy { $0.patterns.allSatisfy { $0.hasPrefix("~/") } },
-                   "Every bundled pattern is under the home folder")
-        assertEqual(bundled.terminalOnly, ["Rust toolchain", "Docker / Podman reclaimable data", "Orphaned app data"],
-                    "Rust toolchains, Docker / Podman and orphaned app data are left to cdm in the terminal")
-        for name in ["node_modules folders", "Git-ignored files (all repos)", "Docker / Podman reclaimable data", "Orphaned app data", "Rust toolchain"] {
+        assertTrue(bundled.rules.allSatisfy { $0.patterns.allSatisfy { pattern in
+            pattern.hasPrefix("~/") || CleanDevMacEngine.userFolderTokens.contains { pattern.hasPrefix($0.token) }
+        } }, "Every bundled pattern is under the home folder or in the user's own temp folders")
+        let clones = rule("Leftover Chrome app copies")
+        assertEqual(clones?.kind, .codeSignClones, "Chrome's leftover copies keep their kind")
+        assertEqual(clones?.patterns, ["@boot-temp/*.code_sign_clone/code_sign_clone.*"], "...from `candidates`, in the user folder's X")
+        assertEqual(clones?.isDefault, true, "...and are ticked: nothing comes back for them")
+        assertEqual(rule("Clang module cache")?.patterns, ["@cache/clang/ModuleCache"], "Clang's module cache is in the user folder's C")
+        assertTrue(rule("Node / npm cache")?.patterns.contains("@temp/node-compile-cache") == true, "Node's compile cache, in its T")
+        assertEqual(bundled.terminalOnly, ["Rust toolchain", "Rust offline docs", "Docker / Podman reclaimable data", "Orphaned app data"],
+                    "Rust toolchains and their docs, Docker / Podman and orphaned app data are left to cdm in the terminal")
+        for name in ["node_modules folders", "Git-ignored files (all repos)", "Docker / Podman reclaimable data", "Orphaned app data",
+                     "Rust toolchain", "Rust offline docs"] {
             assertTrue(rule(name) == nil, "'\(name)' is not a cache rule")
         }
         let projects = bundled.projects
@@ -3750,6 +3759,197 @@ struct TestRunner {
         assertTrue(CleanDevMacEngine.claudeHistory(folder: home + "/alt", now: nowSeconds) == nil, "No projects folder: no note")
 
         print("✅ CleanDevMac engine passed all tests!\n")
+    }
+
+    // MARK: - Test 36b: cdm's user folder — its temp folders, the gate's second branch, Chrome's clones
+
+    static func testCleanDevMacUserFolder() {
+        print("Testing CleanDevMac user folder & clones...")
+        let fm = FileManager.default
+
+        // 1. The real folders: this user's own is accepted; a folder below it, its parent,
+        //    the unresolved /var spelling, the home folder and root's folder are not.
+        guard let real = CleanDevMacEngine.userFolder() else {
+            print("❌ FAIL: this user's /private/var/folders folder was not found")
+            exit(1)
+        }
+        assertTrue(CleanDevMacEngine.isUserFolder(real), "This user's folder has the shape and owner it must")
+        assertTrue(!CleanDevMacEngine.isUserFolder(real + "/C"), "A folder below it is not the folder")
+        assertTrue(!CleanDevMacEngine.isUserFolder((real as NSString).deletingLastPathComponent), "Its parent is not the folder")
+        assertTrue(!CleanDevMacEngine.isUserFolder("/var/folders/" + real.dropFirst("/private/var/folders/".count)),
+                   "The unresolved /var spelling is refused")
+        assertTrue(!CleanDevMacEngine.isUserFolder(NSHomeDirectory()), "The home folder is not a per-user folder")
+        let rootFolder = ((try? fm.contentsOfDirectory(atPath: "/private/var/folders/zz")) ?? []).sorted()
+            .map { "/private/var/folders/zz/" + $0 }
+            .first { path -> Bool in
+                var info = stat()
+                return lstat(path, &info) == 0 && info.st_uid == 0 && info.st_mode & S_IFMT == S_IFDIR
+            }
+        assertTrue(rootFolder != nil, "Premise: root's own folder exists")
+        assertTrue(!CleanDevMacEngine.isUserFolder(rootFolder ?? ""), "A folder that is not this user's is refused")
+
+        // 2. A sandbox: a home folder and, outside it, a user folder written resolved, as cdm
+        //    resolves USER_FOLDER, so an acceptance can only come from the new branch.
+        let base = NSTemporaryDirectory() + "lightspot-cdm-uf-\(getpid())"
+        try? fm.removeItem(atPath: base)
+        defer { try? fm.removeItem(atPath: base) }
+        let home = base + "/home"
+        try? fm.createDirectory(atPath: home + "/.Trash", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: base + "/uf/ab/cdef", withIntermediateDirectories: true)
+        let physicalHome = CleanDevMacEngine.physicalPath(home)
+        let uf = CleanDevMacEngine.physicalPath(base + "/uf/ab/cdef")
+        @discardableResult
+        func put(_ path: String, bytes: Int = 2) -> String {
+            try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            fm.createFile(atPath: path, contents: Data(repeating: 0x78, count: bytes))
+            return path
+        }
+        func expand(_ pattern: String, _ folder: String? = nil) -> String {
+            CleanDevMacEngine.expandTilde(pattern, home: home, userFolder: folder)
+        }
+        assertEqual(expand("@cache/clang/ModuleCache", uf), uf + "/C/clang/ModuleCache", "@cache/ is the folder's C")
+        assertEqual(expand("@temp/node-compile-cache", uf), uf + "/T/node-compile-cache", "@temp/ is its T")
+        assertEqual(expand("@boot-temp/a.code_sign_clone/b", uf), uf + "/X/a.code_sign_clone/b", "@boot-temp/ is its X")
+        assertEqual(expand("~/.npm", uf), home + "/.npm", "~ is still the home folder")
+        assertEqual(expand("@cachex/y", uf), "@cachex/y", "A near-miss is no token")
+        assertEqual(expand("@cache/clang"), "@cache/clang", "No folder: the token stays as written, a relative path")
+
+        // 3. The gate's second branch: cdm's own test cases. Every refused path exists, so a
+        //    refusal can only come from the rule under test.
+        put(uf + "/C/clang/ModuleCache/abc.pcm")
+        put(uf + "/T/node-compile-cache/v26/x")
+        put(uf + "/X/org.x.App.code_sign_clone/code_sign_clone.AbCdEf/App.app.bundle/f")
+        put(uf + "/0/com.apple.x/state")
+        put(uf + "/Z/other/x")
+        put(base + "/outside/precious")
+        try? fm.createSymbolicLink(atPath: uf + "/T/link", withDestinationPath: base + "/outside")
+        try? fm.createSymbolicLink(atPath: base + "/into-c", withDestinationPath: uf + "/C")
+        func safe(_ path: String) -> Bool {
+            CleanDevMacEngine.isSafeTarget(path, home: home, physicalHome: physicalHome, userFolder: uf)
+        }
+        for (path, why) in [(uf + "/C/clang/ModuleCache", "a cache folder in C"), (uf + "/C/clang/ModuleCache/abc.pcm", "a file in C"),
+                            (uf + "/T/node-compile-cache", "a folder in T"),
+                            (uf + "/X/org.x.App.code_sign_clone/code_sign_clone.AbCdEf", "a clone in X"),
+                            (uf + "/T/link", "a symlink in T, itself")] {
+            assertTrue(safe(path), "Reachable: \(why)")
+        }
+        for (path, why) in [(uf, "the folder itself"), (uf + "/C", "C itself"), (uf + "/C/", "C/ with a slash"),
+                            (uf + "/C/.", "C/., which is C"), (uf + "/C/./clang", "a ./ segment"),
+                            (uf + "/0/com.apple.x", "its 0, which is not a temp folder"), (uf + "/Z/other", "any other folder in it"),
+                            (uf + "/C/clang/../clang", "a .. segment"), (uf + "/C/nope", "a missing path"),
+                            (uf + "/T/link/precious", "a symlinked component that escapes T"),
+                            (base + "/into-c/clang", "a path outside that resolves into C")] {
+            assertTrue(!safe(path), "Refused: \(why)")
+        }
+        assertTrue(!CleanDevMacEngine.isSafeTarget(uf + "/C/clang/ModuleCache", home: home, physicalHome: physicalHome),
+                   "No folder: nothing in it is reachable")
+        assertEqual(CleanDevMacEngine.delete(uf + "/0/com.apple.x", method: .rm, home: home, physicalHome: physicalHome, userFolder: uf),
+                    .unsafe, "Outside C, T and X a delete is refused")
+        assertTrue(fm.fileExists(atPath: uf + "/0/com.apple.x/state"), "...and nothing is removed")
+        assertEqual(CleanDevMacEngine.matchedPaths(patterns: ["@cache/clang/ModuleCache", "@temp/node-compile-cache"], home: home,
+                                                   physicalHome: physicalHome, userFolder: uf),
+                    [uf + "/C/clang/ModuleCache", uf + "/T/node-compile-cache"], "Token patterns match in the user folder")
+        assertEqual(CleanDevMacEngine.matchedPaths(patterns: ["@cache/clang/ModuleCache"], home: home, physicalHome: physicalHome), [],
+                    "No folder: a token pattern matches nothing")
+        assertEqual(CleanDevMacEngine.delete(uf + "/C/clang/ModuleCache", method: .rm, home: home, physicalHome: physicalHome,
+                                             userFolder: uf), .deleted, "A folder in C is deleted through the gate")
+
+        // 4. Chrome's clones, as cdm's test_code_sign_clones: Fakium has run for 6000 s, its
+        //    version 2.0 is installed and 1.0 is gone. Birth times are set as creation dates.
+        let now = Int(Date().timeIntervalSince1970)
+        let cl = uf + "/X/org.fakium.Fakium.code_sign_clone"
+        func clone(_ suffix: String, _ version: String, age: Int) {
+            let copy = cl + "/code_sign_clone." + suffix
+            let versioned = copy + "/Fakium.app.bundle/Contents/Frameworks/Fakium Framework.framework/Versions/" + version
+            // Big enough that the blocks a removed version holds never round to nothing.
+            put(versioned + "/Resources/resources.pak", bytes: 65_536)
+            put(copy + "/Fakium.app.bundle/Contents/MacOS/Fakium")
+            try? fm.setAttributes([.creationDate: Date(timeIntervalSince1970: TimeInterval(now - age))], ofItemAtPath: copy)
+        }
+        try? fm.createDirectory(atPath: home + "/Applications/Fakium.app/Contents/Frameworks/Fakium Framework.framework/Versions/2.0",
+                                withIntermediateDirectories: true)
+        clone("aaaaaa", "2.0", age: 5_998)    // born 2 s after the running Fakium started: its copy
+        clone("bbbbbb", "2.0", age: 7_200)    // from an earlier launch
+        clone("cccccc", "2.0", age: 172_800)  // two days old
+        clone("dddddd", "1.0", age: 90_000)   // a version no longer installed
+        clone("eeeeee", "1.0", age: 95_000)
+        clone("ffffff", "2.0", age: 60)       // a launch still in progress
+        put(cl + "/code_sign_clone.hhhhhh/stray")
+        try? fm.setAttributes([.creationDate: Date(timeIntervalSince1970: TimeInterval(now - 7_200))], ofItemAtPath: cl + "/code_sign_clone.hhhhhh")
+        var born = stat()
+        lstat(cl + "/code_sign_clone.dddddd", &born)
+        assertEqual(Int(born.st_birthtimespec.tv_sec), now - 90_000, "Premise: a clone's birth time can be set")
+        assertEqual(CleanDevMacEngine.entryCount(cl + "/code_sign_clone.bbbbbb"), 11, "A Fakium copy has 11 entries, as find counts them")
+        let running = [CleanDevMacEngine.AppProcess(app: "Fakium", started: now - 6_000),
+                       CleanDevMacEngine.AppProcess(app: "Other", started: now - 93_600)]
+
+        assertEqual(CleanDevMacEngine.appName(ofExecutable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                    "Google Chrome", "A process's app is its bundle name")
+        assertEqual(CleanDevMacEngine.appName(ofExecutable: "/A/B b.app/Contents/Frameworks/F.framework/Helpers/B b Helper.app/Contents/MacOS/B b Helper"),
+                    "B b Helper", "...a helper is an app of its own")
+        assertEqual(CleanDevMacEngine.appName(ofExecutable: "/usr/bin/ssh"), nil, "...and a plain binary is none")
+        let live = CleanDevMacEngine.runningAppProcesses()
+        assertTrue(!live.isEmpty && live.allSatisfy { !$0.app.isEmpty && $0.started > 0 && $0.started <= now + 1 },
+                   "This user's running apps are read, each with its start")
+        assertTrue(CleanDevMacEngine.cloneVersionShared(app: "Fakium", version: "2.0", home: home), "An installed version is shared")
+        assertTrue(!CleanDevMacEngine.cloneVersionShared(app: "Fakium", version: "1.0", home: home), "...a removed one is not")
+        assertTrue(!CleanDevMacEngine.cloneVersionShared(app: "Nopium", version: "2.0", home: home), "...nor an app nobody installed")
+
+        let pattern = ["@boot-temp/*.code_sign_clone/code_sign_clone.*"]
+        func clones(_ processes: [CleanDevMacEngine.AppProcess], _ folder: String?) -> CleanDevMacEngine.Clones {
+            CleanDevMacEngine.codeSignClones(patterns: pattern, processes: processes, now: now, home: home,
+                                             physicalHome: physicalHome, userFolder: folder)
+        }
+        let found = clones(running, uf)
+        assertEqual(found.paths, ["bbbbbb", "cccccc", "dddddd", "eeeeee", "hhhhhh"].map { cl + "/code_sign_clone." + $0 },
+                    "Offered: every leftover copy; kept: the running app's and a launch in progress")
+        // Two 2.0 copies and two 1.0 copies hold 22/3 KiB of metadata a version; only 1.0's
+        // blocks, once, are held by its copies alone; the stray copy's 2 entries round to 0.
+        let want = 2 * 11 / 3 + 2 * 11 / 3 + CleanDevMacEngine.allocatedKB(cl + "/code_sign_clone.dddddd")
+        assertEqual(found.sizes.reduce(0, +), want, "Sized by what the copies alone hold, not by du")
+        assertTrue(want < CleanDevMacEngine.allocatedKB(cl), "...which du would count again for every copy")
+        assertEqual(clones([], uf).paths, [], "No process list: nothing offered")
+        assertEqual(clones(running, nil).paths, [], "No user folder: nothing offered")
+
+        // 5. Through the provider: the row comes sized, and its clean writes one line.
+        let provider = CleanDevMacProvider(environment: CleanDevMacProvider.Environment(
+            home: home,
+            bundledRules: bundledCdmRules,
+            processEnvironment: [:],
+            fetchRemoteRules: { $0(nil) },
+            moveToTrash: { url in try FileManager.default.moveItem(atPath: url.path, toPath: home + "/.Trash/" + url.lastPathComponent) },
+            userFolder: uf,
+            appProcesses: { running }
+        ))
+        let rules = CleanDevMacRuleSet(rules: [
+            CleanDevMacRule(kind: .codeSignClones, icon: "👥", name: "Copies", desc: "D.", method: .rm, isDefault: true,
+                            patterns: pattern, procs: []),
+        ], terminalOnly: [], source: .bundled)
+        let scan = provider.scanEntries(rules, now: Date(timeIntervalSince1970: TimeInterval(now)))
+        assertEqual(scan.entries.map(\.rule.name), ["Copies"], "The clone row is found")
+        assertEqual(scan.entries.first?.rule.desc, "5 copies. D.", "...says how many copies it holds")
+        assertEqual(scan.entries.first?.sizes, found.sizes, "...and comes sized rather than measured")
+        let receipt = provider.performClean(scan.entries)
+        assertEqual(((try? fm.contentsOfDirectory(atPath: cl)) ?? []).sorted(), ["code_sign_clone.aaaaaa", "code_sign_clone.ffffff"],
+                    "The leftovers are gone; the running app's copy and the new one stay")
+        assertEqual(receipt.removedCount, 5, "Five copies removed")
+        let log = (try? String(contentsOfFile: home + "/.cleandevmac/clean.log", encoding: .utf8)) ?? ""
+        assertTrue(log.contains("  deleted: 5 copies\n") && !log.contains("code_sign_clone.bbbbbb"), "One receipt line for the lot")
+
+        // 6. The rule format: a clone rule reads `candidates`, never `paths`, and Rust's offline
+        //    docs, which rustup removes, are left to cdm.
+        let parsed = CleanDevMacRules.parsePatternFile(Data(#"""
+            {"categories": [
+              {"kind": "rust-docs", "name": "Docs", "method": "rustup", "candidates": ["~/.rustup/toolchains/*"]},
+              {"kind": "code-sign-clones", "name": "Clones", "candidates": ["@boot-temp/*.code_sign_clone/code_sign_clone.*"]},
+              {"kind": "code-sign-clones", "name": "Paths only", "paths": ["@boot-temp/*.code_sign_clone/code_sign_clone.*"]}
+            ]}
+            """#.utf8))
+        assertEqual(parsed?.terminalOnly, ["Docs"], "Rust's offline docs are left to cdm")
+        assertEqual(parsed?.rules.map(\.name), ["Clones"], "A clone rule reads `candidates`, never `paths`")
+        assertEqual(parsed?.rules.first?.kind, .codeSignClones, "...and keeps its kind")
+
+        print("✅ CleanDevMac user folder & clones passed all tests!\n")
     }
 
     // MARK: - Test 37: cdm in Lightspot — rule sources, scan, clean, search row

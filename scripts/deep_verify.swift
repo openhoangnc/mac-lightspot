@@ -376,8 +376,10 @@ struct DeepVerifier {
             let paths = scan.entries.flatMap(\.paths)
             print("Found \(scan.entries.count) categories (\(paths.count) paths, \(CleanDevMacEngine.humanKB(CleanDevMacProvider.uniqueKB(scan.entries)))) in \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
             let physicalHome = CleanDevMacEngine.physicalPath(cdmHome)
+            let userFolder = CleanDevMacEngine.userFolder()
+            check("This user's own temp folders are found", userFolder != nil)
             check("Every offered path passes cdm's safety gate",
-                  paths.allSatisfy { CleanDevMacEngine.isSafeTarget($0, home: cdmHome, physicalHome: physicalHome) })
+                  paths.allSatisfy { CleanDevMacEngine.isSafeTarget($0, home: cdmHome, physicalHome: physicalHome, userFolder: userFolder) })
             check("Nothing is offered in a protected folder", paths.allSatisfy { path in
                 CleanDevMacEngine.protectedFolders.allSatisfy { !path.hasPrefix(cdmHome + "/" + $0 + "/") && path != cdmHome + "/" + $0 }
             })
@@ -388,8 +390,9 @@ struct DeepVerifier {
 
             // A row is sized as cdm sizes it, with one du over all its paths. Caches change
             // while they are measured (a browser's, while it browses), so 2% (or 4 MB) either
-            // way passes; test_engine holds the exact sizes against du on fixtures.
-            let multiPath = scan.entries.filter { $0.paths.count > 1 }
+            // way passes; test_engine holds the exact sizes against du on fixtures. Not the
+            // row of Chrome's leftover copies, which du counts once per copy on purpose.
+            let multiPath = scan.entries.filter { $0.paths.count > 1 && $0.rule.kind != .codeSignClones }
             var unlikeDu: [String] = []
             for entry in multiPath {
                 let duKB = CleanDevMacEngine.output(of: "/usr/bin/du", ["-sk"] + entry.paths, timeout: 120)

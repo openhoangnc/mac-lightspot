@@ -1,16 +1,16 @@
 {
   "title": "Browser & application caches",
-  "_comment": "Application-level caches. The Electron/Chromium entry uses * globs to match the Cache/GPUCache/etc. folders that Electron apps (VS Code, Claude, Slack, Discord, ...) create under Application Support. These hold only re-fetchable data. Chromium *browsers* keep their per-profile caches one level deeper (Google/Chrome/<profile>/...), so they need their own entry — the depth-2 glob above does not reach them. method: emptytrash empties ~/.Trash (irreversible). Note: only 'Service Worker/CacheStorage' is listed, never 'Service Worker/ScriptCache' — the latter holds MV3 extension bytecode and removing it breaks extension service workers mid-session. 'procs' lists the macOS process names of the apps that rewrite a category's caches while running; cdm warns before deleting under a running app. Names must match `pgrep -x` exactly (the CFBundleExecutable, e.g. 'Code' for VS Code) — an unknown name simply never matches, so a wrong entry costs a missing warning, never a false one.",
+  "_comment": "Application-level caches. The Electron/Chromium entry uses * globs to match the Cache/GPUCache/etc. folders that Electron apps (VS Code, Claude, Slack, Discord, ...) create under Application Support. These hold only re-fetchable data. Chromium *browsers* keep their per-profile caches one level deeper (Google/Chrome/<profile>/...), so they need their own entry — the depth-2 glob above does not reach them. method: emptytrash empties ~/.Trash (irreversible). Note: only 'Service Worker/CacheStorage' is listed, never 'Service Worker/ScriptCache' — the latter holds MV3 extension bytecode and removing it breaks extension service workers mid-session. 'procs' lists the macOS process names of the apps that rewrite a category's caches while running; cdm warns before deleting under a running app. Names must match `pgrep -x` exactly (the CFBundleExecutable, e.g. 'Code' for VS Code) — an unknown name simply never matches, so a wrong entry costs a missing warning, never a false one. A 'kind: older-versions' row takes its globs from 'candidates' and keeps the newest match of each glob (see dev-caches.json and docs/DESIGN.md#older-versions). A path may start with @cache/, @temp/ or @boot-temp/ — this user's own C, T and X under /private/var/folders (DARWIN_USER_CACHE_DIR, DARWIN_USER_TEMP_DIR, and the folder macOS empties at boot); a cdm too old to know them matches nothing. 'kind: code-sign-clones' offers the app-bundle copies a Chromium browser makes at launch and leaves when killed, never one a running browser may use, sized by what they alone hold (docs/DESIGN.md#code-sign-clones).",
   "categories": [
     {
       "icon": "⚡",
       "name": "Electron / Chromium app caches",
       "method": "rm",
       "default": true,
-      "desc": "Disk/GPU/code caches inside Electron apps (VS Code, Claude, Slack, ...) and their per-webview partitions (e.g. one per Claude Code preview) — rebuilt on launch. Cookies & local storage are kept.",
+      "desc": "Disk/GPU/code caches inside Electron apps (VS Code, Claude, Slack, ...), their per-webview partitions (e.g. one per Claude Code preview) and the agent SDK VS Code downloads — rebuilt or re-fetched when next needed. Cookies & local storage are kept.",
       "procs": [
         "Code", "Claude", "Slack", "Discord", "Notion",
-        "Figma", "Obsidian", "Postman", "Spotify"
+        "Figma", "Obsidian", "Postman", "Spotify", "EasyEDA-Pro"
       ],
       "paths": [
         "~/Library/Application Support/*/Cache",
@@ -18,6 +18,7 @@
         "~/Library/Application Support/*/GPUCache",
         "~/Library/Application Support/*/CachedData",
         "~/Library/Application Support/*/CachedExtensionVSIXs",
+        "~/Library/Application Support/*/agent-host/sdk-cache",
         "~/Library/Application Support/*/CachedProfilesData",
         "~/Library/Application Support/*/DawnCache",
         "~/Library/Application Support/*/DawnGraphiteCache",
@@ -38,7 +39,11 @@
         "~/Library/Application Support/*/Partitions/*/Service Worker/CacheStorage",
         "~/Library/Application Support/*/component_crx_cache",
         "~/Library/Application Support/*/extensions_crx_cache",
-        "~/Library/Application Support/*/logs"
+        "~/Library/Application Support/*/logs",
+        "~/.config/EasyEDA-Pro/*/Cache",
+        "~/.config/EasyEDA-Pro/*/Code Cache",
+        "~/.config/EasyEDA-Pro/*/GPUCache",
+        "~/.config/EasyEDA-Pro/*/Service Worker/CacheStorage"
       ]
     },
     {
@@ -144,12 +149,15 @@
       "name": "Chrome on-device AI models",
       "method": "rm",
       "default": false,
-      "desc": "Chrome's downloaded on-device AI / optimization-guide models — regenerable, but several GB to re-download if you use those features.",
+      "desc": "Chrome's downloaded on-device AI models — Gemini Nano & optimization guide, Live Caption speech packs (SODA) and Screen AI (PDF text recognition) — regenerable, but several GB to re-download if you use those features.",
       "procs": ["Google Chrome"],
       "paths": [
         "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel",
         "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceClassifierModel",
-        "~/Library/Application Support/Google/Chrome/optimization_guide_model_store"
+        "~/Library/Application Support/Google/Chrome/optimization_guide_model_store",
+        "~/Library/Application Support/Google/Chrome/SODA",
+        "~/Library/Application Support/Google/Chrome/SODALanguagePacks",
+        "~/Library/Application Support/Google/Chrome/screen_ai"
       ]
     },
     {
@@ -170,6 +178,30 @@
         "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/.initrd-micro.origin",
         "~/Library/Application Support/Claude/vm_bundles/claudevm.bundle/*.partial",
         "~/Library/Application Support/Claude/vm_bundles/.wvm-tmp-*"
+      ]
+    },
+    {
+      "kind": "older-versions",
+      "icon": "🧩",
+      "name": "Older Claude Code builds in Claude desktop",
+      "method": "rm",
+      "default": false,
+      "procs": ["Claude"],
+      "desc": "Claude Code versions Claude desktop downloaded before its current one (~250 MB each) — new sessions run the newest, which is always kept. Quit Claude first so no open session still runs an old one.",
+      "candidates": [
+        "~/Library/Application Support/Claude/claude-code/*",
+        "~/Library/Application Support/Claude/claude-code-vm/*"
+      ]
+    },
+    {
+      "kind": "code-sign-clones",
+      "icon": "👥",
+      "name": "Leftover Chrome app copies",
+      "method": "rm",
+      "default": true,
+      "desc": "The copy of itself Chrome (or another Chromium browser) makes at every launch and deletes on a clean exit — a crashed or killed browser, e.g. one a test script ends, leaves it until the next restart. Copies a running browser may use are kept; the size is what the copies alone hold.",
+      "candidates": [
+        "@boot-temp/*.code_sign_clone/code_sign_clone.*"
       ]
     },
     {
@@ -206,6 +238,7 @@
         "~/Library/Caches/*-updater/pending",
         "~/Library/Caches/com.google.antigravity/pending",
         "~/Library/Caches/com.google.antigravity/update.zip",
+        "~/Library/Caches/com.google.GeminiMacOS/Updates",
         "~/Library/Application Support/Google/GoogleUpdater/*.old",
         "~/Library/Application Support/Caches/*.ShipIt"
       ]
@@ -218,6 +251,16 @@
       "desc": "Caches inside sandboxed (App Store) apps' containers — rebuilt as needed.",
       "paths": [
         "~/Library/Containers/*/Data/Library/Caches"
+      ]
+    },
+    {
+      "icon": "🌄",
+      "name": "Downloaded aerial wallpapers",
+      "method": "rm",
+      "default": false,
+      "desc": "Aerial videos macOS downloads for the wallpaper, lock screen & screen saver (~0.5 GB each, a copy per account) — one still in use downloads again. Thumbnails & the list of aerials stay.",
+      "paths": [
+        "~/Library/Application Support/com.apple.wallpaper/aerials/videos"
       ]
     },
     {

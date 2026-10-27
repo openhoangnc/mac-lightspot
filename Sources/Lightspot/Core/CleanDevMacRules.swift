@@ -7,7 +7,8 @@ import Foundation
 // categories (`icon`, `name`, `desc`, `method`, `default`, `paths`, optionally `procs`).
 // Lightspot reads the same files, so a rule added to cdm reaches both tools. The cache
 // categories and cdm's per-repo project scan run natively; Docker / Podman, Rust
-// toolchains and orphaned app data stay with cdm itself, one ⌘↵ away in a terminal.
+// toolchains and their offline docs, and orphaned app data stay with cdm itself, one ⌘↵
+// away in a terminal.
 
 /// One category of a cdm pattern file that Lightspot can clean on its own.
 struct CleanDevMacRule: Sendable, Equatable {
@@ -26,6 +27,10 @@ struct CleanDevMacRule: Sendable, Equatable {
         /// Claude Code sessions, in the project folders `candidates` names, untouched for
         /// `idleDays`: always to the Trash and never ticked, whatever the rule says.
         case claudeTranscripts = "claude-transcripts"
+        /// The copies of its app bundle a Chromium browser clones at every launch and
+        /// leaves behind when it is killed, matched by `candidates` in the user folder's X:
+        /// never one a running copy of the app may use, sized by what the copies alone hold.
+        case codeSignClones = "code-sign-clones"
         /// One code repo's junk, found by the repo scan. Never read from a rule file: cdm's
         /// `project` and `gitignore` categories become `CleanDevMacProjectRules` instead.
         case project
@@ -51,8 +56,10 @@ struct CleanDevMacRule: Sendable, Equatable {
     let method: Method
     /// Pre-selected: the rule's `default`. A true one costs a rebuild or a small re-download.
     let isDefault: Bool
-    /// `~` and `*` patterns: the rule's `paths`, its `images` for the Android image kinds,
-    /// or its `candidates` for `.olderVersions` and `.claudeTranscripts`.
+    /// `~` and `*` patterns, or ones starting with `@cache/`, `@temp/` or `@boot-temp/` for
+    /// the user folder's C, T and X: the rule's `paths`, its `images` for the Android image
+    /// kinds, or its `candidates` for `.olderVersions`, `.claudeTranscripts` and
+    /// `.codeSignClones`.
     let patterns: [String]
     /// Process names of the apps that rewrite this category's caches while they run.
     let procs: [String]
@@ -112,8 +119,9 @@ struct CleanDevMacRuleSet: Sendable, Equatable {
     }
 
     let rules: [CleanDevMacRule]
-    /// Categories only cdm itself cleans (Docker / Podman, Rust toolchains, orphaned app
-    /// data). They are named in the cleaner and handed to the terminal, never run here.
+    /// Categories only cdm itself cleans (Docker / Podman, Rust toolchains and offline docs,
+    /// orphaned app data). They are named in the cleaner and handed to the terminal, never
+    /// run here.
     let terminalOnly: [String]
     var projects = CleanDevMacProjectRules()
     let source: Source
@@ -129,8 +137,9 @@ enum CleanDevMacRules {
     static let maxPatternFiles = 32
 
     /// The kinds only cdm runs, because their clean is a command rather than a file
-    /// operation: a container engine's prune, and `rustup toolchain uninstall`.
-    static let terminalOnlyKinds: Set<String> = ["container", "rust-toolchains"]
+    /// operation: a container engine's prune, `rustup toolchain uninstall`, and
+    /// `rustup component remove rust-docs`.
+    static let terminalOnlyKinds: Set<String> = ["container", "rust-toolchains", "rust-docs"]
 
     /// Ephemeral, like every other request Lightspot makes (invariant 12): nothing of the
     /// fetch lands in `~/Library/Caches` or `~/Library/HTTPStorages`.
@@ -256,7 +265,7 @@ enum CleanDevMacRules {
     static func patternField(_ kind: CleanDevMacRule.Kind) -> String {
         switch kind {
         case .androidImages, .androidIdleImages: return "images"
-        case .olderVersions, .claudeTranscripts: return "candidates"
+        case .olderVersions, .claudeTranscripts, .codeSignClones: return "candidates"
         case .paths, .project: return "paths"
         }
     }

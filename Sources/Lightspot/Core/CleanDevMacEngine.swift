@@ -12,12 +12,22 @@ enum CleanDevMacEngine {
 
     // MARK: Paths
 
-    /// cdm's `expand_tilde`: `~/x` and `~` resolve against `home`; anything else is kept.
-    static func expandTilde(_ pattern: String, home: String) -> String {
+    /// cdm's `expand_tilde`: `~/x` and `~` resolve against `home`, and `@cache/`, `@temp/`
+    /// and `@boot-temp/` against `userFolder`'s C, T and X. Anything else is kept, and so is
+    /// a token without a `userFolder`: a relative path, which matches nothing and which the
+    /// safety gate refuses.
+    static func expandTilde(_ pattern: String, home: String, userFolder: String? = nil) -> String {
         if pattern == "~" { return home }
         if pattern.hasPrefix("~/") { return home + "/" + pattern.dropFirst(2) }
+        for (token, folder) in userFolderTokens where pattern.hasPrefix(token) {
+            guard let userFolder else { return pattern }
+            return userFolder + "/" + folder + "/" + pattern.dropFirst(token.count)
+        }
         return pattern
     }
+
+    /// The tokens a rule names the user folder's C, T and X with, as cdm writes them.
+    static let userFolderTokens: [(token: String, folder: String)] = [("@cache/", "C"), ("@temp/", "T"), ("@boot-temp/", "X")]
 
     /// Pathname expansion with glob(3), which keeps the shell rules cdm relies on: `*`
     /// never matches a leading dot, and a pattern with no wildcard comes back only if it
@@ -87,15 +97,16 @@ enum CleanDevMacEngine {
     /// order and without duplicates; a match `skip` names is left out. Unlike cdm, a match
     /// the safety gate would refuse is not offered either, rather than listed and then
     /// skipped at clean time.
-    static func matchedPaths(patterns: [String], home: String, physicalHome: String, skip: [String] = []) -> [String] {
+    static func matchedPaths(patterns: [String], home: String, physicalHome: String, userFolder: String? = nil,
+                             skip: [String] = []) -> [String] {
         var found: [String] = []
         var seen = Set<String>()
         for pattern in patterns where !pattern.isEmpty {
-            let expanded = expandTilde(pattern, home: home)
+            let expanded = expandTilde(pattern, home: home, userFolder: userFolder)
             guard !isOutOfScope(expanded, home: home) else { continue }
             for match in expandGlob(expanded) {
                 guard seen.insert(match).inserted, isNonEmpty(match), !endsWithAny(match, skip),
-                      isSafeTarget(match, home: home, physicalHome: physicalHome) else { continue }
+                      isSafeTarget(match, home: home, physicalHome: physicalHome, userFolder: userFolder) else { continue }
                 found.append(match)
             }
         }
@@ -760,8 +771,9 @@ enum CleanDevMacEngine {
     /// one no rule can opt out of: a non-empty, absolute, existing path without `..`,
     /// outside the protected folders, under `home` both as written and once the parent's
     /// symlinks are resolved — so a symlinked component cannot walk a delete off the home
-    /// tree. `home` itself and `/` are refused.
-    static func isSafeTarget(_ path: String, home: String, physicalHome: String) -> Bool {
+    /// tree. `home` itself and `/` are refused. Off the home folder, only `userFolder`'s
+    /// C, T and X can hold a target (`inUserFolder`).
+    static func isSafeTarget(_ path: String, home: String, physicalHome: String, userFolder: String? = nil) -> Bool {
         guard !path.isEmpty, path.hasPrefix("/") else { return false }
         if ["/", home, home + "/", physicalHome, physicalHome + "/"].contains(path) { return false }
         guard !path.contains(".."), exists(path) else { return false }
@@ -769,11 +781,209 @@ enum CleanDevMacEngine {
             let root = home + "/" + folder
             if path == root || path.hasPrefix(root + "/") { return false }
         }
-        guard path.hasPrefix(home + "/") else { return false }
+        guard path.hasPrefix(home + "/") else { return inUserFolder(path, userFolder: userFolder) }
         let parent = (path as NSString).deletingLastPathComponent
         guard let resolved = realpath(parent, nil) else { return false }
         defer { free(resolved) }
         return (String(cString: resolved) + "/").hasPrefix(physicalHome + "/")
+    }
+
+    // MARK: The user's own temp folders
+
+    /// cdm's `USER_FOLDER`: this user's own `/private/var/folders/<xx>/<hash>`, resolved —
+    /// the parent of `DARWIN_USER_CACHE_DIR`. Its C is that cache folder, T is
+    /// `DARWIN_USER_TEMP_DIR` and X is the folder macOS empties at every boot. Nil unless
+    /// `isUserFolder` accepts it.
+    static func userFolder() -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let length = confstr(_CS_DARWIN_USER_CACHE_DIR, &buffer, buffer.count)
+        guard length > 0, length <= buffer.count else { return nil }
+        let cache = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let folder = physicalPath(cache + "/..")
+        return isUserFolder(folder) ? folder : nil
+    }
+
+    /// cdm's `user_folder_ok`: exactly `/private/var/folders/<two characters>/<one name>`,
+    /// a folder rather than a symlink, owned by this user.
+    static func isUserFolder(_ path: String) -> Bool {
+        let prefix = "/private/var/folders/"
+        guard path.hasPrefix(prefix) else { return false }
+        let parts = path.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].count == 2, !parts[0].hasPrefix("."),
+              !parts[1].isEmpty, !parts[1].hasPrefix(".") else { return false }
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return false }
+        return info.st_uid == geteuid()
+    }
+
+    /// cdm's `in_user_folder`, the safety gate's rule off the home folder: strictly inside
+    /// `userFolder`'s C, T or X, both as written and once the parent's symlinks are
+    /// resolved, so neither a symlinked component nor a `.` segment lands a delete on one
+    /// of those folders. Never the folder itself, nor its `0`.
+    static func inUserFolder(_ path: String, userFolder: String?) -> Bool {
+        guard let userFolder, !userFolder.isEmpty, !path.hasSuffix("/."), !path.contains("/./") else { return false }
+        let roots = userFolderTokens.map { userFolder + "/" + $0.folder + "/" }
+        guard roots.contains(where: { path.hasPrefix($0) && path.count > $0.count }) else { return false }
+        let parent = (path as NSString).deletingLastPathComponent
+        guard let resolved = realpath(parent, nil) else { return false }
+        defer { free(resolved) }
+        let physical = String(cString: resolved) + "/"
+        return roots.contains { physical.hasPrefix($0) }
+    }
+
+    // MARK: Chromium's code-sign clones
+
+    /// A running process, as the clone kind needs it.
+    struct AppProcess: Equatable, Sendable {
+        /// The bundle name before `.app/Contents/MacOS/` ("Google Chrome"); a helper is an
+        /// app of its own ("Google Chrome Helper").
+        let app: String
+        /// When it started, in seconds since 1970.
+        let started: Int
+    }
+
+    /// cdm's `app_starts`, from the process table rather than `ps`: each of this user's
+    /// processes that runs from an `<app>.app/Contents/MacOS/` executable, with its start.
+    static func runningAppProcesses() -> [AppProcess] {
+        let capacity = proc_listallpids(nil, 0)
+        guard capacity > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(capacity) + 32)
+        let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        // PROC_PIDPATHINFO_MAXSIZE, a macro Swift does not import.
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        var processes: [AppProcess] = []
+        for pid in pids.prefix(Int(max(count, 0))) where pid > 0 {
+            var info = proc_bsdinfo()
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size, info.pbi_uid == geteuid(),
+                  proc_pidpath(pid, &path, UInt32(path.count)) > 0,
+                  let app = appName(ofExecutable: String(cString: path)) else { continue }
+            processes.append(AppProcess(app: app, started: Int(info.pbi_start_tvsec)))
+        }
+        return processes
+    }
+
+    /// The bundle name before the first `.app/Contents/MacOS/` of `path`, as cdm's awk reads
+    /// it off ps's command column; nil for anything else.
+    static func appName(ofExecutable path: String) -> String? {
+        guard let marker = path.range(of: ".app/Contents/MacOS/") else { return nil }
+        let name = path[..<marker.lowerBound].split(separator: "/", omittingEmptySubsequences: false).last.map(String.init) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
+    /// What the clone kind offers: the copies, and what each one alone holds.
+    struct Clones: Equatable, Sendable {
+        let paths: [String]
+        /// KiB per path, aligned with `paths`; they add up to cdm's figure for the row.
+        let sizes: [Int]
+    }
+
+    /// While its app stays installed, a clone holds only its own metadata — measured at
+    /// 248 KB for a clone of Chrome.app's 740 entries, about 3 entries per KiB. cdm's
+    /// `CLONE_ENTRIES_PER_KB`.
+    static let cloneEntriesPerKB = 3
+
+    /// What `find <path> | wc -l` counts: the path and everything below it, symlinks not
+    /// followed.
+    static func entryCount(_ path: String) -> Int {
+        guard let cPath = strdup(path) else { return 0 }
+        defer { free(cPath) }
+        var roots: [UnsafeMutablePointer<CChar>?] = [cPath, nil]
+        guard let tree = fts_open(&roots, FTS_PHYSICAL | FTS_NOCHDIR, nil) else { return 0 }
+        defer { fts_close(tree) }
+        var count = 0
+        while let entry = fts_read(tree) {
+            if Int32(entry.pointee.fts_info) != FTS_DP { count += 1 }
+        }
+        return count
+    }
+
+    /// The app a clone copies and its version, as cdm's globs read them: the bundle inside
+    /// the clone (`Google Chrome.app.bundle`, or `.app`) and its framework's `Versions/<v>`.
+    /// Empty when the clone holds neither.
+    static func cloneBundle(_ clone: String) -> (app: String, version: String) {
+        let fm = FileManager.default
+        let names = ((try? fm.contentsOfDirectory(atPath: clone)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
+        for name in names.filter({ $0.hasSuffix(".app") }) + names.filter({ $0.hasSuffix(".app.bundle") })
+        where fileType(clone + "/" + name) == S_IFDIR {
+            var app = name
+            if app.hasSuffix(".bundle") { app.removeLast(".bundle".count) }
+            app.removeLast(".app".count)
+            let frameworks = clone + "/" + name + "/Contents/Frameworks"
+            for framework in ((try? fm.contentsOfDirectory(atPath: frameworks)) ?? []).sorted()
+            where framework.hasSuffix(".framework") && !framework.hasPrefix(".") {
+                let versions = frameworks + "/" + framework + "/Versions"
+                let version = ((try? fm.contentsOfDirectory(atPath: versions)) ?? []).sorted().first {
+                    ($0.first.map { $0.isASCII && $0.isNumber } ?? false) && fileType(versions + "/" + $0) == S_IFDIR
+                }
+                if let version { return (app, version) }
+            }
+            return (app, "")
+        }
+        return ("", "")
+    }
+
+    /// cdm's `clone_version_shared`: an installed `<app>.app` still carries `version`, so its
+    /// clones share every file block with it.
+    static func cloneVersionShared(app: String, version: String, home: String) -> Bool {
+        guard !app.isEmpty, !version.isEmpty else { return false }
+        for folder in ["/Applications", home + "/Applications"] {
+            let frameworks = folder + "/" + app + ".app/Contents/Frameworks"
+            for framework in (try? FileManager.default.contentsOfDirectory(atPath: frameworks)) ?? []
+            where framework.hasSuffix(".framework") && fileType(frameworks + "/" + framework + "/Versions/" + version) == S_IFDIR {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// cdm's `register_clones`: every copy `patterns` match that the gate accepts, but one a
+    /// running copy of its app may still use (born within five minutes after it started),
+    /// one younger than five minutes (a launch still in progress) and one of unknown age —
+    /// and nothing at all without a process list, since this process is always in it. Sized
+    /// by what the copies alone hold, never by du: their entries over `cloneEntriesPerKB`,
+    /// plus the blocks of a version no installed app still carries, once per version.
+    static func codeSignClones(patterns: [String], processes: [AppProcess], now: Int, home: String, physicalHome: String,
+                               userFolder: String?) -> Clones {
+        guard !processes.isEmpty else { return Clones(paths: [], sizes: []) }
+        var matches: [String] = []
+        var seen = Set<String>()
+        for pattern in patterns where !pattern.isEmpty {
+            for match in expandGlob(expandTilde(pattern, home: home, userFolder: userFolder))
+            where seen.insert(match).inserted && isSafeTarget(match, home: home, physicalHome: physicalHome, userFolder: userFolder) {
+                matches.append(match)
+            }
+        }
+        var offered: [(path: String, group: Int)] = []
+        var groups: [(app: String, version: String, sample: String, count: Int)] = []
+        for clone in matches {
+            var info = stat()
+            guard lstat(clone, &info) == 0 else { continue }
+            let born = Int(info.st_birthtimespec.tv_sec)
+            guard born > 0, now - born >= 300 else { continue }
+            let (app, version) = cloneBundle(clone)
+            if processes.contains(where: { $0.app == app && born >= $0.started - 5 && born <= $0.started + 300 }) { continue }
+            let group: Int
+            if let existing = groups.firstIndex(where: { $0.app == app && $0.version == version }) {
+                group = existing
+            } else {
+                groups.append((app, version, clone, 0))
+                group = groups.count - 1
+            }
+            groups[group].count += 1
+            offered.append((clone, group))
+        }
+        var sizes = Array(repeating: 0, count: offered.count)
+        for (index, group) in groups.enumerated() {
+            var total = group.count * entryCount(group.sample) / cloneEntriesPerKB
+            if !group.version.isEmpty && !cloneVersionShared(app: group.app, version: group.version, home: home) {
+                total += allocatedKB(group.sample)
+            }
+            for (n, item) in offered.indices.filter({ offered[$0].group == index }).enumerated() {
+                sizes[item] = total / group.count + (n == 0 ? total % group.count : 0)
+            }
+        }
+        return Clones(paths: offered.map(\.path), sizes: sizes)
     }
 
     // MARK: Deletion
@@ -803,9 +1013,9 @@ enum CleanDevMacEngine {
     /// `empty_trash`), each item through the safety gate. A symlink is removed, never
     /// followed, whatever the method.
     static func delete(_ path: String, method: CleanDevMacRule.Method, home: String, physicalHome: String,
-                       trash: (URL) throws -> Void = moveToTrash) -> DeleteOutcome {
+                       userFolder: String? = nil, trash: (URL) throws -> Void = moveToTrash) -> DeleteOutcome {
         guard exists(path) else { return .alreadyGone }
-        guard isSafeTarget(path, home: home, physicalHome: physicalHome) else { return .unsafe }
+        guard isSafeTarget(path, home: home, physicalHome: physicalHome, userFolder: userFolder) else { return .unsafe }
         let fm = FileManager.default
         switch method {
         case .trash:
