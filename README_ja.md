@@ -152,7 +152,7 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 
 ### 11. 🧹 Clean Dev Mac (`cdm`)
 [CleanDevMac](https://github.com/cleandevmac/cdm)（`cdm`）は、ディスクを圧迫している開発用キャッシュやビルド成果物を見つけるツールです。Lightspotはこれをパネル内で実行します。`cdm`、`clean dev mac`、またはキャッシュ名（`derived data`、`npm cache`）を入力して **`↵`** を押します：
-- **まず計測し、やみくもに選択しない**: cdmのルールが扱う各カテゴリ（XcodeのDerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、ブラウザとElectronアプリのキャッシュ、使われていないAndroidイメージなど）を `du` と同じ方法で計測し、大きい順に並べ、cdmの安全なデフォルトにチェックを入れます。パネルにはクリーン前後のディスク状況が表示されます。
+- **まず計測し、やみくもに選択しない**: cdmのルールが扱う各カテゴリ（XcodeのDerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、ブラウザとElectronアプリのキャッシュ、使われていないAndroidイメージなど）を `du` と同じ方法で計測し、大きい順に並べ、cdmの安全なデフォルトにチェックを入れます。パネルにはクリーン前後のディスク状況が表示されます。cdmと同じく、該当するときは2つの注記も表示します。1つは、再起動で空く容量（スワップ、macOSが起動時に空にする一時フォルダ、アプリが開いたままの削除済みファイル）が空き容量を上回るときの、その見積もりです。もう1つは、Claude Codeのセッション履歴が1 GBを超え、保持期間を過ぎたトランスクリプトがあるときの、Claude DesktopとCoworkのセッションもClaude Codeに削除させる設定 `desktopSessionCleanupPeriodDays` の案内です。Lightspotがこの設定を書き換えることはありません。
 - **インストール済みのSDK一式と古いセッション（チェックなし）**: cdmのオプトインの行も表示されます。PlatformIOのツールチェーン、AndroidのNDK・CMake・SDKソース、最新版を除くすべてのAndroid build-toolsとプラットフォーム、60日間だれも起動していないAVDのシステムイメージ（行にそのAVDの名前が出ます。イメージを入れ直すまで、そのAVDは起動しません）、そして30日間触れていないClaude Codeのセッション（必ずゴミ箱へ）。各行に元に戻す方法が書かれています。
 - **コードリポジトリも**：キャッシュの計測後、Clean Dev Macはcdmと同じように、コードリポジトリのビルド成果物や依存関係のゴミもスキャンするかを尋ねます。**`⇥`** を押してください。リポジトリごとに1行、`node_modules`、`dist`、`build`、`target`、`__pycache__` などgitで無視されたファイルが、チェックなしで表示されます。リポジトリ自身のgitが無視していないものは提示されず（追跡されている `build/` は残ります）、`.env*` ファイルや別のリポジトリを含むフォルダーも決して提示されません。再生成できるフォルダーは削除し、その他の無視されたファイルはゴミ箱に移動します。
 - **キー操作**: `↑↓` で選択（選択中の行にはパスとサイズが表示されます）、`Space` でチェック、`⇥` でコードリポジトリをスキャン、`↵` で項目別のプランを表示し、もう一度 `↵` でクリーン、`⌥↵` で選択中のキャッシュをFinderで表示、`Esc` で戻ります。
@@ -238,12 +238,12 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 ```
 
 ### 4. テストと検証
-LightspotにはXCTestターゲットはありません。`scripts/` 配下の2つの独立したスクリプトをソースとともにその場でコンパイルし、リポジトリのルートから実行します：ロジックとエンジンのテストランナー（41のテストブロック）と、ライブシステム検証ツール（11セクション、フル装備のマシンで136チェック。zshの履歴やVS Codeがない場合や、GitHubに接続できない場合などは一部がスキップされます）：
+LightspotにはXCTestターゲットはありません。`scripts/` 配下の2つの独立したスクリプトをソースとともにその場でコンパイルし、リポジトリのルートから実行します：ロジックとエンジンのテストランナー（41のテストブロック）と、ライブシステム検証ツール（11セクション、フル装備のマシンで140チェック。zshの履歴やVS Codeがない場合や、GitHubに接続できない場合などは一部がスキップされます）：
 ```bash
 # コアロジックとエンジンのテスト (41のテストブロック)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
-# ライブシステムチェック (11セクション、フル装備のマシンで136チェック)
+# ライブシステムチェック (11セクション、フル装備のマシンで140チェック)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
@@ -273,7 +273,7 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 ## 🔒 プライバシーとセキュリティの保証
 
-- **ファイルインデックス作成ゼロ**: Lightspotは、個人のファイル、ドキュメント、ダウンロード、またはコードリポジトリをインデックス化することは決してありません。Clean Dev Macが計測するのはcdmのルールが指すキャッシュフォルダだけで、開いている間だけ実行し、サイズ以外は何も保持しません。他のアプリのサンドボックスコンテナは決して読み込みません。AndroidとClaude Codeの行のために、AVDフォルダと `~/.claude/projects` 内のファイルの日付、そして実行中のセッションを示す `~/.claude/sessions` の小さなファイルも読みます。トランスクリプトの中身は読みません。コードリポジトリのスキャンを求めたとき（`⇥`）は、ホームフォルダ内のgitリポジトリを6階層まで探しますが、`~/Library`、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music` には入らず、各リポジトリのgitに無視しているファイルを尋ねます。
+- **ファイルインデックス作成ゼロ**: Lightspotは、個人のファイル、ドキュメント、ダウンロード、またはコードリポジトリをインデックス化することは決してありません。Clean Dev Macが計測するのはcdmのルールが指すキャッシュフォルダと、2つの注記に必要な少数の場所（後述）だけで、開いている間だけ実行し、サイズ以外は何も保持しません。他のアプリのサンドボックスコンテナは決して読み込みません。AndroidとClaude Codeの行のために、AVDフォルダと `~/.claude/projects` 内のファイルの日付、そして実行中のセッションを示す `~/.claude/sessions` の小さなファイルも読みます。トランスクリプトの中身は読みません。cdmの2つの注記のために、使用中のスワップ量を読み、macOSが起動時に空にする一時フォルダと `~/.claude/projects` のサイズを計測し、アプリが開いたままの削除済みファイルを `lsof` に問い合わせ（保持するのは合計と上位3つのアプリ名だけです）、`~/.claude/settings.json` の2つのキー（`cleanupPeriodDays`、`desktopSessionCleanupPeriodDays`）を読みます。このファイルに書き込むことはありません。コードリポジトリのスキャンを求めたとき（`⇥`）は、ホームフォルダ内のgitリポジトリを6階層まで探しますが、`~/Library`、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music` には入らず、各リポジトリのgitに無視しているファイルを尋ねます。
 - **RAM専用の一時的なクリップボード**: クリップボードの履歴は揮発性メモリ内にのみ留まり、隠蔽されたタイプ/パスワードマネージャー（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）を積極的に無視します。ディスクには一切書き込まれず、検索履歴にも残りません。検索履歴は、計算機・開発者ツール・スニペットの結果からコピーしたテキストも保存しません。
 - **デフォルトブラウザの分離**: ブックマーク、開いているタブ、最近の閲覧履歴は、設定されたデフォルトブラウザからのみ、このMac上で読み取られ、クロスブラウザのスクレイピングを回避します。
 - **ユーザー操作によるコマンド実行**: あなたのコマンド、スクリプト、クイックアクションは、明示的なユーザーアクション（`Return` または `⌘↵`）があった場合にのみ実行されます。

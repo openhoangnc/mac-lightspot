@@ -4,7 +4,8 @@ import AppKit
 //
 // cdm's scan-and-clean, inside Lightspot: the "Clean Dev Mac" search row, and the state
 // behind the cleaner overlay. A scan loads cdm's rules, expands their patterns and measures
-// every match like `du`; then, if the user asks, the repo scan adds one row per code repo;
+// every match like `du`, and with it cdm's two notes (what a restart would free, Claude
+// Code's history); then, if the user asks, the repo scan adds one row per code repo;
 // a clean deletes what the user ticked, each path through cdm's safety gate, and appends a
 // receipt to cdm's log. All of it runs on a background queue and publishes snapshots, so
 // `search()` and the overlay only ever read memory (invariant 0).
@@ -90,7 +91,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
         let id: Int
         let rule: CleanDevMacRule
         let paths: [String]
-        /// KiB per path, aligned with `paths`.
+        /// KiB per path, aligned with `paths`, as one `du -sk` over all of them prints it:
+        /// a file hard-linked into two of them counts in the first.
         let sizes: [Int]
         /// What happens to each path, aligned with `paths`: the rule's method, except in a
         /// repo's row, where regenerable folders are deleted and other ignored files go to
@@ -161,6 +163,11 @@ final class CleanDevMacProvider: @unchecked Sendable {
         var disk: CleanDevMacEngine.DiskStats?
         var scannedAt: Date?
         var receipt: Receipt?
+        /// What a restart would free, measured with each scan (cdm's restart estimate).
+        var restart: CleanDevMacEngine.RestartEstimate?
+        /// Claude Code's session history, when it holds transcripts past Claude Code's own
+        /// age limit and nothing has Claude Code age Desktop sessions out.
+        var claudeHistory: CleanDevMacEngine.ClaudeHistory?
         var repos: RepoScan = .unavailable
         /// Bumped by every completed scan, so the overlay resets its ticks to the defaults.
         /// The repo scan only adds rows, so it leaves this, and the ticks, alone.
@@ -175,14 +182,19 @@ final class CleanDevMacProvider: @unchecked Sendable {
         var moveToTrash: @Sendable (URL) throws -> Void
         /// The git that proves repo junk ignored; without one the repo scan is cdm's alone.
         var git: String? = CleanDevMacProjects.gitExecutable()
+        /// cdm's restart estimate, measured with each scan; nil leaves it out. It reads the
+        /// whole machine, not the home folder, so only the live environment measures it.
+        var restartEstimate: @Sendable () -> CleanDevMacEngine.RestartEstimate? = { nil }
 
         static var live: Environment {
-            Environment(
-                home: NSHomeDirectory(),
+            let home = NSHomeDirectory()
+            return Environment(
+                home: home,
                 bundledRules: CleanDevMacRules.bundledDirectory,
                 processEnvironment: ProcessInfo.processInfo.environment,
                 fetchRemoteRules: { CleanDevMacRules.fetchRemote(completion: $0) },
-                moveToTrash: { try CleanDevMacEngine.moveToTrash($0) }
+                moveToTrash: { try CleanDevMacEngine.moveToTrash($0) },
+                restartEstimate: { CleanDevMacEngine.restartEstimate(home: home) }
             )
         }
     }
@@ -278,9 +290,21 @@ final class CleanDevMacProvider: @unchecked Sendable {
             queue.async { [self] in
                 switch result {
                 case .success(let rules):
+                    // cdm's notes beside its disk line, measured while the caches are: lsof
+                    // alone can take seconds.
+                    let notes = Notes()
+                    let measuringNotes = DispatchGroup()
+                    DispatchQueue.global(qos: .userInitiated).async(group: measuringNotes) { [environment] in
+                        notes.restart = environment.restartEstimate()
+                        notes.claudeHistory = CleanDevMacEngine.claudeHistory(
+                            folder: CleanDevMacEngine.claudeFolder(home: environment.home, environment: environment.processEnvironment),
+                            now: Int(Date().timeIntervalSince1970)
+                        )
+                    }
                     let scan = scanEntries(rules) { done, total in
                         self.reportProgress(.measuring(done: done, total: total))
                     }
+                    measuringNotes.wait()
                     let disk = CleanDevMacEngine.diskStats(path: environment.home)
                     let canScanRepos = !rules.projects.isEmpty && environment.git != nil
                     lock.lock()
@@ -292,6 +316,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
                         state.terminalOnly = scan.terminalOnly
                         state.source = rules.source
                         state.disk = disk
+                        state.restart = notes.restart
+                        state.claudeHistory = notes.claudeHistory
                         state.scannedAt = Date()
                         state.receipt = nil
                         state.repos = canScanRepos ? .offered : .unavailable
@@ -307,6 +333,12 @@ final class CleanDevMacProvider: @unchecked Sendable {
 
     struct LoadFailure: Error {
         let text: String
+    }
+
+    /// Carries the notes out of the block that measures them; read only after it is done.
+    private final class Notes: @unchecked Sendable {
+        var restart: CleanDevMacEngine.RestartEstimate?
+        var claudeHistory: CleanDevMacEngine.ClaudeHistory?
     }
 
     /// cdm's order: its local rules folder if there is one, then GitHub, then — unlike
@@ -435,8 +467,10 @@ final class CleanDevMacProvider: @unchecked Sendable {
     }
 
     /// Measures every path, several at a time: it is file-system walking, and the big
-    /// caches (DerivedData, Gradle, node_modules) dominate however it is ordered. Sizes
-    /// come back aligned with `pathLists`.
+    /// caches (DerivedData, Gradle, node_modules) dominate however it is ordered. Each list
+    /// is sized as cdm sizes a row, with one `du` over all its paths, so a file hard-linked
+    /// into two of them counts once (`CleanDevMacEngine.allocatedKB(_:)`). Sizes come back
+    /// aligned with `pathLists`.
     static func measure(_ pathLists: [[String]], progress: (@Sendable (_ done: Int, _ total: Int) -> Void)? = nil) -> [[Int]] {
         let jobs = pathLists.enumerated().flatMap { list in
             list.element.enumerated().map { (list: list.offset, index: $0.offset, path: $0.element) }
@@ -445,7 +479,7 @@ final class CleanDevMacProvider: @unchecked Sendable {
         progress?(0, jobs.count)
         DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
             let job = jobs[index]
-            let done = sizes.record(CleanDevMacEngine.allocatedKB(job.path), candidate: job.list, path: job.index)
+            let done = sizes.record(CleanDevMacEngine.usage(job.path) ?? CleanDevMacEngine.Usage(), list: job.list, path: job.index)
             progress?(done, jobs.count)
         }
         return sizes.all
@@ -512,17 +546,28 @@ final class CleanDevMacProvider: @unchecked Sendable {
     private final class Measurements: @unchecked Sendable {
         private let lock = NSLock()
         private var sizes: [[Int]]
+        /// Each list's walks until its last path is in; then the list is sized and they go.
+        private var walks: [[CleanDevMacEngine.Usage]]
+        private var pending: [Int]
         private var done = 0
 
         init(_ counts: [Int]) {
             sizes = counts.map { [Int](repeating: 0, count: $0) }
+            walks = counts.map { [CleanDevMacEngine.Usage](repeating: CleanDevMacEngine.Usage(), count: $0) }
+            pending = counts
         }
 
-        /// Stores one path's size and returns how many paths are measured in all.
-        func record(_ kb: Int, candidate: Int, path: Int) -> Int {
+        /// Stores one path's walk, sizes its list once the list is complete, and returns
+        /// how many paths are measured in all.
+        func record(_ walk: CleanDevMacEngine.Usage, list: Int, path: Int) -> Int {
             lock.lock()
             defer { lock.unlock() }
-            sizes[candidate][path] = kb
+            walks[list][path] = walk
+            pending[list] -= 1
+            if pending[list] == 0 {
+                sizes[list] = CleanDevMacEngine.allocatedKB(walks[list])
+                walks[list] = []
+            }
             done += 1
             return done
         }

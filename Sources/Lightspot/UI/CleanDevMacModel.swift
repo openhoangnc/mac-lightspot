@@ -38,6 +38,16 @@ final class CleanDevMacModel: ObservableObject {
     var checkedKB: Int { CleanDevMacProvider.uniqueKB(checkedEntries) }
     var totalKB: Int { CleanDevMacProvider.uniqueKB(entries) }
 
+    /// cdm's row under its status row: what a restart would free, once that is at least
+    /// what the disk has free.
+    var restartNote: String? {
+        guard let disk = snapshot.disk else { return nil }
+        return snapshot.restart?.line(freeKB: disk.freeKB)
+    }
+
+    /// cdm's Claude Code note: the setting that ages Desktop and Cowork sessions out too.
+    var claudeNote: CleanDevMacEngine.ClaudeNote? { snapshot.claudeHistory?.note(home: home) }
+
     private static func defaultTicks(_ entries: [Entry]) -> Set<Int> {
         Set(entries.filter(\.rule.isDefault).map(\.id))
     }

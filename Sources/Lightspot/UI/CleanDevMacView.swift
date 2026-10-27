@@ -105,7 +105,7 @@ struct CleanDevMacView: View {
                 plan
             } else if model.entries.isEmpty && !model.canScanRepos {
                 message(symbol: "checkmark.seal", title: "Nothing to reclaim",
-                        detail: "Everything cdm's rules cover is already clean.")
+                        detail: "Everything cdm's rules cover is already clean.", showsNotes: true)
             } else {
                 list
             }
@@ -141,7 +141,8 @@ struct CleanDevMacView: View {
         }
     }
 
-    private func message(symbol: String, title: String, detail: String) -> some View {
+    /// `showsNotes`: the scan's own notes, which only a finished scan has.
+    private func message(symbol: String, title: String, detail: String, showsNotes: Bool = false) -> some View {
         VStack(spacing: 10) {
             Spacer()
             Image(systemName: symbol)
@@ -155,6 +156,14 @@ struct CleanDevMacView: View {
                 .foregroundColor(.white.opacity(0.4))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+            if showsNotes {
+                // Nothing left to clean is when a restart can matter most. Indented like
+                // the terminal note below, which pads itself.
+                restartNote
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+                claudeNote
+            }
             terminalNote
                 .padding(.top, 6)
             Spacer()
@@ -192,12 +201,18 @@ struct CleanDevMacView: View {
             .padding(.top, 9)
             .padding(.bottom, 3)
 
+            restartNote
+                .padding(.horizontal, 18)
+                .padding(.bottom, 3)
+
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
                         if model.canScanRepos {
                             repoOffer
                         }
+                        claudeNote
+                            .padding(.vertical, 4)
                         ForEach(Array(model.entries.enumerated()), id: \.element.id) { index, entry in
                             CleanDevMacRow(
                                 entry: entry,
@@ -286,6 +301,49 @@ struct CleanDevMacView: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+
+    /// cdm's dim row under its status row: what a restart would free (swap, temp folders,
+    /// deleted files still held open), shown only once that is at least what the disk has free.
+    @ViewBuilder
+    private var restartNote: some View {
+        if let note = model.restartNote {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(.white.opacity(0.45))
+                // Verbatim: the holders are app names, and a literal would read them as Markdown.
+                Text(verbatim: note)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// cdm's Claude Code note: how big the session history is, and the setting that has
+    /// Claude Code age Claude Desktop and Cowork sessions out too. Advice only: nothing
+    /// edits settings.json.
+    @ViewBuilder
+    private var claudeNote: some View {
+        if let note = model.claudeNote {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "bubble.left")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.45))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: "Claude Code: " + note.summary)
+                        .foregroundColor(.white.opacity(0.6))
+                    Text(verbatim: note.advice)
+                        .foregroundColor(.white.opacity(0.42))
+                }
+                .font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+        }
     }
 
     /// What only cdm itself cleans, and the key that runs it.

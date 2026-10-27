@@ -386,6 +386,21 @@ struct DeepVerifier {
             check("Every offered category has a size, biggest first",
                   scan.entries.allSatisfy { $0.sizeKB > 0 } && zip(scan.entries, scan.entries.dropFirst()).allSatisfy { $0.sizeKB >= $1.sizeKB })
 
+            // A row is sized as cdm sizes it, with one du over all its paths. Caches change
+            // while they are measured (a browser's, while it browses), so 2% (or 4 MB) either
+            // way passes; test_engine holds the exact sizes against du on fixtures.
+            let multiPath = scan.entries.filter { $0.paths.count > 1 }
+            var unlikeDu: [String] = []
+            for entry in multiPath {
+                let duKB = CleanDevMacEngine.output(of: "/usr/bin/du", ["-sk"] + entry.paths, timeout: 120)
+                    .split(separator: "\n").reduce(0) { $0 + (Int($1.split(separator: "\t").first ?? "") ?? 0) }
+                if abs(duKB - entry.sizeKB) > max(entry.sizeKB / 50, 4096) {
+                    unlikeDu.append("\(entry.rule.name): \(entry.sizeKB) KB, du \(duKB) KB")
+                }
+            }
+            check("Each of the \(multiPath.count) categories with several paths measures what one du over them prints", unlikeDu.isEmpty)
+            for line in unlikeDu { print("     \(line)") }
+
             // The repo scan, read-only: what it would offer from the real home folder.
             if let git = CleanDevMacProjects.gitExecutable(), !rules.projects.isEmpty {
                 let repoStarted = Date()
@@ -403,6 +418,37 @@ struct DeepVerifier {
             } else {
                 print("     ⚠️ No git — skipping the repo scan checks")
             }
+        }
+
+        // cdm's two notes beside its disk line, read from this Mac. df's own answer for the
+        // swap, read the way cdm's swap_stats reads it, comes from before and after the
+        // estimate: macOS adds and drops 1 GiB swap files as it goes, so the swap can change
+        // while lsof runs.
+        func dfSwapKB() -> Int {
+            let rows = CleanDevMacEngine.output(of: "/bin/df", ["-Pk", cdmHome, "/System/Volumes/VM"], timeout: 10)
+                .split(separator: "\n").map { $0.split(separator: " ", omittingEmptySubsequences: true).map(String.init) }
+            guard rows.count == 3, rows[2].count >= 6, rows[2].last == "/System/Volumes/VM", rows[1].first?.hasPrefix("/dev/disk") == true,
+                  CleanDevMacEngine.container(of: rows[1][0]) == CleanDevMacEngine.container(of: rows[2][0]) else { return 0 }
+            return Int(rows[2][2]) ?? 0
+        }
+        let swapBefore = dfSwapKB()
+        let estimateStarted = Date()
+        let estimate = CleanDevMacEngine.restartEstimate(home: cdmHome)
+        let estimateSeconds = Date().timeIntervalSince(estimateStarted)
+        let swapAfter = dfSwapKB()
+        print("A restart would free \(CleanDevMacEngine.humanKB(estimate.totalKB)): \(CleanDevMacEngine.humanKB(estimate.swapKB)) swap, \(CleanDevMacEngine.humanKB(estimate.tempKB)) temp, \(CleanDevMacEngine.humanKB(estimate.heldKB)) held open by \(estimate.heldApps.joined(separator: ", ")) (\(String(format: "%.1f", estimateSeconds)) s); note: \(CleanDevMacEngine.diskStats(path: cdmHome).flatMap { estimate.line(freeKB: $0.freeKB) } ?? "none, the disk has more free")")
+        check("What a restart would free is measured within cdm's time limits", estimateSeconds < 16)
+        check("Swap is df's Used column for the VM volume, read before or after it",
+              [swapBefore, swapAfter].contains { abs(estimate.swapKB - $0) <= max($0 / 100, 1024) })
+
+        let claudeStarted = Date()
+        let claudeFolder = CleanDevMacEngine.claudeFolder(home: cdmHome, environment: ProcessInfo.processInfo.environment)
+        let history = CleanDevMacEngine.claudeHistory(folder: claudeFolder, now: Int(Date().timeIntervalSince1970))
+        check("Claude Code's history is read within cdm's ten seconds", Date().timeIntervalSince(claudeStarted) < 12)
+        if let history {
+            print("Claude Code: \(CleanDevMacEngine.humanKB(history.sizeKB)) of history, \(history.oldTranscripts) transcripts past \(history.keepDays) days; note: \(history.note(home: cdmHome).map { $0.summary } ?? "none, under 1 GB")")
+        } else {
+            print("Claude Code: no note (no history, desktopSessionCleanupPeriodDays is set, or nothing is past the limit)")
         }
 
         print("\n======================================================")

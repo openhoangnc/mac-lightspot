@@ -3353,6 +3353,27 @@ struct TestRunner {
         assertTrue(CleanDevMacEngine.isSessionID(oldID) && !CleanDevMacEngine.isSessionID("memory")
                    && !CleanDevMacEngine.isSessionID(String(repeating: "ア", count: 36)), "A session id is a UUID")
 
+        // "Older than 30 days" is what cdm's `find -mtime +30` says: whole days, so 31.
+        let ages = outside + "/find-ages"
+        for (name, seconds) in [("29d", 29 * 86_400), ("30d1h", 30 * 86_400 + 3_600), ("30d23h", 30 * 86_400 + 82_800), ("31d1m", 31 * 86_400 + 60)] {
+            try? fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: TimeInterval(now - seconds))],
+                                  ofItemAtPath: write(ages + "/" + name, "x"))
+        }
+        let byFind = CleanDevMacEngine.output(of: "/usr/bin/find", [ages, "-type", "f", "-mtime", "+30"], timeout: 10)
+            .split(separator: "\n").map { URL(fileURLWithPath: String($0)).lastPathComponent }.sorted()
+        let byAge = ((try? fm.contentsOfDirectory(atPath: ages)) ?? []).filter { name in
+            var info = stat()
+            return lstat(ages + "/" + name, &info) == 0 && CleanDevMacEngine.isOlder(mtime: Int(info.st_mtimespec.tv_sec), than: 30, now: now)
+        }.sorted()
+        assertEqual(byAge, byFind, "Older than 30 days is what find -mtime +30 says")
+        assertEqual(byFind, ["31d1m"], "...which is 31 whole days, not 30 and 23 hours")
+        assertTrue(!CleanDevMacEngine.isOlder(mtime: now + 3_600, than: 0, now: now), "A file dated in the future is not old")
+        let edge = home + "/edge/.claude/projects/-Users-me-app"
+        age(write(edge + "/55555555-5555-4555-8555-555555555555.jsonl", "{}"), days: 30.9)
+        age(write(edge + "/66666666-6666-4666-8666-666666666666.jsonl", "{}"), days: 31.05)
+        assertEqual(CleanDevMacEngine.oldTranscripts(patterns: ["~/edge/.claude/projects/*"], days: 30, now: now, home: home, physicalHome: physicalHome).paths,
+                    [edge + "/66666666-6666-4666-8666-666666666666.jsonl"], "A session 30.9 days old waits a few hours more, as cdm's does")
+
         // 3. The safety gate: cdm's own test cases. Every refused path exists, so a
         //    refusal can only come from the rule under test.
         for folder in CleanDevMacEngine.protectedFolders { mkdir(folder) }
@@ -3387,19 +3408,55 @@ struct TestRunner {
         make("sizing/nested/b.bin", bytes: 200_000)
         try? fm.linkItem(atPath: tree + "/a.bin", toPath: tree + "/nested/hardlink.bin")
         try? fm.createSymbolicLink(atPath: tree + "/to-outside", withDestinationPath: outside)
-        let du = Process()
-        du.executableURL = URL(fileURLWithPath: "/usr/bin/du")
-        du.arguments = ["-sk", tree]
-        let pipe = Pipe()
-        du.standardOutput = pipe
-        du.standardError = FileHandle.nullDevice
-        try? du.run()
-        let duOutput = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        du.waitUntilExit()
-        let duKB = Int(duOutput.split(separator: "\t").first ?? "")
+        /// What one `du -sk` over `paths` prints for each of them; 0 for one it prints nothing for.
+        func du(_ paths: [String]) -> [Int] {
+            let du = Process()
+            du.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+            du.arguments = ["-sk"] + paths
+            let pipe = Pipe()
+            du.standardOutput = pipe
+            du.standardError = FileHandle.nullDevice
+            try? du.run()
+            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            du.waitUntilExit()
+            var printed: [String: Int] = [:]
+            for line in output.split(separator: "\n") {
+                let fields = line.split(separator: "\t", maxSplits: 1)
+                if fields.count == 2, let kb = Int(fields[0]) { printed[String(fields[1])] = kb }
+            }
+            return paths.map { printed[$0] ?? 0 }
+        }
+        let duKB = du([tree]).first
         assertTrue((duKB ?? 0) > 200, "du measured the fixture")
         assertEqual(CleanDevMacEngine.allocatedKB(tree), duKB, "Sizes match du -sk")
         assertEqual(CleanDevMacEngine.allocatedKB(home + "/nope"), 0, "A missing path is 0")
+
+        // A row is sized as cdm sizes it, with one du over all its paths: a file hard-linked
+        // into two of them counts in the first; once every link has been met du forgets the
+        // file, so a folder and then a folder inside it both count it; and a file du has
+        // already counted prints nothing.
+        make("rows/a/big.bin", bytes: 300_000)
+        make("rows/b/own.bin", bytes: 5_000)
+        mkdir("rows/c")
+        try? fm.linkItem(atPath: home + "/rows/a/big.bin", toPath: home + "/rows/b/big-link.bin")
+        try? fm.linkItem(atPath: home + "/rows/a/big.bin", toPath: home + "/rows/c/big-link.bin")
+        func row(_ paths: [String]) -> [Int] {
+            CleanDevMacEngine.allocatedKB(paths.map { CleanDevMacEngine.usage($0) ?? CleanDevMacEngine.Usage() })
+        }
+        for order in [["rows/a", "rows/b", "rows/c"], ["rows/b", "rows/a"], ["rows/c", "rows/b", "rows/a"], ["rows", "rows/a"],
+                      ["rows/a", "rows/a/big.bin", "rows/b"], ["rows/a/big.bin", "rows/b/big-link.bin"], ["rows/b", "rows/c"]] {
+            let paths = order.map { home + "/" + $0 }
+            assertEqual(row(paths), du(paths), "A row's sizes are what one du over its paths prints: \(order)")
+        }
+        let sharedKB = CleanDevMacEngine.allocatedKB(home + "/rows/a/big.bin")
+        assertTrue(sharedKB >= 290, "The shared file is measured")
+        assertEqual(row([home + "/rows/a", home + "/rows/b"]), [sharedKB, CleanDevMacEngine.allocatedKB(home + "/rows/b") - sharedKB],
+                    "The second path leaves out the file the first counted")
+        assertEqual(row([home + "/rows/b"]), du([home + "/rows/b"]), "...which a path on its own counts")
+        assertTrue(CleanDevMacEngine.usage(home + "/rows", until: .distantPast) == nil,
+                   "A walk past its deadline gives up, as cdm's bounded du does")
+        assertEqual(CleanDevMacEngine.usage(home + "/rows", oneFileSystem: true).map { CleanDevMacEngine.allocatedKB([$0]) },
+                    du([home + "/rows"]), "Staying on one file system changes nothing within one")
 
         // 5. Deletion, each method, through the gate.
         func delete(_ path: String, _ method: CleanDevMacRule.Method) -> CleanDevMacEngine.DeleteOutcome {
@@ -3492,6 +3549,206 @@ struct TestRunner {
         let me = String(URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent.prefix(31))
         assertTrue(CleanDevMacEngine.runningProcessNames().contains(me), "The process list includes this runner")
 
+        // 9. What a restart would free: cdm's test_restart.sh cases.
+        typealias Volume = CleanDevMacEngine.Volume
+        let data = Volume(device: "/dev/disk3s5", mountPoint: "/System/Volumes/Data", usedKB: 201_326_592)
+        let vm = Volume(device: "/dev/disk3s6", mountPoint: "/System/Volumes/VM", usedKB: 14_680_064)
+        assertEqual(CleanDevMacEngine.swapKB(home: data, vm: vm), 14_680_064, "Swap is the VM volume's Used column, in KiB")
+        assertEqual(CleanDevMacEngine.swapKB(home: Volume(device: "/dev/disk5s1", mountPoint: "/Volumes/Work", usedKB: 1), vm: vm), 0,
+                    "A VM volume in another container is not this disk's swap")
+        assertEqual(CleanDevMacEngine.swapKB(home: Volume(device: "/dev/disk12s5", mountPoint: "/System/Volumes/Data", usedKB: 1),
+                                             vm: Volume(device: "/dev/disk1s6", mountPoint: "/System/Volumes/VM", usedKB: 14_680_064)), 0,
+                    "disk12s5 and disk1s6 are different containers")
+        assertEqual(CleanDevMacEngine.swapKB(home: data, vm: Volume(device: "/dev/disk3s1s1", mountPoint: "/", usedKB: 12_582_912)), 0,
+                    "A volume mounted anywhere else is not swap")
+        assertEqual(CleanDevMacEngine.swapKB(home: data, vm: nil), 0, "No VM volume, no swap")
+        assertEqual(CleanDevMacEngine.swapKB(home: Volume(device: "map auto_home", mountPoint: "/System/Volumes/Data/home", usedKB: 0), vm: vm), 0,
+                    "A home that is not on a disk has no swap of its own")
+        assertEqual(CleanDevMacEngine.swapKB(home: Volume(device: "devfs", mountPoint: "/dev", usedKB: 0),
+                                             vm: Volume(device: "devfs", mountPoint: "/System/Volumes/VM", usedKB: 5)), 0,
+                    "...even when the VM row names the same thing")
+        assertEqual(CleanDevMacEngine.container(of: "/dev/disk3s1s1"), "/dev/disk3", "A snapshot's device is in its disk's container")
+        assertEqual(CleanDevMacEngine.container(of: "/dev/disk12s1"), "/dev/disk12", "...and the whole disk number is kept")
+
+        let tempA = make("temp-a/one.bin", bytes: 50_000)
+        make("temp-b/deep/two.bin", bytes: 20_000)
+        let homeDevice = CleanDevMacEngine.volume(of: home)?.device ?? "?"
+        assertTrue(homeDevice.hasPrefix("/dev/"), "The home volume's device is read")
+        assertEqual(CleanDevMacEngine.tempKB(homeDevice: homeDevice, folders: [home + "/temp-a", "", home + "/temp-b", home + "/temp-none", tempA]),
+                    CleanDevMacEngine.allocatedKB(home + "/temp-a") + CleanDevMacEngine.allocatedKB(home + "/temp-b"),
+                    "Both temp folders are summed; a missing one, a file or no folder at all counts 0")
+        assertEqual(CleanDevMacEngine.tempKB(homeDevice: "/dev/disk99s9", folders: [home + "/temp-a"]), 0,
+                    "A temp folder on another volume is left out")
+        let tempFolders = CleanDevMacEngine.bootTempFolders()
+        let getconf = CleanDevMacEngine.output(of: "/usr/bin/getconf", ["DARWIN_USER_TEMP_DIR"], timeout: 5)
+        assertEqual(tempFolders, [getconf.trimmingCharacters(in: .newlines), "/private/tmp"],
+                    "The temp folders a boot empties: getconf's DARWIN_USER_TEMP_DIR, then /private/tmp")
+
+        // lsof -F output in the order the real one prints it: one plist cache shared by two
+        // processes; Chrome holding one deleted 3 GiB file on two descriptors, and a deleted
+        // folder; node holding a 1 GiB file.
+        let lsofFields = """
+        p1317
+        cloginwindow
+        ftxt
+        tREG
+        D0x1000010
+        s72984
+        i98761291
+        n/Library/Preferences/Logging/.plist-cache.Cj6gIpVn
+        p1355
+        cdistnoted
+        ftxt
+        tREG
+        D0x1000010
+        s72984
+        i98761291
+        n/Library/Preferences/Logging/.plist-cache.Cj6gIpVn
+        p2001
+        cGoogle Chrome
+        f41
+        tREG
+        D0x1000010
+        s3221225472
+        i555
+        n/private/var/folders/xx/T/blob
+        f42
+        tREG
+        D0x1000010
+        s3221225472
+        i555
+        n/private/var/folders/xx/T/blob
+        f7
+        tDIR
+        D0x1000010
+        s4096
+        i556
+        n/private/tmp/gone
+        p3003
+        cnode
+        f19
+        tREG
+        D0x1000010
+        s1073741824
+        i777
+        n/private/tmp/task.output
+        """
+        let held = CleanDevMacEngine.heldOpen(lsofFields: lsofFields)
+        assertEqual(held.kb, 4_194_375, "Each deleted file counts once, folders not at all")
+        assertEqual(held.apps, ["Google Chrome", "node", "loginwindow"], "...and the three biggest holders come biggest first")
+        assertEqual(CleanDevMacEngine.heldOpen(lsofFields: "").kb, 0, "No deleted files is 0...")
+        assertEqual(CleanDevMacEngine.heldOpen(lsofFields: "").apps, [], "...and no holders")
+        assertEqual(CleanDevMacEngine.heldOpen(lsofFields: lsofFields.replacingOccurrences(of: "D0x1000010\ns3221225472\ni555\nn/private/var/folders/xx/T/blob\nf42\ntREG\nD0x1000010",
+                                                                                        with: "D0x1000010\ns3221225472\ni555\nn/private/var/folders/xx/T/blob\nf42\ntREG\nD0x2000020")).kb,
+                    4_194_375 + 3_145_728, "The same inode on another device is another file")
+
+        assertEqual(CleanDevMacEngine.output(of: "/bin/echo", ["hello"], timeout: 5), "hello\n", "A command's output is read whole")
+        var started = Date()
+        assertEqual(CleanDevMacEngine.output(of: "/bin/sh", ["-c", "echo first; sleep 30"], timeout: 0.5), "first\n",
+                    "A command that runs too long is stopped, and what it printed is kept")
+        assertTrue(Date().timeIntervalSince(started) < 3, "...within its time")
+        started = Date()
+        _ = CleanDevMacEngine.output(of: "/bin/sh", ["-c", "(sleep 30) & sleep 30"], timeout: 0.5)
+        assertTrue(Date().timeIntervalSince(started) < 3, "Stopping a command stops its process group, and the pipe closes")
+        if fm.isExecutableFile(atPath: "/usr/bin/perl") {
+            started = Date()
+            _ = CleanDevMacEngine.output(of: "/bin/sh", ["-c", "/usr/bin/perl -e 'setpgrp(0, 0); sleep 10' & sleep 30"], timeout: 0.5)
+            assertTrue(Date().timeIntervalSince(started) < 4, "A child that left the group and keeps the pipe open is not waited for")
+        }
+        // df's Used is the volume's own; statfs's free blocks are the whole APFS container's.
+        let dfRows = CleanDevMacEngine.output(of: "/bin/df", ["-Pk", "/System/Volumes/VM", home], timeout: 10)
+            .split(separator: "\n").map { $0.split(separator: " ", omittingEmptySubsequences: true).map(String.init) }
+        for (row, path) in zip(dfRows.dropFirst(), ["/System/Volumes/VM", home]) where row.count >= 6 {
+            let dfUsed = Int(row[2]) ?? -1
+            let used = CleanDevMacEngine.volume(of: path)?.usedKB ?? -1
+            assertTrue(abs(used - dfUsed) <= max(dfUsed / 100, 4096), "Used is df's for \(row.last ?? path): \(used) KB, df \(dfUsed) KB")
+        }
+
+        var estimate = CleanDevMacEngine.RestartEstimate(swapKB: 14_680_064, tempKB: 21_076_377, heldKB: 2_202_010, heldApps: ["Google Chrome", "node"])
+        assertEqual(estimate.line(freeKB: 445_644),
+                    "A restart would free about 36.20 GB: 14.00 GB of swap, 20.10 GB of temp files, 2.10 GB of deleted files still held open by Google Chrome, node — quitting them frees that part now",
+                    "The note names every part, and the apps holding deleted files")
+        estimate.heldKB = 43_442
+        estimate.heldApps = ["linkd", "sharingd", "Google Chrome"]
+        assertEqual(estimate.line(freeKB: 445_644),
+                    "A restart would free about 34.14 GB: 14.00 GB of swap, 20.10 GB of temp files, 42 MB of deleted files still held open",
+                    "A small held part names no apps")
+        estimate.heldKB = 524_288
+        assertEqual(estimate.line(freeKB: 445_644),
+                    "A restart would free about 34.60 GB: 14.00 GB of swap, 20.10 GB of temp files, 512 MB of deleted files still held open",
+                    "A held part under 1 GiB names no apps, whatever the note's floor")
+        estimate.heldKB = 1_048_576
+        assertEqual(estimate.line(freeKB: 445_644),
+                    "A restart would free about 35.10 GB: 14.00 GB of swap, 20.10 GB of temp files, 1.00 GB of deleted files still held open by linkd, sharingd, Google Chrome — quitting them frees that part now",
+                    "A held part of exactly 1 GiB names its apps")
+        assertEqual(CleanDevMacEngine.RestartEstimate(swapKB: 14_680_064, tempKB: 12).line(freeKB: 445_644),
+                    "A restart would free about 14.00 GB: 14.00 GB of swap", "Parts under 1 MiB are left out")
+        assertEqual(CleanDevMacEngine.RestartEstimate(swapKB: 102_399).line(freeKB: 0), nil, "Quiet below 100 MiB")
+        assertTrue(CleanDevMacEngine.RestartEstimate(swapKB: 102_400).line(freeKB: 0) != nil, "...and speaks at exactly 100 MiB")
+        assertEqual(CleanDevMacEngine.RestartEstimate(swapKB: 5_242_956).line(freeKB: 5_242_957), nil, "Quiet while the disk has more free")
+        assertTrue(CleanDevMacEngine.RestartEstimate(swapKB: 5_242_956).line(freeKB: 5_242_956) != nil, "...and speaks once it matches the free space")
+        let thisMac = CleanDevMacEngine.restartEstimate(home: NSHomeDirectory())
+        assertTrue(thisMac.swapKB >= 0 && thisMac.tempKB >= 0 && thisMac.heldKB >= 0 && thisMac.heldApps.count <= 3, "This Mac's own estimate is measured")
+
+        // 10. Claude Code's history note: cdm's test_claude_history.sh cases, in a Claude
+        //     Code folder of their own (2d's ~/.claude has sessions of its own).
+        let claude = home + "/claude-config"
+        let projects = claude + "/projects/-Users-me-app"
+        func session(_ number: Int) -> String { String(format: "%08d-0000-4000-8000-000000000000", number) }
+        for number in 1...3 { age(write(projects + "/\(session(number)).jsonl", "{}\n"), days: 45) }
+        write(projects + "/\(session(4)).jsonl", "{}\n")
+        age(write(projects + "/\(session(8)).jsonl", "{}\n"), days: 30.9)
+        age(write(projects + "/notes.jsonl", "{}\n"), days: 45)
+        age(write(projects + "/sub/\(session(5)).jsonl", "{}\n"), days: 45)
+        write(projects + "/memory/MEMORY.md", "# memory\n")
+        age(write(outside + "/linked-project/\(session(6)).jsonl", "{}\n"), days: 45)
+        try? fm.createSymbolicLink(atPath: claude + "/projects/-linked", withDestinationPath: outside + "/linked-project")
+        try? fm.createSymbolicLink(atPath: projects + "/\(session(7)).jsonl", withDestinationPath: projects + "/\(session(1)).jsonl")
+        let nowSeconds = now
+        let history = CleanDevMacEngine.claudeHistory(folder: claude, now: nowSeconds)
+        assertEqual(history?.oldTranscripts, 3,
+                    "Sessions past 30 days, right inside a project folder: no other name, no deeper file, no link, not one 30.9 days old")
+        assertEqual(history?.keepDays, 30, "...against Claude Code's default limit")
+        assertEqual(history?.sizeKB, CleanDevMacEngine.allocatedKB(claude + "/projects"), "...with what projects/ holds")
+        assertEqual(history?.note(home: home), nil, "Under 1 GiB of history: no note")
+        assertEqual(CleanDevMacEngine.claudeHistory(folder: home + "/.claude", now: nowSeconds)?.oldTranscripts, 2,
+                    "2d's two old sessions count; its fresh one, notes and memory/ do not")
+        let note = CleanDevMacEngine.ClaudeHistory(folder: home + "/.claude", sizeKB: 11_117_312, oldTranscripts: 3, keepDays: 30).note(home: home)
+        assertEqual(note?.summary, "10.60 GB of session history in ~/.claude/projects, 3 transcripts older than 30 days.", "The note says how big, how many old")
+        assertEqual(note?.advice,
+                    "Claude Code keeps Claude Desktop and Cowork sessions at any age; to have it delete them after 30 days too, add \"desktopSessionCleanupPeriodDays\": 30 to ~/.claude/settings.json",
+                    "...and the exact setting")
+        assertTrue(CleanDevMacEngine.ClaudeHistory(folder: claude, sizeKB: 1_048_576, oldTranscripts: 1, keepDays: 30).note(home: home) != nil, "Exactly 1 GiB: the note")
+        assertEqual(CleanDevMacEngine.ClaudeHistory(folder: claude, sizeKB: 1_048_575, oldTranscripts: 1, keepDays: 30).note(home: home), nil, "...and not a KiB less")
+        assertEqual(CleanDevMacEngine.ClaudeHistory(folder: claude, sizeKB: 9_999_999, oldTranscripts: 0, keepDays: 30).note(home: home), nil, "No old transcript: no note")
+
+        write(claude + "/settings.json", "{\n  \"theme\": \"dark\",\n  \"cleanupPeriodDays\" : 40\n}\n")
+        assertEqual(CleanDevMacEngine.claudeHistory(folder: claude, now: nowSeconds).map { [$0.oldTranscripts, $0.keepDays] }, [3, 40],
+                    "cleanupPeriodDays 40: 45-day-old transcripts still count")
+        assertTrue(CleanDevMacEngine.ClaudeHistory(folder: claude, sizeKB: 1_048_576, oldTranscripts: 3, keepDays: 40).note(home: home)?.advice
+                    .contains("after 40 days too, add \"desktopSessionCleanupPeriodDays\": 40 to") == true, "The advice uses the user's limit")
+        write(claude + "/settings.json", "{ \"cleanupPeriodDays\": 50 }\n")
+        assertTrue(CleanDevMacEngine.claudeHistory(folder: claude, now: nowSeconds) == nil, "cleanupPeriodDays 50: nothing older, no note")
+        write(claude + "/settings.json", "{ \"desktopSessionCleanupPeriodDays\": 30 }\n")
+        assertTrue(CleanDevMacEngine.claudeHistory(folder: claude, now: nowSeconds) == nil, "desktopSessionCleanupPeriodDays set: no note")
+        try? fm.removeItem(atPath: claude + "/settings.json")
+        assertEqual(CleanDevMacEngine.cleanupPeriodDays(settings: "{\"cleanupPeriodDays\": 0}"), nil, "A limit under a day is ignored")
+        assertEqual(CleanDevMacEngine.cleanupPeriodDays(settings: "{\"cleanupPeriodDays\":\n 40}"), nil, "...and so is one split across lines, as grep reads it")
+        assertEqual(CleanDevMacEngine.cleanupPeriodDays(settings: "{\"cleanupPeriodDays\": 7, \"cleanupPeriodDays\": 9}"), 7, "The first one counts")
+        assertEqual(CleanDevMacEngine.cleanupPeriodDays(settings: "{\"cleanupPeriodDays\": \"40\"}"), nil, "A string is not a number of days")
+        write(claude + "/settings.json", "{ \"cleanupPeriodDays\": 99999999999999999 }\n")
+        assertTrue(CleanDevMacEngine.claudeHistory(folder: claude, now: nowSeconds) == nil, "A limit too long to count in seconds finds nothing older")
+        try? fm.removeItem(atPath: claude + "/settings.json")
+
+        assertEqual(CleanDevMacEngine.claudeFolder(home: home, environment: [:]), home + "/.claude", "Claude Code's folder is ~/.claude")
+        assertEqual(CleanDevMacEngine.claudeFolder(home: home, environment: ["CLAUDE_CONFIG_DIR": home + "/alt"]), home + "/alt",
+                    "...or CLAUDE_CONFIG_DIR")
+        assertEqual(CleanDevMacEngine.claudeFolder(home: home, environment: ["CLAUDE_CONFIG_DIR": ""]), home + "/.claude", "...unless it is empty")
+        let alt = CleanDevMacEngine.ClaudeHistory(folder: home + "/alt", sizeKB: 1_048_576, oldTranscripts: 1, keepDays: 30).note(home: home)
+        assertEqual(alt?.summary, "1.00 GB of session history in ~/alt/projects, 1 transcript older than 30 days.", "CLAUDE_CONFIG_DIR moves the note")
+        assertTrue(alt?.advice.hasSuffix("to ~/alt/settings.json") == true, "...and its own settings.json")
+        assertTrue(CleanDevMacEngine.claudeHistory(folder: home + "/alt", now: nowSeconds) == nil, "No projects folder: no note")
+
         print("✅ CleanDevMac engine passed all tests!\n")
     }
 
@@ -3579,6 +3836,20 @@ struct TestRunner {
         assertEqual(CleanDevMacProvider.runningApps(for: scan.entries, running: ["Xcode", "Finder"]), ["Xcode"], "Running owners are named")
         assertEqual(CleanDevMacProvider.runningApps(for: scan.entries, running: []), [], "...and only running ones")
 
+        // A row is sized as one du over its paths: a file hard-linked into two of them is
+        // counted, and freed, once.
+        let linkedBig = make("linked/a/big", bytes: 300_000)
+        make("linked/b/own", bytes: 5_000)
+        try? fm.linkItem(atPath: linkedBig, toPath: home + "/linked/b/big-link")
+        let linkedRow = provider.scanEntries(CleanDevMacRuleSet(rules: [rule("Linked", .rm, ["~/linked/a", "~/linked/b"])],
+                                                                terminalOnly: [], source: .remote)).entries.first
+        let bigKB = CleanDevMacEngine.allocatedKB(linkedBig)
+        assertEqual(linkedRow?.sizes, [CleanDevMacEngine.allocatedKB(home + "/linked/a"), CleanDevMacEngine.allocatedKB(home + "/linked/b") - bigKB],
+                    "The hard-linked file counts in the first path only")
+        let linkedFreed = linkedRow.map { provider.performClean([$0]).freedKB }
+        assertEqual(linkedFreed, linkedRow?.sizeKB, "...and the receipt frees it once")
+        assertTrue(!fm.fileExists(atPath: home + "/linked/a") && !fm.fileExists(atPath: home + "/linked/b"), "...having removed both paths")
+
         // Android images an AVD boots from are left out by the scan itself.
         let imageRules = CleanDevMacRuleSet(rules: [
             CleanDevMacRule(kind: .androidImages, icon: "💿", name: "Images", desc: "", method: .rm, isDefault: false,
@@ -3653,7 +3924,10 @@ struct TestRunner {
         // 4. The state machine behind the overlay: scan, a recent scan stands, clean, rescan.
         make("big/blob", bytes: 400_000)
         make("shared/blob", bytes: 100_000)
-        let machine = CleanDevMacProvider(environment: environment(remote: fixture))
+        assertTrue(environment(remote: fixture).restartEstimate() == nil, "A test home's provider never measures the whole machine")
+        var measuredEnvironment = environment(remote: fixture)
+        measuredEnvironment.restartEstimate = { CleanDevMacEngine.RestartEstimate(swapKB: 2_000_000, heldApps: ["node"]) }
+        let machine = CleanDevMacProvider(environment: measuredEnvironment)
         func wait(_ phase: CleanDevMacProvider.Phase) -> CleanDevMacProvider.Snapshot {
             let deadline = Date().addingTimeInterval(20)
             while Date() < deadline {
@@ -3671,6 +3945,9 @@ struct TestRunner {
         assertEqual(ready.source, .remote, "...with the rules it was given")
         assertEqual(ready.generation, 1, "...and counts the scan")
         assertTrue(ready.disk != nil && ready.scannedAt != nil, "...with the disk line and the time")
+        assertEqual(ready.restart, CleanDevMacEngine.RestartEstimate(swapKB: 2_000_000, heldApps: ["node"]), "...what a restart would free")
+        assertEqual(ready.claudeHistory.map { [$0.oldTranscripts, $0.keepDays] }, [1, 30], "...and Claude Code's history in the home it scans")
+        assertEqual(ready.claudeHistory?.folder, home + "/.claude", "...read from ~/.claude")
         machine.startScan()
         assertEqual(machine.snapshot.generation, 1, "A recent scan stands")
         machine.clean([0])

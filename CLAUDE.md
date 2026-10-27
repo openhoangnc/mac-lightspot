@@ -37,8 +37,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 42 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing, the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions), every delete method, the clean log, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
-- `deep_verify.swift`: 11 sections of live system checks (136 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos (measures only; it never deletes).
+- `test_engine.swift`: 42 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions), every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
+- `deep_verify.swift`: 11 sections of live system checks (140 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac (measures only; it never deletes).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
@@ -72,7 +72,7 @@ mac-lightspot/
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
 │   ├── test_engine.swift         # Automated test runner (42 test blocks)
-│   └── deep_verify.swift         # Live-system verification (11 sections, 136 checks)
+│   └── deep_verify.swift         # Live-system verification (11 sections, 140 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -235,7 +235,10 @@ cleans and prints a receipt.
   (`versionKey`: numeric fields, a release above its own pre-release). `claude-transcripts`
   offers `<uuid>.jsonl` sessions untouched that long, with their `<uuid>/` folders, never one
   `~/.claude/sessions/*.json` names as running, and is always `trash` and unticked, whatever
-  the rule says: a transcript is the one record of a conversation.
+  the rule says: a transcript is the one record of a conversation. "That long" is counted in
+  whole days, as macOS's `find -mtime +30` in cdm counts it (`isOlder`): 31 days, not 30 and
+  23 hours, whatever find's man page says about rounding up. The AVD check is cdm's
+  arithmetic in seconds instead.
 - **The repo scan is cdm's `scan_projects`, ported** (`CleanDevMacProjects`), and like cdm
   it is asked, not run: after the cache scan the overlay asks "Also scan your code repos
   for build/dependency junk?" and ⇥ (or the button) starts it. One fts pass over the rules'
@@ -259,11 +262,31 @@ cleans and prints a receipt.
 - **The engine is cdm's bash, ported** (`CleanDevMacEngine`): glob(3) expansion with the
   shell's rules, `is_nonempty`, `du -sk`-exact sizing over fts(3), the AVD image skip list
   and idle check, `newest_version`, `register_transcripts`, `is_safe_target`, `delete_path`,
-  `human_kb`, the disk line and the log cap. Keep the two in step: when cdm changes one of
-  these, port the change and its test. One difference is deliberate: cdm sizes a row with one
-  `du` over all its paths (to save forks), so a file hard-linked into two paths of one row
-  counts once there; Lightspot measures each path on its own, in process, because the
-  receipt counts what each removed path freed. cdm's restart estimate is not ported.
+  `human_kb`, the disk line with its restart estimate, the Claude Code note and the log cap.
+  Keep the two in step: when cdm changes one of these, port the change and its test.
+- **A row is sized as cdm's `paths_kb` sizes it**, with one `du -sk` over all its paths, so
+  a file hard-linked into two of them counts in the first. Each path is still walked on its
+  own and in parallel (`usage`), its files with more than one link kept apart; once a row's
+  last path is in, `allocatedKB(_:)` counts them the way du does across its operands, down
+  to du forgetting a file once it has met every link (a folder, then a folder inside it,
+  both count it). The per-path sizes are what that du prints for each path, and the receipt
+  sums them, so a clean of the whole row frees a shared file once.
+- **cdm's two notes come with each scan**, measured on another queue while the caches are.
+  What a restart would free (`restartEstimate`): the VM volume's Used column when it shares
+  the home volume's container, the two temp folders a boot empties (five seconds each), and
+  deleted files still held open, from `lsof -a -nP +L1` (five seconds, through `output(of:)`,
+  which never waits on a pipe a child keeps open). Used is df's, `ATTR_VOL_SPACEUSED`, never
+  statfs's blocks in use: on APFS those are the whole container's, and put the swap at 177 GB
+  where df said 7 (`volume(of:)`). The overlay shows it under the list's summary row, as cdm
+  does under its status row, only from 100 MiB and once it is at least the free space,
+  naming the holders from 1 GiB. It reads the whole machine, so only
+  `Environment.live` measures it; any other environment returns nil, which keeps
+  test_engine off the real machine. The Claude Code note (`claudeHistory`): nothing once
+  settings.json names `desktopSessionCleanupPeriodDays`, else the `<uuid>.jsonl` sessions
+  past `cleanupPeriodDays` (30 by default, read the way cdm's grep reads it) and `projects/`
+  measured within ten seconds; shown at the top of the list from 1 GiB of history. Both
+  notes also show on "Nothing to reclaim", and neither shows after a clean, until a rescan.
+  Advice only: nothing writes settings.json.
 - **State.** `CleanDevMacProvider` runs scans and cleans on its own queue and publishes a
   `Snapshot`; `search()` and `CleanDevMacModel` (the overlay) only read it. A scan stands
   for five minutes; a clean ends in `.finished` and the next open rescans. Ticks reset to
@@ -379,7 +402,11 @@ cleans and prints a receipt.
      patterns are expanded and each match measured, on the provider's queue. Nothing is
      kept but the sizes. The idle kinds also read file dates: in each AVD folder, and in the
      Claude Code project folders the rules name, plus the small `~/.claude/sessions/*.json`
-     files that name running sessions — never a transcript's contents.
+     files that name running sessions — never a transcript's contents. For cdm's two notes,
+     with the same scan: the swap volume's usage (statfs, getattrlist), the size of the two
+     temp folders a boot empties (`DARWIN_USER_TEMP_DIR`, `/private/tmp`) and of Claude Code's
+     `projects/`, `lsof -a +L1` on the home volume (kept: the total and the three biggest
+     holders' names), and two keys of Claude Code's `settings.json`, never written.
      `~/Library/Containers` and `~/Library/Group Containers` are never
      read (`CleanDevMacEngine.outOfScopeFolders`): inside another app's container macOS asks
      the user whether Lightspot may "access data from other apps", and with an ad-hoc
