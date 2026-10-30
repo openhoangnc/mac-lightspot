@@ -1869,6 +1869,18 @@ struct TestRunner {
         assertEqual(RecentProjectsProvider.sublimeSessionFiles(home: zedHome, folder: "Sublime Text").map { URL(fileURLWithPath: $0).lastPathComponent },
                     ["Auto Save Session.sublime_session", "Session.sublime_session"], "Sublime: the session written last is read first")
 
+        // The row's ↵ hint names the editor ↵ opens the project in, when it is installed.
+        let hintProjects = [
+            RecentProject(name: "zed-proj", path: "/z/zed-proj", displayPath: "/z/zed-proj", ideName: "Zed",
+                          ideBundleID: "dev.zed.Zed", iconAppPath: "/Applications/Zed.app", recency: 1),
+            RecentProject(name: "gone-proj", path: "/z/gone-proj", displayPath: "/z/gone-proj", ideName: "PyCharm",
+                          ideBundleID: nil, iconAppPath: nil, recency: 0.5),
+        ]
+        let hinted = RecentProjectsProvider.search(SearchQuery("proj"), in: hintProjects)
+        assertEqual(hinted.first(where: { $0.title == "zed-proj" })?.opensWith, "Zed", "A Zed project's ↵ hint says Zed")
+        assertEqual(hinted.first(where: { $0.title == "gone-proj" })?.opensWith, nil, "No editor named when it is not installed")
+        assertEqual(hinted.first?.withScore(1).opensWith, "Zed", "A rescored copy keeps the editor")
+
         // A folder open in several editors belongs to the one that had it last, by date.
         func project(_ ide: String, recency: Double, lastUsed: TimeInterval?) -> RecentProject {
             RecentProject(name: "p", path: "/p", displayPath: "/p", ideName: ide, ideBundleID: nil, iconAppPath: nil, recency: recency, lastUsed: lastUsed)

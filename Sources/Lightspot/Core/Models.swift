@@ -119,6 +119,9 @@ struct SearchResult: Identifiable, Sendable, Hashable {
     /// from. Search history records this rather than the synthetic `.topHit`, which
     /// otherwise filed every Top Hit activation under "Applications".
     var promotedFrom: ResultCategory? = nil
+    /// Set only on a recent project whose editor is installed: the app ↵ opens it in,
+    /// named in the row's ↵ hint ("Zed", "PyCharm").
+    var opensWith: String? = nil
 
     func withScore(_ newScore: Double) -> SearchResult {
         SearchResult(
@@ -130,7 +133,8 @@ struct SearchResult: Identifiable, Sendable, Hashable {
             score: newScore,
             action: action,
             isPinned: isPinned,
-            promotedFrom: promotedFrom
+            promotedFrom: promotedFrom,
+            opensWith: opensWith
         )
     }
 

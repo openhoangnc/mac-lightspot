@@ -321,6 +321,14 @@ struct SearchResultRow: View {
         return false
     }
 
+    /// What ↵ opens the folder in: a recent project's own editor, VS Code for a plain
+    /// folder (`openFolderInVSCode`), else whatever `openProject` falls back to.
+    private var openLabel: String {
+        if let app = result.opensWith { return app }
+        if case .openFolder = result.action { return "VS Code" }
+        return "Open"
+    }
+
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 12) {
@@ -431,7 +439,7 @@ struct SearchResultRow: View {
                             HStack(spacing: 3) {
                                 Image(systemName: "return")
                                     .font(.system(size: 10, weight: .semibold))
-                                Text("VS Code")
+                                Text(openLabel)
                                     .font(.system(size: 10, weight: .medium))
                             }
                             .foregroundColor(.white.opacity(0.85))

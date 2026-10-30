@@ -114,6 +114,11 @@ public final class RecentProjectsProvider: @unchecked Sendable {
         let items = projects
         lock.unlock()
 
+        return Self.search(query, in: items)
+    }
+
+    static func search(_ query: SearchQuery, in items: [RecentProject]) -> [SearchResult] {
+        if query.trimmed.count < minimumQueryLength { return [] }
         guard !items.isEmpty else { return [] }
 
         var scored: [(project: RecentProject, score: Double)] = []
@@ -168,7 +173,9 @@ public final class RecentProjectsProvider: @unchecked Sendable {
                 iconType: iconType,
                 category: .recentProjects,
                 score: match.score,
-                action: .openProject(path: proj.path, appBundleID: proj.ideBundleID)
+                action: .openProject(path: proj.path, appBundleID: proj.ideBundleID),
+                // The icon path is set only when the editor's app was found at load time.
+                opensWith: proj.iconAppPath == nil ? nil : proj.ideName
             )
         }
     }

@@ -132,7 +132,8 @@ final class SearchEngine: Sendable {
                 score: topHit.score,
                 action: topHit.action,
                 isPinned: topHit.isPinned,
-                promotedFrom: topHit.category
+                promotedFrom: topHit.category,
+                opensWith: topHit.opensWith
             )
             grouped[.topHit] = [promoted]
         }
