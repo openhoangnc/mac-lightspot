@@ -2,10 +2,12 @@
 
 Lightspot's Mac Tweaks ports logic from [RemoveMacAI](https://github.com/omlahore/RemoveMacAI) by
 omlahore: Free Up Space (what it offers, how it sizes it, which caches are macOS's own, and how it
-moves what only an administrator can move in one batch), and Apple Intelligence (the feature and
+moves what only an administrator can move in one batch), Apple Intelligence (the feature and
 model-set catalog, the feature-state reading, the configuration profile and its download block, and
-the asset-service calls). RemoveMacAI's code is not included as such; it was read and rewritten for
-Lightspot. RemoveMacAI is distributed under the MIT License:
+the asset-service calls), Settings (the tweak catalog, reading and writing preferences, the undo
+journal, the plan, and Music's launch entry) and Background Items (which launch agents and daemons
+it lists, how it tells an updater and a leftover, and turning them off and on). RemoveMacAI's code
+is not included as such; it was read and rewritten for Lightspot. RemoveMacAI is distributed under the MIT License:
 
 ```
 MIT License
