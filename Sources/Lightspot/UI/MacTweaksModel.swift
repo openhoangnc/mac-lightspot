@@ -23,6 +23,8 @@ final class MacTweaksModel: ObservableObject {
 
     private let provider: MacTweaksProvider
     private var generations: [Int]
+    /// The overlay is on screen: only then does a stale section scan again by itself.
+    private var isShown = false
 
     init(provider: MacTweaksProvider = .shared) {
         self.provider = provider
@@ -62,6 +64,7 @@ final class MacTweaksModel: ObservableObject {
         if section == .settings {
             return MacTweaksSettings.summary(rows: rows, ticked: checkedRows, context: snapshot.settingsScan)
         }
+        if section == .backgroundItems { return MacTweaksBackground.summary(rows: rows, ticked: checkedRows) }
         let offered = offeredRows
         guard !offered.isEmpty else { return "Nothing to free right now." }
         let found = "Found \(Self.amount(offered)) in \(offered.count) \(offered.count == 1 ? "place" : "places")"
@@ -73,6 +76,7 @@ final class MacTweaksModel: ObservableObject {
     var applyTitle: String {
         if section == .appleIntelligence { return MacTweaksIntelligence.applyTitle(ticked: checkedRows) }
         if section == .settings { return MacTweaksSettings.applyTitle(ticked: checkedRows) }
+        if section == .backgroundItems { return MacTweaksBackground.applyTitle(ticked: checkedRows) }
         return "Free up " + Self.amount(checkedRows)
     }
 
@@ -125,6 +129,11 @@ final class MacTweaksModel: ObservableObject {
         if next.revision != snapshot.revision { snapshot = next }
         // Off the plan if what it showed is gone (the rows were dropped or applied).
         if isConfirming && next[section].phase != .ready { isConfirming = false }
+        // Another section's apply made the rows on show stale: scan them again now, off the plan.
+        if isShown && next[section].isStale {
+            isConfirming = false
+            provider.open(section)
+        }
         for section in MacTweaksSection.built {
             let count = next[section].rows.count
             if cursors[section.index] >= max(count, 1) { cursors[section.index] = max(count - 1, 0) }
@@ -136,12 +145,14 @@ final class MacTweaksModel: ObservableObject {
     /// Scans the section on show unless it is busy or a recent scan or receipt stands.
     func open() {
         isConfirming = false
+        isShown = true
         provider.open(section)
     }
 
     /// The overlay went away: the provider drops what no longer needs to be in memory.
     func close() {
         isConfirming = false
+        isShown = false
         provider.overlayClosed()
         refresh()
     }

@@ -241,9 +241,11 @@ enum MacTweaksProfile {
     /// daemons); with no profile to remove, that batch holds `alsoAsAdministrator` alone. A
     /// cancelled or refused prompt stops there; a batch that ran and left the profile opens Device
     /// Management and waits for the owner's Remove. Progress lines and log lines go through
-    /// `progress` and `log`.
+    /// `progress` and `log`; once the batch ran, `extraResults` gets each `alsoAsAdministrator`
+    /// step's status and output, by its index there (Undo everything says why a daemon stayed).
     static func change(to target: Contents, env: MacTweaksProvider.Environment, alsoAsAdministrator extra: [String] = [],
-                       progress: (@Sendable (String) -> Void)?, log: inout [String]) -> ChangeOutcome {
+                       progress: (@Sendable (String) -> Void)?, log: inout [String],
+                       extraResults: (([Int: (status: Int32, output: String)]) -> Void)? = nil) -> ChangeOutcome {
         let ai = env.intelligence
         let ours = ai.profileInstalled()
         if target.isEmpty {
@@ -267,9 +269,13 @@ enum MacTweaksProfile {
                     } ?? "no report"))
                 }
                 let first = removing ? 2 : 1
+                var results: [Int: (status: Int32, output: String)] = [:]
                 for index in extra.indices {
-                    if let step = steps[index + first] { log.append("administrator step \(index + first): status \(step.status)") }
+                    guard let step = steps[index + first] else { continue }
+                    log.append("administrator step \(index + first): status \(step.status)")
+                    results[index] = step
                 }
+                extraResults?(results)
             }
             guard removing else { return .alreadyMatches }
             if !ai.profileInstalled().on { return .removed }

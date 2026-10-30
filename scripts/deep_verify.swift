@@ -661,6 +661,11 @@ struct DeepVerifier {
 
         verifySettings(check)
 
+        // ----------------------------------------------------
+        // SECTION 15: Mac Tweaks' Background Items on this Mac — reads only, never switches
+        // ----------------------------------------------------
+        verifyBackgroundItems(check, panes: panes)
+
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")
         print("======================================================")
@@ -690,6 +695,241 @@ final class TweaksRecorder: @unchecked Sendable {
     func forbidden(_ line: String) { lock.lock(); forbiddenList.append(line); lock.unlock() }
     var programs: [String] { lock.lock(); defer { lock.unlock() }; return ranPrograms }
     var forbiddenCalls: [String] { lock.lock(); defer { lock.unlock() }; return forbiddenList }
+}
+
+extension DeepVerifier {
+    /// Section 15: Background Items scanned on this Mac, and everything it shows compared with
+    /// what the system reports now, read here on its own. Nothing is switched, moved, asked for
+    /// or written: launchctl runs only with `print` and `print-disabled`.
+    static func verifyBackgroundItems(_ check: (String, Bool) -> Void, panes: [String: SettingsSearchTerms.PaneExtension]) {
+        typealias B = MacTweaksBackground
+        print("\n--- 15. Testing Mac Tweaks' Background Items on this Mac (reads only) ---")
+        let record = TweaksRecorder()
+        var env = MacTweaksProvider.Environment.live
+        let liveLaunchctl = env.backgroundItems.launchctl
+        env.backgroundItems.launchctl = { arguments in
+            guard let verb = arguments.first, verb == "print" || verb == "print-disabled" else {
+                record.forbidden("launchctl " + arguments.joined(separator: " "))
+                return (1, "deep_verify never changes launchd")
+            }
+            record.ran("/bin/launchctl " + arguments.joined(separator: " "))
+            return liveLaunchctl(arguments)
+        }
+        env.runAdmin = { _ in
+            record.forbidden("runAdmin")
+            return .refused("deep_verify never asks for a password")
+        }
+        env.moveToTrash = { url in
+            record.forbidden("moveToTrash " + url.path)
+            throw CocoaError(.featureUnsupported)
+        }
+        // The journal file, read through the section's own adapter; every write refuses.
+        var files = env.settings.fileSystem
+        files.write = { url, _ in record.forbidden("write \(url.path)"); throw CocoaError(.featureUnsupported) }
+        files.remove = { url in record.forbidden("remove \(url.path)"); throw CocoaError(.featureUnsupported) }
+        files.move = { url, _ in record.forbidden("move \(url.path)"); throw CocoaError(.featureUnsupported) }
+        env.settings.fileSystem = files
+        var journal = B.journal(env)
+        journal.recordAhead = { _ in
+            record.forbidden("journal recordAhead")
+            return .failed("deep_verify never writes the journal")
+        }
+        journal.remove = { _ in
+            record.forbidden("journal remove")
+            return "deep_verify never writes the journal"
+        }
+        env.backgroundItems.journal = journal
+        let journalPath = MacTweaksJournal.url(home: env.home).path
+        let journalBefore = FileManager.default.contents(atPath: journalPath)
+        let residentBefore = residentBytes()
+        let started = Date()
+        var scanned: [MacTweaksRow]? = B.scan(env)
+        let seconds = Date().timeIntervalSince(started)
+        let rows = (scanned ?? []).filter { !$0.isLink }
+        for row in rows {
+            print("     \(row.title): \(row.detail) — \(row.value)\(row.tags.isEmpty ? "" : " [" + row.tags.joined(separator: ", ") + "]")\(row.readOnly ? " (read-only)" : "")")
+            if let caveat = row.caveat { print("        \(caveat)") }
+        }
+        print("Background Items found \(rows.count) items in \(String(format: "%.2f", seconds)) s")
+        check("The scan finishes within 10 s", seconds < 10)
+        check("It runs only launchctl print-disabled and print",
+              record.programs.allSatisfy { $0.hasPrefix("/bin/launchctl print-disabled ") || $0.hasPrefix("/bin/launchctl print ") })
+
+        // AC 1: every other app's plist with a Label, read here on its own, has a row; nothing else does.
+        let home = env.home
+        let uid = getuid()
+        var expected: [String] = []
+        var withoutLabel = 0
+        var macOSOwn = 0
+        var plists: [String: [String: Any]] = [:]
+        var linksLeft = 0
+        var sharedAgents: [String: Bool] = [:]
+        for (folder, system) in [(home + "/Library/LaunchAgents", false), ("/Library/LaunchAgents", false), ("/Library/LaunchDaemons", true)] {
+            for name in ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []).sorted() where name.hasSuffix(".plist") && !name.hasPrefix(".") {
+                // A link is read where the engine may follow it, and only there (never into a guarded
+                // folder); anything else only when it is a regular file (never a FIFO, which would block).
+                var info = stat()
+                guard lstat(folder + "/" + name, &info) == 0 else { continue }
+                let isLink = info.st_mode & S_IFMT == S_IFLNK
+                guard isLink || info.st_mode & S_IFMT == S_IFREG else { continue }
+                guard let source = isLink ? B.linkTarget(folder + "/" + name, env) : folder + "/" + name else {
+                    linksLeft += 1
+                    continue
+                }
+                guard let data = FileManager.default.contents(atPath: source),
+                      let dict = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] else { continue }
+                guard let label = dict["Label"] as? String, !label.isEmpty else {
+                    withoutLabel += 1
+                    continue
+                }
+                if label.hasPrefix("com.apple.") {
+                    macOSOwn += 1
+                    continue
+                }
+                let id = B.key(label: label, system: system)
+                if plists[id] == nil {
+                    expected.append(id)
+                    plists[id] = dict
+                    sharedAgents[id] = folder == "/Library/LaunchAgents"
+                }
+            }
+        }
+        print("     Left out: \(withoutLabel) \(withoutLabel == 1 ? "plist" : "plists") without a Label, \(macOSOwn) of macOS's own, "
+              + "\(linksLeft) \(linksLeft == 1 ? "link" : "links") into a guarded folder")
+        check("Every other app's plist with a Label has a row, and nothing else does (\(expected.count))", rows.map(\.id) == expected)
+        check("No row is macOS's own", rows.allSatisfy { !$0.id.contains("/com.apple.") })
+
+        // Each state as launchctl reports it now, read here on its own.
+        func listed(_ domain: String) -> [String: String] {
+            var list: [String: String] = [:]
+            for line in CleanDevMacEngine.run("/bin/launchctl", ["print-disabled", domain], timeout: 10).output.split(separator: "\n") {
+                let parts = line.components(separatedBy: "\" => ")
+                guard parts.count == 2 else { continue }
+                let label = parts[0].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                list[label] = parts[1].trimmingCharacters(in: .whitespaces)
+            }
+            return list
+        }
+        let guiList = listed("gui/\(uid)")
+        let systemList = listed("system")
+        var statesMatch = true
+        for row in rows {
+            guard let named = B.parse(key: row.id), B.isActionable(named.label), !row.readOnly || row.caveat?.hasPrefix(B.blockedPrefix) == true else { continue }
+            let value = (named.system ? systemList : guiList)[named.label]
+            let disabled = value.map { $0 == "disabled" || $0 == "true" } ?? (plists[row.id]?["Disabled"] as? Bool ?? false)
+            let status = CleanDevMacEngine.run("/bin/launchctl", ["print", B.target(named.label, system: named.system, userID: uid)], timeout: 10).status
+            let state = disabled ? "Off" : status == 0 ? "On" : status == 113 ? "Not loaded" : "Unknown"
+            if state != row.value {
+                statesMatch = false
+                print("     ⚠️ \(row.title) shows \(row.value), launchctl says \(state)")
+            }
+        }
+        check("Each item's state is what launchctl reports (Off from the disabled list, else print's 0 or 113)", statesMatch)
+
+        // What the rows say follows from the plists, whatever this Mac holds.
+        func program(_ id: String) -> (program: String, arguments: [String]) {
+            let dict = plists[id] ?? [:]
+            let arguments = dict["ProgramArguments"] as? [String] ?? []
+            return (dict["Program"] as? String ?? arguments.first ?? "", arguments)
+        }
+        let updatersRight = rows.allSatisfy { row in
+            let label = B.parse(key: row.id)?.label ?? ""
+            let isUpdater = [label, (program(row.id).program as NSString).lastPathComponent].contains { $0.lowercased().contains("update") }
+            let warned = row.caveat?.contains("Not an updater.") == true
+            return row.tags.contains(B.updaterTag) == isUpdater && (isUpdater ? !warned : (warned || row.tags.contains(B.leftoverTag)))
+        }
+        check("Updaters carry the Updater tag and no warning; every other item the warning, unless it is a leftover", updatersRight)
+        check("Daemons, and leftovers moved out of /Library/LaunchAgents, are For all users and may ask for the password; nothing else is For all users",
+              rows.allSatisfy { row in
+                  let system = row.id.hasPrefix("background:system/")
+                  let shared = system || (sharedAgents[row.id] == true && B.change(of: row) == .trash)
+                  return row.tags.contains(B.allUsersTag) == shared && (!shared || row.tags.contains(MacTweaksStorage.passwordTag))
+              })
+        let guarded = B.guardedFolders(env)
+        let leftoversRight = rows.allSatisfy { row in
+            let (run, arguments) = program(row.id)
+            guard let path = B.judgedPath(program: run, arguments: arguments), path.hasPrefix("/"),
+                  !guarded.contains(where: { MacTweaksStorage.isInside(B.folded(path), B.folded($0)) }) else { return !row.tags.contains(B.leftoverTag) }
+            var info = stat()
+            let missing = stat(path, &info) != 0 && (errno == ENOENT || errno == ENOTDIR)
+            return row.tags.contains(B.leftoverTag) == missing
+        }
+        let leftovers = rows.filter { $0.tags.contains(B.leftoverTag) }
+        print("     Leftovers here: \(leftovers.isEmpty ? "none" : leftovers.map(\.title).joined(separator: ", "))")
+        check("A row is a leftover exactly when what it runs is confirmed missing (ENOENT or ENOTDIR)", leftoversRight)
+        let appNotesRight = rows.allSatisfy { row in
+            let associated = plists[row.id]?["AssociatedBundleIdentifiers"]
+            let ids = (associated as? [String]) ?? (associated as? String).map { [$0] } ?? []
+            let missing = !ids.isEmpty && ids.allSatisfy { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) == nil }
+            return (row.caveat?.contains("isn't installed.") == true) == missing
+        }
+        check("An item whose app LaunchServices doesn't know says so, and no other", appNotesRight)
+        let status = journal.status()
+        let journalBlocked = status.isBlocked
+        let recorded = Set(MacTweaksJournal.load(url: URL(fileURLWithPath: journalPath)).journal?.entries(kind: B.Entry.kind).map(\.key) ?? [])
+        switch status {
+        case .ready: print("     Journal: \(journalBefore == nil ? "none yet" : "readable"), \(recorded.count) Background Items \(recorded.count == 1 ? "entry" : "entries")")
+        case .unreadable(let reason), .blocked(let reason): print("     Journal: \(reason)")
+        }
+        check("Every row is read-only, saying why, exactly while the journal can't record changes",
+              rows.allSatisfy { ($0.caveat?.hasPrefix(B.blockedPrefix) == true) == journalBlocked && (!journalBlocked || $0.readOnly) })
+        let summary = B.summary(rows: scanned ?? [], ticked: [])
+        print("     Summary: \(summary)")
+        check("...and the summary says so", summary.hasSuffix(journalBlocked ? B.blockedSummary : B.appleNote))
+        check("An item says Lightspot turned it off exactly when it is off and the journal holds it",
+              rows.allSatisfy { ($0.caveat?.contains("Lightspot turned it off.") == true) == (recorded.contains($0.id) && $0.value == "Off") })
+
+        // The plan, with every row ticked as if it could be, and Undo everything's hook: built
+        // without running anything that changes the Mac.
+        let ticked = rows.filter { B.change(of: $0) != nil }
+        let ranBefore = record.programs.count
+        let notes = B.planNotes(ticked)
+        print("     Plan for all \(ticked.count): \(B.applyTitle(ticked: ticked)). \(notes.joined(separator: " "))")
+        check("Building the plan runs nothing", record.programs.count == ranBefore)
+        check("The plan asks for the password exactly when a daemon, or a leftover only root can move, is ticked",
+              notes.contains(MacTweaksStorage.passwordNote) == ticked.contains(where: B.needsAdministrator))
+        let items = B.items(env)
+        let entries = items.map { B.Entry(item: $0, owner: $0.label, wasDisabled: false, wasLoaded: true, date: Date()) }
+        let undo = B.undo(entries, environment: env)
+        let daemons = items.filter { $0.system && B.isActionable($0.label) }
+        check("Undo everything's hook gives the batch one enable per daemon, with the plist the scan found",
+              undo.adminCommands.count == daemons.count
+                && zip(undo.adminCommands, daemons).allSatisfy { $0.contains(" enable ") && $0.contains(MacTweaksStorage.shellQuote($1.plist)) })
+        let verifiesRight = rows.allSatisfy { row in
+            guard B.parse(key: row.id).map({ B.isActionable($0.label) }) == true, row.value != "Unknown" else { return true }
+            if case .undone = undo.outcome(row.id, (0, "")) { return row.value != "Off" }
+            return row.value == "Off"
+        }
+        check("...and counts as undone exactly the items that aren't off", verifiesRight)
+        // Settings' Undo everything carries this section's hook, both ways the provider builds it
+        // (the app's own path is `makeEngine`).
+        let sample = B.Entry(item: items.first ?? B.Item(label: "com.example.sample", plist: "/Library/LaunchDaemons/com.example.sample.plist",
+                                                          place: .daemons, program: "", arguments: [], associatedIDs: [],
+                                                          plistDisabled: false, isLink: false, ownerUID: nil),
+                             owner: "Sample", wasDisabled: false, wasLoaded: true, date: Date())
+        let expectedLine = B.undoPlanLines([(sample.key, sample.json)], environment: env)[sample.key]
+        for (path, engine) in [("engine(for:)", MacTweaksProvider.engine(for: .settings, environment: env)),
+                               ("makeEngine(for:)", MacTweaksProvider(environment: env).makeEngine(for: .settings))] {
+            let settingsEnv = (engine as? MacTweaksSettings.Engine)?.environment.settings
+            check("Undo everything in Settings carries Background Items' hook and plan lines (\(path))",
+                  settingsEnv?.background != nil && expectedLine != nil
+                    && settingsEnv?.backgroundPlanLines?([(sample.key, sample.json)])[sample.key] == expectedLine)
+        }
+        check("Nothing was switched, moved, asked for or written", record.forbiddenCalls.isEmpty)
+        check("The journal is as it was", FileManager.default.contents(atPath: journalPath) == journalBefore)
+
+        // The folders resolve to themselves, the link names a pane, the symbols exist.
+        for folder in [home + "/Library/LaunchAgents", "/Library/LaunchAgents", "/Library/LaunchDaemons"] where MacTweaksStorage.isFolder(folder) {
+            check("\(CleanDevMacEngine.displayPath(folder, home: home)) resolves to itself", MacTweaksStorage.resolved(folder) == folder)
+        }
+        check("The Login Items link names an installed pane", panes["com.apple.LoginItems-Settings.extension"] != nil
+              && B.loginItemsLink == "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+        let missingSymbols = B.symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        check("Every Background Items SF Symbol exists\(missingSymbols.isEmpty ? "" : ": missing " + missingSymbols.joined(separator: ", "))", missingSymbols.isEmpty)
+        scanned = nil
+        malloc_zone_pressure_relief(nil, 0)
+        print("     Resident memory: \(residentBefore / 1_048_576) MB before the scan, \(residentBytes() / 1_048_576) MB once its rows were dropped")
+    }
 }
 
 /// This process's resident memory, as Activity Monitor's Memory column counts it.

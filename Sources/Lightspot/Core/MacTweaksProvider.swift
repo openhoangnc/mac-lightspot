@@ -3,8 +3,8 @@ import AppKit
 // MARK: - Mac Tweaks Provider
 //
 // The "Mac Tweaks" search row and the state behind its overlay: one section per job
-// (Free Up Space, Apple Intelligence and Settings now; Background Items in a later release),
-// each with an engine that scans and applies. Scans and applies run on the
+// (Free Up Space, Apple Intelligence, Settings and Background Items), each with an engine
+// that scans and applies. Scans and applies run on the
 // provider's own queue and publish snapshots, so `search()` and the overlay only ever
 // read memory (invariant 0). Nothing runs until the user opens Mac Tweaks: at launch
 // and on every keystroke the row is static text plus the last scan's total.
@@ -52,12 +52,12 @@ enum MacTweaksSection: String, CaseIterable, Sendable {
     /// The sections this build has, in tab order. Only these are shown, scanned or reachable
     /// with ⇥. Apple Intelligence only where it exists: Apple silicon, and a macOS with at least
     /// one of its features (none before 15.1). Settings everywhere: macOS 13 has most of its
-    /// tweaks.
+    /// tweaks. Background Items everywhere: every macOS has launchd's three folders.
     static let built: [MacTweaksSection] =
         sections(appleIntelligence: Catalog.hasAppleSilicon && !Catalog.availableFeatures.isEmpty)
 
     static func sections(appleIntelligence: Bool) -> [MacTweaksSection] {
-        (appleIntelligence ? [.freeUpSpace, .appleIntelligence] : [.freeUpSpace]) + [.settings]
+        (appleIntelligence ? [.freeUpSpace, .appleIntelligence] : [.freeUpSpace]) + [.settings, .backgroundItems]
     }
 
     /// Its position in `allCases`: per-section state is kept in arrays, not in dictionaries
@@ -281,14 +281,39 @@ final class MacTweaksProvider: @unchecked Sendable {
         ("delete apple intelligence models", 0.95),
     ]
 
+    /// The row that opens Mac Tweaks on its Background Items section. Matched exactly or by
+    /// prefix only, as Settings' phrases are, and a prefix only once the query reaches the
+    /// phrase's second word (`backgroundReach`), so a bare word ("disable", "launch",
+    /// "background") stays with the rows that answer to it. "background items", "launch agents"
+    /// and "launch daemons" weigh under the 0.95 System Settings gives its own keywords, so its
+    /// Login Items row, which answers the first two, stays first for them.
+    static let backgroundResultID = "action-mac-tweaks-background-items"
+    static let openBackgroundScript = "internal:mac-tweaks:background-items"
+    static let backgroundTitle = "Mac Tweaks: Background Items"
+    static let backgroundSubtitle = "Turn off launch agents and daemons other apps installed, and remove leftovers"
+    static let backgroundKeywords: [(phrase: String, weight: Double)] = [
+        ("background items", 0.9),
+        ("launch agents", 0.9),
+        ("launch daemons", 0.9),
+        ("turn off background items", 0.95),
+        ("turn off launch agents", 0.95),
+        ("disable launch agents", 0.95),
+        ("turn off google updater", 0.95),
+        ("leftover launch agents", 0.95),
+    ]
+    /// Per phrase, how long a query must be to reach its second word: the first word, the space
+    /// and one letter.
+    static let backgroundReach = backgroundKeywords.map { $0.phrase.prefix { $0 != " " }.count + 2 }
+
     /// Whether a quick action's script opens Mac Tweaks, and on which section (nil: as left).
     static func isOpenScript(_ script: String) -> Bool {
-        script == openScript || script == openIntelligenceScript || script == openSettingsScript
+        script == openScript || script == openIntelligenceScript || script == openSettingsScript || script == openBackgroundScript
     }
     static func section(forScript script: String) -> MacTweaksSection? {
         switch script {
         case openIntelligenceScript: return .appleIntelligence
         case openSettingsScript: return .settings
+        case openBackgroundScript: return .backgroundItems
         default: return nil
         }
     }
@@ -333,6 +358,25 @@ final class MacTweaksProvider: @unchecked Sendable {
                     category: .quickActions,
                     score: score,
                     action: .runQuickAction(script: Self.openSettingsScript, usesOsascript: false)
+                ))
+            }
+        }
+        if MacTweaksSection.built.contains(.backgroundItems) {
+            var background: Double?
+            for (index, keyword) in Self.backgroundKeywords.enumerated() where query.lowercased.count >= Self.backgroundReach[index] {
+                if let score = FuzzyMatcher.score(query: query, targetLower: keyword.phrase, targetTokens: [], targetInitials: nil), score >= 95 {
+                    background = max(background ?? 0, score * keyword.weight)
+                }
+            }
+            if let score = background {
+                results.append(SearchResult(
+                    id: Self.backgroundResultID,
+                    title: Self.backgroundTitle,
+                    subtitle: Self.backgroundSubtitle,
+                    iconType: .systemSymbol(name: MacTweaksSection.backgroundItems.symbol),
+                    category: .quickActions,
+                    score: score,
+                    action: .runQuickAction(script: Self.openBackgroundScript, usesOsascript: false)
                 ))
             }
         }
@@ -415,6 +459,10 @@ final class MacTweaksProvider: @unchecked Sendable {
         /// The apply is waiting for System Settings (the profile's approval or removal): Esc
         /// stops that wait, and the footer says so.
         var waiting = false
+
+        /// Rows another section's apply made stale (`staleAfterApply` drops `scannedAt`): no apply
+        /// acts on them, and the overlay scans the section again when it shows.
+        var isStale: Bool { phase == .ready && scannedAt == nil }
     }
 
     struct Snapshot: Sendable {
@@ -473,11 +521,15 @@ final class MacTweaksProvider: @unchecked Sendable {
         /// Everything the Settings section reads or changes besides the profile (which it shares
         /// with Apple Intelligence through `intelligence`). `.inert` here, as for Apple Intelligence.
         var settings = MacTweaksSettings.Environment.inert
+        /// Everything Background Items reads or changes: launchctl, LaunchServices' app names and
+        /// the undo journal. `.inert` here, as for Apple Intelligence.
+        var backgroundItems = MacTweaksBackground.Environment.inert
 
         static var live: Environment {
             var environment = Environment(home: NSHomeDirectory())
             environment.intelligence = .live(home: environment.home)
             environment.settings = .live
+            environment.backgroundItems = .live
             return environment
         }
 
@@ -508,9 +560,17 @@ final class MacTweaksProvider: @unchecked Sendable {
         switch section {
         case .freeUpSpace: return MacTweaksStorage.Engine(environment: environment)
         case .appleIntelligence: return MacTweaksIntelligence.Engine(environment: environment)
-        case .settings: return MacTweaksSettings.Engine(environment: environment)
-        case .backgroundItems: return nil
+        case .settings: return MacTweaksSettings.Engine(environment: settingsEnvironment(environment))
+        case .backgroundItems: return MacTweaksBackground.Engine(environment: environment)
         }
+    }
+
+    /// Settings' environment, the one both `engine(for:)` and `makeEngine(for:)` build its engine
+    /// with: Undo everything takes back what Background Items turned off, in its one batch.
+    static func settingsEnvironment(_ environment: Environment) -> Environment {
+        var env = environment
+        MacTweaksBackground.connectUndoEverything(&env)
+        return env
     }
 
     /// The engine for a section, with what the provider knows: Free Up Space gets the last Apple
@@ -531,9 +591,10 @@ final class MacTweaksProvider: @unchecked Sendable {
             return MacTweaksIntelligence.Engine(environment: env, shown: current[section].rows,
                                                 scanned: current.appleIntelligenceScan)
         case .settings:
-            env.intelligence.waiting = { [weak self] on in self?.setWaiting(section, on) }
-            env.intelligence.isCancelled = { [weak self] in self?.isWaitCancelled(section) ?? false }
-            return MacTweaksSettings.Engine(environment: env, scanned: current.settingsScan)
+            var settings = Self.settingsEnvironment(env)
+            settings.intelligence.waiting = { [weak self] on in self?.setWaiting(section, on) }
+            settings.intelligence.isCancelled = { [weak self] in self?.isWaitCancelled(section) ?? false }
+            return MacTweaksSettings.Engine(environment: settings, scanned: current.settingsScan)
         case .backgroundItems:
             return Self.engine(for: section, environment: env)
         }
@@ -714,6 +775,13 @@ final class MacTweaksProvider: @unchecked Sendable {
     func apply(_ section: MacTweaksSection, ids: Set<String>) {
         guard let engine = makeEngine(for: section) else { return }
         lock.lock()
+        if state[section].isStale {
+            lock.unlock()
+            // Another section's apply changed what these rows showed (Undo everything's list,
+            // the profile): scan again rather than act on them.
+            startScan(section, force: true)
+            return
+        }
         let selected = MacTweaksTicks.ticked(state[section].rows, ids)
         guard state[section].phase == .ready, !selected.isEmpty else {
             lock.unlock()
@@ -757,11 +825,29 @@ final class MacTweaksProvider: @unchecked Sendable {
                 // An apply's rescan, with its own inventory's availability.
                 if let context = (engine as? MacTweaksIntelligence.Engine)?.lastContext { state.appleIntelligenceScan = context }
                 if let reading = (engine as? MacTweaksSettings.Engine)?.lastContext { state.settingsScan = reading }
-                // Apple Intelligence and Settings share one profile: the other one's scan no
-                // longer stands, so opening it scans again.
-                if let sibling = Self.profileSibling(section), state[sibling].phase == .ready { state[sibling].scannedAt = nil }
+                // What this apply changed for other sections: their scans no longer stand, so
+                // opening one scans again.
+                for sibling in Self.staleAfterApply(section, applied: selected) where state[sibling].phase == .ready {
+                    state[sibling].scannedAt = nil
+                }
             }
         }
+    }
+
+    /// The sections whose scan an apply here makes stale: Apple Intelligence and Settings share
+    /// the profile; what Background Items turns off is in the journal Settings' Undo everything
+    /// lists, and Undo everything turns it back on.
+    static func staleAfterApply(_ section: MacTweaksSection, applied: [MacTweaksRow]) -> [MacTweaksSection] {
+        var stale = profileSibling(section).map { [$0] } ?? []
+        switch section {
+        case .backgroundItems:
+            stale.append(.settings)
+        case .settings where applied.contains(where: { $0.id == MacTweaksSettings.undoEverythingID }):
+            stale.append(.backgroundItems)
+        default:
+            break
+        }
+        return stale.filter(MacTweaksSection.built.contains)
     }
 
     /// The section that shares the profile with this one.

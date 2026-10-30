@@ -39,8 +39,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 72 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), the System Settings opener against a fake LaunchServices record list and clock (dead records, a quitting or live instance, the error then the retry, the 5 s timeout, the fallback, the order of two opens), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows), the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's), and Mac Tweaks' Free Up Space against a fake system root and home with fake `xcode-select`, `simctl` and `tmutil` scripts: the gate (each refusal, the never-touched folders), every row of the table, Clean Dev Mac's caches left out, the clean (the Trash, protected items, the administrator batch with batch-unique names, simctl, tmutil, a cancelled or refused prompt, a step that fails, an item gone or its folder swapped for a symlink during the prompt or after the guard's checks, verification, the capped receipts log), the batch exact for hostile file names under `/bin/sh -c` and `do shell script`, the Touch ID verdict on synthetic pty transcripts, no xcrun and no simulator row with the Command Line Tools alone, and the sections, the search row and the scan → apply state machine, and Mac Tweaks' Apple Intelligence (the feature and model-set catalog, and no section without a feature; feature state: Siri off from its deciding `Assistant Enabled` alone and never from a secondary preference, Managed for any key another profile forces, on or off or partly, Mail's unreadable domain judged by its forced value only; the profile as data — structure, stable UUIDs, kept keys absent (Siri's preferences too), a hidden Spatial Photos never forced or blocked, download overrides only for removed sets, tweaks preserved, the marker read back, stale detection, the removal as one step of the administrator batch with its own status; the `--asset-service` helper's inventory JSON, unknown sizes when the inventory call fails, a mismatched type not known, its reset refusals for an unknown, empty or mismatched set, nothing sent for a set with no bytes and no files, the request in an NSArray; the client failing closed on a crash, timeout, non-zero exit or undecodable output, and its live runner against a real child; the scan hiding Spatial Photos while its set is retired (26.7.2's report) and showing it, with the models sized and their deletion planned, once known again (27.2's), its turn-on, finish, stale and RemoveMacAI-coexistence modes, and removing the profile file once installed; the plan built from memory without reading the inventory, saying exactly what apply does; and the apply flow against a fake clock, bridge and profile: the order present → approved → reset, cancel and resume, a kept feature kept whatever apply reads, no reset when the sets total 0 bytes, the finish row sending nothing without the marker, the 5 s/15 s lock retries, the 3 s polling stopping after ten, the 600 one-second approval polls, an unknown set never reset, a failed check never read as deleted, coexistence changing nothing, turn-on through the batch and stopping at a cancelled prompt; and, against the real provider, each section's own wait, stopped only by its own Esc, the action rows applied alone, and the search phrases with System Settings' row first), and Mac Tweaks' Settings (the catalog as data: unique IDs and keys, all-profile or all-local tweaks, the presets, the pinned profile tweak IDs, no MDM-only key, the `since` floors; preference values: types kept exactly, a 32-bit real as a property list, booleans matching 0/1 and the strings macOS reads, never int 2 for true; the journal: first previous value, write-ahead, Background Items' raw JSON and unknown kinds kept byte for byte, an unreadable file reported by a scan and moved aside only by a write, two bad files both kept, an unmovable one blocking every change and never overwritten; writes that fail: a journal that can't be saved stopping a job's disable, the Dock's write and the Library flag, an entry left only for a change made (chflags or the Dock refused, a write that didn't take, removed only while the user's value is unchanged), a failed restore keeping its entry for a retry, the first previous value kept through a change by hand; each tweak's state: Partly, managed for any forced key not Lightspot's, "already off but not locked", Safari judged by its forced value, not on this macOS, the Dock with nothing to put back, rcd still loaded; the plan: directions, a Partly row finished only, the profile keeping Apple Intelligence as in force, a stale one included, removal when nothing is left, restarts once each; apply and undo through the live cfprefsd code on scratch `com.lightspot.test.*` domains with prefixed keys: exact values and types back, an unset key unset again, Undo everything restoring only what Lightspot wrote, the domains removed; Music's label from a fake bundle's inodes and its RemoveMacAI lifecycle, rcd's refused bootout counted as off from the next login and a refused bootstrap as back from it, a job off before Lightspot left as it was, each command its own plan item, all through a fake launchctl; Clear and Restore Dock Icons with the backup first, the merge, a second Clear keeping the first backup, a refused Restore keeping it, the rows' subtitles and the 1.3.x one-liner; the Dock tweak (an app removed twice journaled once, put back once) and the Library flag on a temp folder; the receipt one line per kind; the profile's tweak payloads, the shared install-or-remove routine, a marker ID this version doesn't know dropped and said (Apple Intelligence's turn-off included), and the profile file removed by Settings' scan; Undo everything in one administrator batch with Background Items' hook, that batch alone without the profile or when it went before the batch, a damaged entry kept and said; and, against the real provider, presets, the full rescan, the profile sibling's scan dropped, and the search phrases).
-- `deep_verify.swift`: 14 sections of live system checks (179 on this Mac's macOS 27.2; Settings' four checks of report C's facts run only while their inputs still hold; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git, Mac Tweaks' two no-simctl checks when Xcode's simctl is there, its folder checks for folders the Mac lacks, and a System Settings search-term check whose pane no longer ships that term: 27.2's Wi-Fi pane ships no `.searchTerms` file, so "known networks" is skipped) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac, and Mac Tweaks' Free Up Space scanning this Mac: every offered path through the gate again, macOS's and Clean Dev Mac's caches left out, the programs it runs, no xcrun, no simulator row without Xcode's simctl, its SF Symbols (measures only; it never deletes, moves or asks for a password), and Mac Tweaks' Apple Intelligence read through the in-process asset-service bridge: the features with the states this Mac reports (Spatial Photos shown exactly while the service knows its set, Siri from `Assistant Enabled` unless a profile forces its keys), the summary and the plan, three checks on the models whatever their state (at 0 bytes no reset, no folder mention and no finish row; with bytes on disk a removal, the plan's size and a finish row; with the service silent no reset), the turn-on row exactly while Lightspot's profile turns Apple Intelligence off, nothing reset or presented, the profile well-formed (`plutil -lint`) with its marker read back, and its SF Symbols, and Mac Tweaks' Settings read on this Mac with every writer refusing (no preference written, no launchctl verb but `print-disabled` and `print`, nothing restarted, no journal or Dock backup created): the 41 tweaks with the states a direct read gives (CFPreferences, launchctl's own output, `stat`), report C's facts checked only while their inputs still hold (smart quotes and dashes Partly, Improve Search off but "not locked", Safari never claiming off from its stub, desktop widgets On, the Dock tweak On and read-only with nothing to put back), Music's label from its two inodes, launchctl's disabled list, rcd's plist, the profile with every Settings tweak well-formed with its marker read back, and its SF Symbols.
+- `test_engine.swift`: 82 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), the System Settings opener against a fake LaunchServices record list and clock (dead records, a quitting or live instance, the error then the retry, the 5 s timeout, the fallback, the order of two opens), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows), the macOS tweaks (every script parses; each toggle runs for real against this run's own scratch `defaults` domain, `com.lightspot.test.tweaks.<run id>`, removed at the end and at exit, never the user's), and Mac Tweaks' Free Up Space against a fake system root and home with fake `xcode-select`, `simctl` and `tmutil` scripts: the gate (each refusal, the never-touched folders), every row of the table, Clean Dev Mac's caches left out, the clean (the Trash, protected items, the administrator batch with batch-unique names, simctl, tmutil, a cancelled or refused prompt, a step that fails, an item gone or its folder swapped for a symlink during the prompt or after the guard's checks, verification, the capped receipts log), the batch exact for hostile file names under `/bin/sh -c` and `do shell script`, the Touch ID verdict on synthetic pty transcripts, no xcrun and no simulator row with the Command Line Tools alone, and the sections, the search row and the scan → apply state machine, and Mac Tweaks' Apple Intelligence (the feature and model-set catalog, and no section without a feature; feature state: Siri off from its deciding `Assistant Enabled` alone and never from a secondary preference, Managed for any key another profile forces, on or off or partly, Mail's unreadable domain judged by its forced value only; the profile as data — structure, stable UUIDs, kept keys absent (Siri's preferences too), a hidden Spatial Photos never forced or blocked, download overrides only for removed sets, tweaks preserved, the marker read back, stale detection, the removal as one step of the administrator batch with its own status; the `--asset-service` helper's inventory JSON, unknown sizes when the inventory call fails, a mismatched type not known, its reset refusals for an unknown, empty or mismatched set, nothing sent for a set with no bytes and no files, the request in an NSArray; the client failing closed on a crash, timeout, non-zero exit or undecodable output, and its live runner against a real child; the scan hiding Spatial Photos while its set is retired (26.7.2's report) and showing it, with the models sized and their deletion planned, once known again (27.2's), its turn-on, finish, stale and RemoveMacAI-coexistence modes, and removing the profile file once installed; the plan built from memory without reading the inventory, saying exactly what apply does; and the apply flow against a fake clock, bridge and profile: the order present → approved → reset, cancel and resume, a kept feature kept whatever apply reads, no reset when the sets total 0 bytes, the finish row sending nothing without the marker, the 5 s/15 s lock retries, the 3 s polling stopping after ten, the 600 one-second approval polls, an unknown set never reset, a failed check never read as deleted, coexistence changing nothing, turn-on through the batch and stopping at a cancelled prompt; and, against the real provider, each section's own wait, stopped only by its own Esc, the action rows applied alone, and the search phrases with System Settings' row first), and Mac Tweaks' Settings (the catalog as data: unique IDs and keys, all-profile or all-local tweaks, the presets, the pinned profile tweak IDs, no MDM-only key, the `since` floors; preference values: types kept exactly, a 32-bit real as a property list, booleans matching 0/1 and the strings macOS reads, never int 2 for true; the journal: first previous value, write-ahead, Background Items' raw JSON and unknown kinds kept byte for byte, an unreadable file reported by a scan and moved aside only by a write, two bad files both kept, an unmovable one blocking every change and never overwritten; writes that fail: a journal that can't be saved stopping a job's disable, the Dock's write and the Library flag, an entry left only for a change made (chflags or the Dock refused, a write that didn't take, removed only while the user's value is unchanged), a failed restore keeping its entry for a retry, the first previous value kept through a change by hand; each tweak's state: Partly, managed for any forced key not Lightspot's, "already off but not locked", Safari judged by its forced value, not on this macOS, the Dock with nothing to put back, rcd still loaded; the plan: directions, a Partly row finished only, the profile keeping Apple Intelligence as in force, a stale one included, removal when nothing is left, restarts once each; apply and undo through the live cfprefsd code on scratch `com.lightspot.test.*` domains with prefixed keys: exact values and types back, an unset key unset again, Undo everything restoring only what Lightspot wrote, the domains removed; Music's label from a fake bundle's inodes and its RemoveMacAI lifecycle, rcd's refused bootout counted as off from the next login and a refused bootstrap as back from it, a job off before Lightspot left as it was, each command its own plan item, all through a fake launchctl; Clear and Restore Dock Icons with the backup first, the merge, a second Clear keeping the first backup, a refused Restore keeping it, the rows' subtitles and the 1.3.x one-liner; the Dock tweak (an app removed twice journaled once, put back once) and the Library flag on a temp folder; the receipt one line per kind; the profile's tweak payloads, the shared install-or-remove routine, a marker ID this version doesn't know dropped and said (Apple Intelligence's turn-off included), and the profile file removed by Settings' scan; Undo everything in one administrator batch with Background Items' hook, that batch alone without the profile or when it went before the batch, a damaged entry kept and said; and, against the real provider, presets, the full rescan, the profile sibling's scan dropped, and the search phrases), and Mac Tweaks' Background Items against fake launchd folders and a fake `launchctl` that keeps launchd's state in files (RemoveMacAI's verdicts: owner, updater, leftover only for ENOENT or ENOTDIR, an interpreter's script judged, inline code never; `print-disabled` in both formats; the scan leaving out stubs, macOS's own, dot files, a plist over 1 MiB and a FIFO, the first of a label winning, the others named on its row, and a leftover with another copy (a working one for every account) never ticked; symlinked plists followed (a chain, a relative stow link) except through a guarded folder, directly or by a linked folder, in any case, and nothing in one judged a leftover, nor a program on a disk that isn't mounted or in a cloud folder; the gate run at scan as at apply, a folder that resolves elsewhere read-only and refused; Off, On, Not loaded and Unknown, the plist's own `Disabled`; an agent for every account noted by what Space does, its leftover for all users and root's, whoever owns the file; agents turned off and on as the user and daemons in one administrator batch, hostile labels and plist names exact under `/bin/sh -c` and `do shell script`, every refusal (apply's own label check too) and a cancelled or refused prompt, each judged by reading launchd again: a launchctl that exits 0 and keeps nothing, as the user or in the batch, counts for nothing, a refused disable stops nothing, and a list that can't be read after a turn-off keeps its entry; daemons until a restart, never "it wasn't loaded" for Unknown, no empty brackets; leftovers stopped, kept while still loaded or when their program came back, moved by `trashItem` or root's guarded move with batch-unique names, the guard refusing a folder swapped for a symlink; the journal written before anything changes, the first previous state kept when a later turn-off fails, an entry taken back when its turn-off fails, a blocked one changing nothing; the journal file itself through `MacTweaksJournal` in a temp home (entries in its format beside Settings' entry and an unknown kind, both kept byte for byte, the first previous state kept without a write, removal down to no file, an unreadable file reported, then kept aside by the first turn-off, a blocked one never written, a save that fails stopping the turn-off and still naming the file kept aside, and an ordinary Settings apply leaving a background entry byte for byte); Undo everything's hook starting only what was loaded and never acting on a path the journal names or giving root a daemon no scan finds, its plan lines promising no more (an entry whose plist is gone dropped, running nothing), and Settings' Undo everything through the real hook, by the provider's own engine (its plan lines and password notes, each item back as it was, the daemons in one batch with no profile to remove, the journal file gone, each outcome logged), an apply from rows made stale refused and scanned again, and the static engine (a daemon root refuses said in launchctl's words, an entry that doesn't decode noted as kept, one whose plist is gone dropped, never "everything is back"); the receipt one line per kind; and the section in the provider: the Login Items link through `SystemSettingsOpener`, Settings' scan made stale by an apply here and this one's by Undo everything, and, with System Settings' own terms indexed, the search phrases under its Login Items row and the Top Hits of "disable", "background items", "login items", "launch agents", "launch", "background" and "turn off" kept). Cleanups that must survive a failed assertion (`exit(1)` skips every `defer`) register with `atExit`, which also sweeps this run's own `lightspot-…` fixture folders out of `$TMPDIR`.
+- `deep_verify.swift`: 15 sections of live system checks (204 on this Mac's macOS 27.2; Settings' four checks of report C's facts run only while their inputs still hold; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git, Mac Tweaks' two no-simctl checks when Xcode's simctl is there, its folder checks for folders the Mac lacks, and a System Settings search-term check whose pane no longer ships that term: 27.2's Wi-Fi pane ships no `.searchTerms` file, so "known networks" is skipped) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac, and Mac Tweaks' Free Up Space scanning this Mac: every offered path through the gate again, macOS's and Clean Dev Mac's caches left out, the programs it runs, no xcrun, no simulator row without Xcode's simctl, its SF Symbols (measures only; it never deletes, moves or asks for a password), and Mac Tweaks' Apple Intelligence read through the in-process asset-service bridge: the features with the states this Mac reports (Spatial Photos shown exactly while the service knows its set, Siri from `Assistant Enabled` unless a profile forces its keys), the summary and the plan, three checks on the models whatever their state (at 0 bytes no reset, no folder mention and no finish row; with bytes on disk a removal, the plan's size and a finish row; with the service silent no reset), the turn-on row exactly while Lightspot's profile turns Apple Intelligence off, nothing reset or presented, the profile well-formed (`plutil -lint`) with its marker read back, and its SF Symbols, and Mac Tweaks' Settings read on this Mac with every writer refusing (no preference written, no launchctl verb but `print-disabled` and `print`, nothing restarted, no journal or Dock backup created): the 41 tweaks with the states a direct read gives (CFPreferences, launchctl's own output, `stat`), report C's facts checked only while their inputs still hold (smart quotes and dashes Partly, Improve Search off but "not locked", Safari never claiming off from its stub, desktop widgets On, the Dock tweak On and read-only with nothing to put back), Music's label from its two inodes, launchctl's disabled list, rcd's plist, the profile with every Settings tweak well-formed with its marker read back, and its SF Symbols, and Mac Tweaks' Background Items scanning this Mac: every other app's plist with a Label listed and nothing else (against its own read of the three folders), each state against `launchctl print-disabled` and `print` read on their own, updaters, daemons, leftovers and the missing-app note as the plists say, rows read-only exactly while the journal can't record changes, "Lightspot turned it off" exactly for what is off and in the journal, the plan and Undo everything's hook built without running anything, Settings' engine carrying that hook both ways the provider builds it (`engine(for:)` and `makeEngine(for:)`), the journal file left as it was, the folders resolving to themselves, the Login Items pane and its SF Symbols (only `print` and `print-disabled` run; nothing is switched, moved, asked for or written).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
@@ -74,8 +74,8 @@ mac-lightspot/
 │   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (72 test blocks)
-│   └── deep_verify.swift         # Live-system verification (14 sections; checks vary with the system)
+│   ├── test_engine.swift         # Automated test runner (82 test blocks)
+│   └── deep_verify.swift         # Live-system verification (15 sections; checks vary with the system)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -95,6 +95,7 @@ mac-lightspot/
         │   ├── CustomIconCache.swift    # Base64 custom command icon decoding/cache
         │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
         │   ├── MacTweaks.swift          # `defaults` tweaks (Dock, Finder, keyboard…) as quick actions; Clear/Restore Dock Icons (`MacTweaksDock`)
+        │   ├── MacTweaksBackground.swift # Background Items: launchd folders, RemoveMacAI's verdicts, state, off/on, leftovers, Undo hook
         │   ├── MacTweaksIntelligence.swift # Apple Intelligence: feature/model catalog, state, scan, profile+model-removal flow
         │   ├── MacTweaksJournal.swift   # Preference values, cfprefsd store (live/scratch), the undo journal file
         │   ├── MacTweaksProfile.swift   # The Mac Tweaks configuration profile: builder, marker, the shared install/remove routine
@@ -366,12 +367,11 @@ cleans and prints a receipt.
 
 The "Mac Tweaks" row (`mac tweaks`, `tweaks`, `debloat`, `free up space`, `remove garageband`, …)
 and the menu bar's **Mac Tweaks...** open an overlay drawn like Clean Dev Mac's, in sections:
-**Free Up Space**, **Apple Intelligence** and **Settings** now; Background Items is modelled in
-`MacTweaksSection` and appears once a release builds it (`MacTweaksSection.built`). Free Up
-Space, Apple Intelligence and Settings port RemoveMacAI's Storage, asset-service and tweak work
-(MIT, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the asset-service calls and the profile
-follow pared, MIT); the gate, the batch, the helper process, the journal's format and the copy are
-Lightspot's.
+**Free Up Space**, **Apple Intelligence**, **Settings** and **Background Items**
+(`MacTweaksSection.built`). They port RemoveMacAI's Storage, asset-service, tweak and
+BackgroundItems work (MIT, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the asset-service
+calls and the profile follow pared, MIT); the gate, the batch, the helper process, the journal's
+format and the copy are Lightspot's.
 
 - **Sections share everything but their engine.** `MacTweaksProvider` keeps one `SectionState`
   per section (phase, rows, receipt, generation) on its own serial queue and publishes a
@@ -460,7 +460,10 @@ Lightspot's.
   runs on the provider's queue, keeps running if the panel hides (a password prompt takes the
   focus), and reopening shows its steps, then its receipt; ↵ on the receipt scans again.
   Closing the overlay drops an older scan's rows, and the rows behind a receipt, keeping only
-  the row's total; a scan that still stands is kept, so the five-minute reuse holds.
+  the row's total; a scan that still stands is kept, so the five-minute reuse holds. Rows another
+  section's apply made stale (`MacTweaksProvider.staleAfterApply`, `SectionState.isStale`) are
+  never applied: `apply` scans the section again instead, and the overlay rescans the section on
+  screen as soon as its rows go stale (`MacTweaksModel.refresh`).
 - **Receipts** go to `~/Library/Application Support/Lightspot/mac-tweaks.log`, written only when
   the user applies something and capped like cdm's clean.log
   (`CleanDevMacEngine.appendToLog(_:url:now:)`).
@@ -645,16 +648,130 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
 - **Undo everything** puts back every journal entry by its own fields (settings, the Library flag,
   Dock tiles, jobs; tweaks no longer in the catalog included), restarts what they need once, and
   removes Lightspot's profile, Background Items' root steps joining the profile's removal in **one**
-  administrator batch (`Environment.background`, typed `[(key, json)]`, with a plan-line hook; nil
-  until Background Items is built, and then its entries stay); without the profile, or when it went
-  before the batch, those steps make the batch alone (`MacTweaksProfile.change`). Kinds it can't undo
-  stay, as do entries of a known kind it can't read, and the plan and the receipt say so. Files in the Trash and Clear Dock Icons' backup are not part of it.
+  administrator batch (`Environment.background`, typed `[(key, json)]`, and `backgroundPlanLines`,
+  both set by `MacTweaksBackground.connectUndoEverything` in `MacTweaksProvider.settingsEnvironment`,
+  the one function both ways the provider builds this engine go through; without them its entries
+  stay); without the profile, or when it went before the batch, those steps make the batch alone
+  (`MacTweaksProfile.change`, whose `extraResults` hands back each step's status and output). Each
+  background entry ends `undone`, `dropped` (its plist is gone: nothing ran, and the receipt says
+  so) or `kept` with a problem line in launchctl's words ("<owner>: still off (reason)"); one that
+  doesn't decode, or names what Lightspot never changes, gets a "Kept: …" note, and the log has
+  every key's outcome and the agents' launchctl calls. With a daemon journaled the plan says the
+  administrator password is needed, together with the profile's removal or alone, and that every
+  account is changed. Kinds it can't undo stay, as do entries of a known kind it can't read, and the
+  plan and the receipt say so. Files in the Trash and Clear Dock Icons' backup are not part of it.
 - **The plan and the summary read nothing**: the provider keeps the scan's `Reading`
   (`Snapshot.settingsScan`). After an apply in Apple Intelligence or Settings the other one's scan no
-  longer stands (they share the profile), and a full rescan replaces every row. The phrases "stop
+  longer stands (they share the profile), nor does Background Items' after Undo everything, nor
+  Settings' after a Background Items apply (`MacTweaksProvider.staleAfterApply`); a full rescan
+  replaces every row. The phrases "stop
   music from opening", "turn off apple music", "turn off mac analytics", "turn off personalized
   ads" and "show the library folder" open the section directly (`internal:mac-tweaks:settings`),
   matched exactly or by prefix only, so a word inside one ("library") never brings the row up.
+
+#### Background Items
+
+Lists the launch agents and daemons other apps installed, and turns each off, back on, or, when
+what it runs is gone, moves its plist to the Trash. `MacTweaksBackground` is the engine; it ports
+RemoveMacAI's `BackgroundItems.swift` (MIT): its folders, its verdicts and its launchctl verbs.
+
+- **What it lists.** Every `*.plist` in `~/Library/LaunchAgents`, `/Library/LaunchAgents` and
+  `/Library/LaunchDaemons`, by folder then name, read without blocking (`readPlist`: opened
+  `O_NONBLOCK | O_NOFOLLOW`, a regular file once open, at most 1 MiB, so a FIFO or a huge file
+  can't stall the scan), except dot files, a plist without a `Label` (Google's empty Keystone
+  stubs) and macOS's own (`com.apple.`); the first plist of a label in its domain wins. A
+  symlinked plist (old Homebrew, GNU stow) is followed with `lookUp`, one component at a time,
+  each checked before it is looked at against `guardedFolders` (the folders macOS guards, other
+  disks under `/Volumes` and `~/Library/CloudStorage`), in any case and Unicode normalization as
+  the disk reads names, so a link into `~/documents`, directly or through a linked folder, is
+  never read (macOS would ask the user). A label's other plists in its domain (one in each agent
+  folder) are named on its row (`alsoAt`): launchd runs only one of them. Agents belong to
+  `gui/<uid>`, daemons to `system`; a row's ID is the journal key, `background:gui/<label>` or
+  `background:system/<label>` (no uid). The scan runs apply's gate too, so a row apply would refuse
+  (a link on the way to its folder) is read-only, saying why. Lightspot itself has no plist there.
+- **RemoveMacAI's verdicts.** Owner: the `.app` its program sits in, else what it runs (an
+  interpreter's script), else the label's third part; there Lightspot first asks LaunchServices
+  for the app the plist's `AssociatedBundleIdentifiers` names (a Docker helper reads "Docker").
+  Updater: "update" in the label or the program's name. Leftover: what it runs is confirmed
+  missing (ENOENT or ENOTDIR, never EACCES), an interpreter's script judged instead of the
+  interpreter, inline code (`-c`, `-e`) never judged, nor a path in a guarded folder (looked up
+  with `lookUp`, so never touched; a program on a disk that isn't mounted is not gone). When
+  LaunchServices knows none of the apps a plist names, the row says "The app it came with (…)
+  isn't installed." (Zoom's daemon on this Mac: Zoom is gone, its helper stayed, so it is not a
+  leftover).
+- **State, read without root.** Off when `launchctl print-disabled` says `disabled` (or `true`), or
+  when the plist's own `Disabled` is true and launchd has no override; else On when `launchctl
+  print <domain>/<label>` exits 0, Not loaded at 113 (Login Items & Extensions may have switched it
+  off; launchctl can't see that, so the row says "may"), Unknown otherwise. Only `print`'s exit
+  status is kept: its output lists the job's environment. A label launchctl would misread is
+  read-only (`isActionable`: `gui/501/a/b` names service `a`, an empty label reads as loaded, and
+  only printable ASCII passes, because Foundation hands a child its arguments decomposed, so on
+  the sudo path, the batch's included, `é` would reach launchctl as `e` + U+0301 while launchd
+  compares bytes; `do shell script` passes precomposed text, but one label must work on both).
+- **What Space ticks.** A leftover goes to the Trash (ticked after a scan, the only default); an
+  Off row is turned back on; anything else is turned off. A leftover whose plist is a symlink, or
+  whose label has another plist (stopping it would stop that one's job), is never moved. In
+  `/Library/LaunchAgents` a turn-off or turn-on is for this account only, and the row says so; a
+  leftover's move there is for every account and root's, whoever owns the file (For all users and
+  May ask for password, and the plan says both). The row's `outcome` names its change
+  (`change(of:)`).
+- **Apply**, on the provider's queue: the plists and launchd are read again first (an item already
+  as asked, changed or gone is skipped and said so); turn-offs are journaled before anything
+  runs; user agents change as this user (off is `disable`, then `bootout` while loaded; on is
+  `enable`, then `bootstrap gui/<uid> <plist>` while not loaded; a leftover is booted out, kept
+  while still loaded, then `trashItem`); then one administrator batch, in Free Up Space's form,
+  holds every daemon's change and every move only root can make (stopped, checked, then
+  `guardedMove`, Trash names unique in the batch). Then launchd is read again and only what it
+  confirms counts: off is disabled (still running is a problem: a daemon until you restart, an
+  agent until you log out), on is not disabled (not loading is a problem naming Login Items); a
+  launchctl that exits 0 and keeps nothing counts for nothing, and when the list can't be read
+  the item counts neither way and its journal entry stays. launchctl runs through
+  `MacTweaksBackground.run`: never a shell, stdin /dev/null, stderr kept (where launchctl says
+  why), 10 s.
+- **The journal** is Settings' `tweaks-journal.json`, through four closures
+  (`MacTweaksBackground.Journal`: `status`, `entries`, `recordAhead`, `remove`). `Journal.file`
+  puts them on `MacTweaksJournal` (`status`, `load`, `loadForWriting`, `recordIfAbsent(key, json)`,
+  `saveAhead`, `entries(kind:)`) through Settings' file system (`journal(_:)`,
+  `env.settings.fileSystem`), so deep_verify's refusing one covers both sections; tests give an
+  in-memory one. A turn-off records `wasDisabled` and `wasLoaded` before it runs (the first previous
+  state wins, and a call that adds nothing writes nothing; an entry whose turn-off didn't take is
+  taken back); turning back on, or trashing, removes the entry, and an empty journal leaves no
+  file. The entry is Background Items' own JSON, kept byte for byte with every other entry. A scan
+  only reads the status. Unreadable: turn-off rows say the file is kept aside, and the first
+  turn-off moves it aside (`loadForWriting`), its receipt naming the new file as Settings' does.
+  Blocked (unreadable and unmovable): every row is read-only, leading with the reason
+  (`MacTweaksJournal.blockedReason`), and the summary says nothing changes. A remove never moves
+  anything aside.
+- **Undo everything** in Settings turns back on what Lightspot turned off here, through
+  `undo(_:unreadable:environment:)` and `undoPlanLines`, which `connectUndoEverything` hands to
+  Settings' engine: the daemons' `enable` (plus `bootstrap` only for what was loaded before) for
+  its one batch, profile or not (`adminKeys` names each step's entry), the agents' own steps as
+  this user, and `outcome`, read from launchd once both have run. Root only ever names a label and
+  a plist the scan found in `/Library/LaunchDaemons`: the journal is the user's own file, so
+  nothing it says alone makes root act. An entry whose plist is gone runs nothing and is dropped
+  (decision 8), and the plan and the receipt say exactly that, launchd keeping its switch off; one
+  still off is kept, with "<owner>: still off (reason)" in launchctl's words (its batch step's, or
+  its own `enable`'s); one that doesn't decode, contradicts itself, names a `com.apple.` label or
+  one launchctl would misread stays, with a "Kept: …" note. The plan lines (`undoPlanLine`, one
+  look for the plists per Settings scan) promise only that, and none shows the journal's plist
+  path.
+- **The rows** are the shared `MacTweaksRow`: the owner as title, the label and what it runs (never
+  its other arguments, which can hold tokens), the state on the right, tags (Updater, Leftover, For
+  all users, May ask for password), "Not an updater. Turning it off can stop <owner> working." as
+  the caveat, the plist first among the items (⌥↵ shows it) and then the commands its change runs;
+  a last link row opens Login Items & Extensions (through `SystemSettingsOpener`, invariant 15).
+  The summary and the plan read nothing; the plan says Undo everything turns them back on too.
+- **The receipt** is one wrapped line per kind, as Settings' is ("Turned off: Docker,
+  GoogleUpdater.", "Turned back on: …", "Moved to the Trash: …", "Already off: …", "Already on: …",
+  "Already gone: …"), under a headline that fits one line ("Turned off 2 items.", "Changed 4
+  background items.", "launchd didn't confirm what changed."); problems stay one per item.
+- **Search.** "turn off background items", "turn off launch agents", "disable launch agents",
+  "turn off google updater", "leftover launch agents", "launch daemons", "background items" and
+  "launch agents" open the section directly (`internal:mac-tweaks:background-items`), matched
+  exactly or by prefix only, and a prefix only once the query reaches the phrase's second word
+  (`backgroundReach`), so a bare word ("disable", "launch", "background") keeps its own Top Hit.
+  The last three weigh 0.9, under the 0.95 of System Settings' Login Items row, which answers to
+  "background items" and "launch agents" too and stays first.
 
 ### Keyboard Shortcuts & Action Modifiers
 
@@ -688,7 +805,7 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
   - `⌥↵`: Show the selected category's first path in Finder
   - `⌘↵` (also on the row itself): Run cdm in the preferred terminal
 - **Mac Tweaks overlay** (`↵` on its row, or the menu bar's **Mac Tweaks...**; the Apple
-  Intelligence and Settings search rows open it on their sections):
+  Intelligence, Settings and Background Items search rows open it on their sections):
   - `↑↓`: Select a row; `Space`: Tick / untick it (`SpotlightFieldEditor.keyDown`, as for the
     cleaner; nothing on a link row, or a read-only row the lock marks — a feature another
     profile sets, or one Lightspot's own profile already locks off). An action row ("Finish
@@ -703,6 +820,8 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
     waiting"): stops that wait; the profile stays in System Settings. The close button closes the
     panel and leaves the wait going
   - `⇥` / `⇧⇥`: Next / previous section, once there is more than one
+  - Background Items: `Space` ticks the row's change (off, back on, or to the Trash for a
+    leftover); `⌥↵` shows its plist in Finder; `↵` on "Login Items in System Settings" opens that pane
   - `⌥↵`: Show the selected row's first item in Finder; on a receipt, the app macOS kept
   - `⌥↵` and `⌘↵` on the Mac Tweaks row itself open the overlay, as `↵` does
 
@@ -815,9 +934,27 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
      `launchctl print-disabled gui/<uid>`, and `launchctl print` for com.apple.rcd and Music's
      label when they are disabled; the inodes of `/System/Applications/Music.app` and its
      executable (`lstat`); `~/Library`'s hidden flag; the Dock's `persistent-apps` (cfprefsd);
-     the journal (`tweaks-journal.json`); and whether rcd's plist and the Dock backup exist. The
+     the journal (`tweaks-journal.json`), and, while it holds Background Items' entries, the
+     three launchd folders as Background Items reads them, once, for Undo everything's lines;
+     and whether rcd's plist and the Dock backup exist. The
      Dock quick actions read `persistent-apps` and `dock-backup.plist` only when run; their rows'
      subtitles check that the backup exists, on a background queue, once a search shows them.
+   - For Mac Tweaks' Background Items, and only when the user opens that section, on its queue:
+     the names in `~/Library/LaunchAgents`, `/Library/LaunchAgents` and `/Library/LaunchDaemons`
+     (each folder `lstat`ed and resolved at every scan and every apply), and each `.plist` there
+     (`lstat`, then read whole when it is a regular file of at most 1 MiB; a symlinked one where it
+     leads, unless the way passes through a guarded folder), of which only `Label`, `Program`,
+     `ProgramArguments`, `AssociatedBundleIdentifiers` and `Disabled` are kept, the arguments never
+     shown or logged; `launchctl print-disabled gui/<uid>` and `system`; `launchctl print
+     <domain>/<label>` for each item, keeping only its exit status (its output lists the job's
+     environment); each program a plist names, or the script an interpreter runs, looked up one
+     component at a time (`lstat`, never inside a guarded folder: the folders macOS guards, other
+     disks under `/Volumes` and `~/Library/CloudStorage`, compared in any case and Unicode
+     normalization), and each plist's owner (`lstat`); LaunchServices for each associated bundle
+     identifier; and the journal's `background:` entries. An apply reads every plist in the three
+     folders and launchd again before it changes anything, the ticked items' launchd state again
+     after, and looks up names in `~/.Trash` one at a time; Undo everything reads the same for the
+     entries it undoes.
 4. **Clipboard History Privacy**:
    `ClipboardHistoryManager` is 100% ephemeral in-memory (max 50 items). It is never written to disk and strictly filters out concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 5. **AppleScript & Automation Entitlements**:
@@ -843,12 +980,14 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
    out), `~/Library/Application Support/Lightspot/LightspotMacTweaks.mobileconfig`, the profile
    written for approval and removed once it is installed: after the approval wait, and by any
    Apple Intelligence or Settings scan that finds the profile installed (never in `~/Downloads`, which is
-   TCC-protected); `tweaks-journal.json` beside them, Settings' undo journal, written only by an
-   apply that changes a local setting, before the change, removed once empty, never overwritten
+   TCC-protected); `tweaks-journal.json` beside them, the undo journal of Settings and Background
+   Items, written only by an apply that changes a local setting or turns a background item off
+   (before the change) or back on, removed once empty, never overwritten
    when unreadable (moved aside as `tweaks-journal-unreadable-<date>-<id>.json`); and
    `dock-backup.plist`, written by Clear Dock Icons and removed by Restore Dock Icons once the
    icons are back. `uninstall.sh` keeps the journal, the journals moved aside and the Dock backup,
-   and says what stays and how to undo it (Restore Dock Icons for the icons). Settings also writes other apps' preferences (Finder's, the Dock's, the global
+   and says what stays and how to undo it (Restore Dock Icons for the icons; background items for
+   all users the journal holds stay off for every account). Settings also writes other apps' preferences (Finder's, the Dock's, the global
    domain's…), only when the user applies something, each one journaled first.
 7. **Privileged Commands & Headless Touch ID Execution**:
    Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.
@@ -871,7 +1010,9 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
    `QuickActionsProvider.runPrivilegedScript` instead: no `admin:` or `sudo` stripping (it
    rewrote file names holding `; sudo `), and a `PrivilegedRun` (`.cancelled`, `.refused`,
    `.ran(status, output)`) instead of a Bool. Neither entry point logs a script's text, only
-   its outcome: the paths in it would reach the unified log.
+   its outcome: the paths in it would reach the unified log. Background Items' daemons join the
+   same batch, and root's launchctl only ever names a label and a plist the scan found in
+   `/Library/LaunchDaemons`, never one the journal (the user's own file) names alone.
 8. **Changing a system symbolic hotkey takes three things, not one**:
    Disabling Spotlight's ⌘Space is `SpotlightManager.setShortcut`, and every part of it
    is load-bearing. Earlier versions wrote the plist directly and the shortcut kept
@@ -999,8 +1140,9 @@ RemoveMacAI's Tweaks, Engine, Prefs and MusicLaunch (MIT).
    not open anymore." (plain `NSWorkspace.open(_:)`) or "The application can't be opened." -600
    (`open(_:configuration:)` prompting), and nothing opens. NSRunningApplication reads the same
    records. So the Settings rows, Free Up Space's Storage link, the profile file and Device
-   Management, the System Settings app row, the Keyboard Shortcuts items and any
-   `x-apple.systempreferences:` URL (`openAny`) go through `SystemSettingsOpener.open`, never
+   Management, Background Items' Login Items row, the System Settings app row, the Keyboard
+   Shortcuts items and any `x-apple.systempreferences:` URL (`openAny`) go through
+   `SystemSettingsOpener.open`, never
    `NSWorkspace` directly. It checks each recorded PID (`kill`, `proc_pidpath`); with only dead
    records it opens a new instance (`createsNewApplicationInstance`, the URL passed at launch,
    which reaches the pane); otherwise it opens with `promptsUserIfNeeded = false`, so a failed

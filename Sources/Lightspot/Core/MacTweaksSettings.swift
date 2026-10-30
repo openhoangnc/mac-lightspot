@@ -47,16 +47,41 @@ extension MacTweaksSettings {
     static let reopenNote = "Apps you have open pick up these changes when you reopen them."
     static let undoLaterNote = "Undo them here later, one by one or with Undo everything Lightspot changed."
     static let trashNote = "Files Free Up Space moved to the Trash stay there."
+    static let backgroundForEveryoneNote = "Background items for all users come back on for every account on this Mac."
 
     // MARK: The environment
 
+    /// What became of one of Background Items' journal entries in Undo everything.
+    enum BackgroundOutcome: Sendable, Equatable {
+        /// Back as it was before Lightspot: its entry goes. `line` says how, when the count alone
+        /// can't (one that was off before Lightspot stays off).
+        case undone(line: String?)
+        /// Nothing left to undo (its plist is gone): nothing ran, its entry goes, and `line`
+        /// says so.
+        case dropped(line: String)
+        /// It stays, and so does its entry. `problem` says why, unless the receipt already does
+        /// (a prompt cancelled or refused).
+        case kept(problem: String?)
+    }
+
     /// What background items Lightspot turned off contribute to Undo everything (Background
-    /// Items' hook): root steps for the one administrator batch, steps as this user, and a check
-    /// per journal key once both have run.
+    /// Items' hook): root steps for the one administrator batch, steps as this user, and what
+    /// became of each journal key once both have run.
     struct BackgroundUndo: Sendable {
         var adminCommands: [String] = []
+        /// The journal key each of `adminCommands` undoes, in order.
+        var adminKeys: [String] = []
+        /// As this user; returns problem lines.
         var userSteps: @Sendable () -> [String] = { [] }
-        var verify: @Sendable (String) -> Bool = { _ in false }
+        /// After the batch and the user steps: a key's outcome, given its administrator step's
+        /// status and output (nil when it has none, or the batch didn't run).
+        var outcome: @Sendable (String, (status: Int32, output: String)?) -> BackgroundOutcome = { _, _ in .kept(problem: nil) }
+        /// Keys it keeps without trying: entries it can't read, and entries naming what Lightspot
+        /// never changes. The receipt notes both.
+        var unreadable: [String] = []
+        var refused: [String] = []
+        /// What it ran as this user, for the receipts log.
+        var log: @Sendable () -> [String] = { [] }
     }
 
     /// Everything the section reads or changes, injected so tests use fakes and scratch domains,
@@ -77,8 +102,8 @@ extension MacTweaksSettings {
         /// Background Items' part of Undo everything: nil when this build has none, and then its
         /// journal entries stay.
         var background: (@Sendable ([(key: String, json: Data)]) -> BackgroundUndo)? = nil
-        /// The plan's line for one of its entries, from the entry's own fields.
-        var backgroundPlanLine: (@Sendable (String, Data) -> String)? = nil
+        /// The plan's line for each of its entries, by key, built once per scan.
+        var backgroundPlanLines: (@Sendable ([(key: String, json: Data)]) -> [String: String])? = nil
 
         static let inert = Environment()
 
@@ -311,7 +336,7 @@ extension MacTweaksSettings {
 
     // MARK: Rows
 
-    static func rows(_ r: Reading, backgroundLine: (@Sendable (String, Data) -> String)? = nil) -> [MacTweaksRow] {
+    static func rows(_ r: Reading, backgroundLines: (@Sendable ([(key: String, json: Data)]) -> [String: String])? = nil) -> [MacTweaksRow] {
         let blocked = r.journalStatus.isBlocked
         var states: [String: State] = [:]
         var tweakRows: [MacTweaksRow] = []
@@ -334,7 +359,7 @@ extension MacTweaksSettings {
             return row
         }
         rows += tweakRows
-        if let undo = undoEverythingRow(r, backgroundLine: backgroundLine) { rows.append(undo) }
+        if let undo = undoEverythingRow(r, backgroundLines: backgroundLines) { rows.append(undo) }
         return rows
     }
 
@@ -521,7 +546,7 @@ extension MacTweaksSettings {
 
     // MARK: Undo everything's row
 
-    static func undoEverythingRow(_ r: Reading, backgroundLine: (@Sendable (String, Data) -> String)? = nil) -> MacTweaksRow? {
+    static func undoEverythingRow(_ r: Reading, backgroundLines: (@Sendable ([(key: String, json: Data)]) -> [String: String])? = nil) -> MacTweaksRow? {
         let profile = r.installed.on
         guard profile || !r.journal.isEmpty else { return nil }
         var detail = "Puts back every setting Lightspot changed on this Mac as it was"
@@ -533,7 +558,7 @@ extension MacTweaksSettings {
         row.group = undoGroup
         row.exclusive = true
         row.undoes = true
-        row.items = undoEverythingLines(r, background: backgroundLine).map { MacTweaksItem(target: $0) }
+        row.items = undoEverythingLines(r, background: backgroundLines).map { MacTweaksItem(target: $0) }
         let count = r.journal.keys.count + (profile ? 1 : 0)
         row.countLabel = "\(count) \(count == 1 ? "change" : "changes")"
         row.outcome = "Back as it was before Lightspot"
@@ -544,7 +569,7 @@ extension MacTweaksSettings {
 
     /// One line per journal entry (a job's two commands on two) and one for the profile: what
     /// Undo everything does to each.
-    static func undoEverythingLines(_ r: Reading, background: (@Sendable (String, Data) -> String)? = nil) -> [String] {
+    static func undoEverythingLines(_ r: Reading, background: (@Sendable ([(key: String, json: Data)]) -> [String: String])? = nil) -> [String] {
         let gui = "gui/\(r.userID)"
         var lines: [String] = []
         if r.installed.on {
@@ -555,12 +580,14 @@ extension MacTweaksSettings {
             if locked > 0 { what.append("\(locked) locked \(locked == 1 ? "setting goes" : "settings go") back to your own") }
             lines.append("Lightspot's profile: \(MacTweaksProfile.removeCommand())" + (what.isEmpty ? "" : " (\(what.joined(separator: "; ")))"))
         }
+        // Background Items' lines come all at once: its hook looks for their plists once.
+        let backgroundEntries = r.journal.entries(kind: "background")
+        let backgroundLines = backgroundEntries.isEmpty ? [:] : background?(backgroundEntries) ?? [:]
         for key in r.journal.keys {
             if let entry = r.journal.entry(key) {
                 lines += undoLines(entry, gui: gui)
             } else if r.journal.kind(key) == "background" {
-                lines.append(background.flatMap { line in r.journal.json(key).map { line(key, $0) } }
-                             ?? "\(key): kept, Background Items isn't part of this build")
+                lines.append(backgroundLines[key] ?? "\(key): kept, Background Items isn't part of this build")
             } else if isUnreadable(key, r.journal) {
                 lines.append("\(key): kept, its journal entry can't be read, so Lightspot can't tell what to put back")
             } else {
@@ -762,15 +789,26 @@ extension MacTweaksSettings {
         if !entries.isEmpty {
             notes.append("Puts back \(entries.count) \(entries.count == 1 ? "setting" : "settings") as \(entries.count == 1 ? "it was" : "they were") before Lightspot changed \(entries.count == 1 ? "it" : "them").")
         }
+        let background = r.journal.entries(kind: "background").map(\.key)
+        if !background.isEmpty {
+            notes.append("Puts back \(background.count) background \(background.count == 1 ? "item" : "items") Lightspot turned off.")
+        }
         let restarts = restartOrder.filter { name in entries.contains { $0.entry.restart?.contains(name) == true } }
         if let restart = restartSentence(restarts) { notes.append(restart) }
+        // Daemons go back on in the administrator batch, with the profile's removal or alone.
+        let daemons = background.contains { $0.hasPrefix("background:system/") }
         if r.installed.on {
-            notes.append("Lightspot asks for your administrator password to remove its profile.")
+            notes.append(daemons ? "Lightspot asks for your administrator password to remove its profile and turn background items "
+                                   + "for every account back on."
+                                 : "Lightspot asks for your administrator password to remove its profile.")
             if r.installed.ai {
                 notes.append("Apple Intelligence comes back on, and macOS downloads its models again when you next turn a feature on.")
             }
             notes.append(sharedProfileNote)
+        } else if daemons {
+            notes.append(MacTweaksStorage.passwordNote)
         }
+        if daemons { notes.append(backgroundForEveryoneNote) }
         if case .unreadable = r.journalStatus { notes.append("Lightspot's undo journal can't be read: applying keeps it aside, so only the profile can be undone.") }
         notes.append(trashNote)
         if r.dockBackupExists { notes.append("Restore Dock Icons puts back what Clear Dock Icons removed.") }
@@ -1292,6 +1330,7 @@ extension MacTweaksSettings {
                 let undo = hook(background)
                 backgroundUndo = undo
                 work.problems += undo.userSteps()
+                work.log += undo.log()
             } else {
                 kept += background.count
                 work.notes.append("Background items Lightspot turned off stay as they are: Background Items isn't part of this build.")
@@ -1323,9 +1362,11 @@ extension MacTweaksSettings {
         // run in it even when there is no profile (or it went since the reading).
         let adminCommands = backgroundUndo?.adminCommands ?? []
         var profileGone = !r.installed.on
+        var steps: [Int: (status: Int32, output: String)] = [:]
         if r.installed.on || !adminCommands.isEmpty {
             let change = MacTweaksProfile.change(to: MacTweaksProfile.Contents(ai: nil, tweaks: []), env: env,
-                                                 alsoAsAdministrator: adminCommands, progress: progress, log: &work.log)
+                                                 alsoAsAdministrator: adminCommands, progress: progress, log: &work.log,
+                                                 extraResults: { steps = $0 })
             let staying = [r.installed.on ? "Lightspot's profile stays installed" : nil,
                            adminCommands.isEmpty ? nil : "background items for every account stay off"].compactMap { $0 }.joined(separator: " and ")
             switch change {
@@ -1342,9 +1383,36 @@ extension MacTweaksSettings {
                 break
             }
         }
+        var dropped = 0
         if let undo = backgroundUndo {
             for (key, _) in background {
-                if undo.verify(key) { journal.remove(key); undone += 1 } else { kept += 1 }
+                let step = undo.adminKeys.firstIndex(of: key).flatMap { steps[$0] }
+                switch undo.outcome(key, step) {
+                case .undone(let line):
+                    journal.remove(key)
+                    undone += 1
+                    if let line { work.lines.append(line) }
+                    work.log.append("\(key): back as it was")
+                case .dropped(let line):
+                    journal.remove(key)
+                    dropped += 1
+                    work.lines.append(line)
+                    work.log.append("\(key): its plist is gone; entry dropped, nothing ran")
+                case .kept(let problem):
+                    kept += 1
+                    if let problem { work.problems.append(problem) }
+                    work.log.append("\(key): kept" + (problem.map { " (\($0))" } ?? ""))
+                }
+            }
+            if !undo.unreadable.isEmpty {
+                let one = undo.unreadable.count == 1
+                work.notes.append("Kept: \(undo.unreadable.count) background \(one ? "item whose journal entry" : "items whose journal entries") "
+                                  + "can't be read, so Lightspot can't tell what to put back (\(undo.unreadable.joined(separator: ", "))).")
+            }
+            if !undo.refused.isEmpty {
+                let one = undo.refused.count == 1
+                work.notes.append("Kept: \(undo.refused.count) background \(one ? "item" : "items") Lightspot never changes, "
+                                  + "so it doesn't undo \(one ? "it" : "them") (\(undo.refused.joined(separator: ", "))).")
             }
             do { try journal.saveAhead(url: url, fileSystem: settings.fileSystem) } catch {
                 work.problems.append("Lightspot couldn't save its undo journal (\(error.localizedDescription)).")
@@ -1353,7 +1421,8 @@ extension MacTweaksSettings {
         if undone > 0 { work.lines.insert("Put back \(undone) \(undone == 1 ? "change" : "changes").", at: 0) }
         if !restartList.isEmpty { work.lines.append("Restarted \(spokenList(restartList)).") }
 
-        let complete = work.problems.isEmpty && profileGone && kept == 0 && journal.isEmpty
+        // An entry dropped because its plist is gone ran nothing: never "everything is back".
+        let complete = work.problems.isEmpty && profileGone && kept == 0 && dropped == 0 && journal.isEmpty
         let headline: String
         if complete {
             headline = "Everything Lightspot changed is back."
@@ -1372,7 +1441,7 @@ extension MacTweaksSettings {
         MacTweaksProvider.appendReceipt(section: .settings, lines: log + [receipt.headline] + receipt.lines + receipt.problems,
                                         environment: env, started: started)
         let r = reading ?? read(env)
-        return (receipt, rows(r, backgroundLine: env.settings.backgroundPlanLine), r)
+        return (receipt, rows(r, backgroundLines: env.settings.backgroundPlanLines), r)
     }
 
     // MARK: The section
@@ -1404,7 +1473,7 @@ extension MacTweaksSettings {
             // scan removes it too, but that section isn't on every Mac (Intel, macOS 13 to 15.0).
             if reading.installed.on { environment.intelligence.removeProfileFile() }
             remember(reading)
-            return MacTweaksSettings.rows(reading, backgroundLine: environment.settings.backgroundPlanLine)
+            return MacTweaksSettings.rows(reading, backgroundLines: environment.settings.backgroundPlanLines)
         }
 
         func apply(_ rows: [MacTweaksRow], progress: (@Sendable (String) -> Void)?) -> (receipt: MacTweaksReceipt, rescanned: [MacTweaksRow]) {

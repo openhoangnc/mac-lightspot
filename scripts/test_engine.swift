@@ -83,6 +83,9 @@ struct TestRunner {
             runSingleInstanceHolder(lockPath: arguments[flag + 1], bundleIdentifier: arguments[flag + 2], build: arguments[flag + 3])
         }
 
+        // Whatever happens, this run's own fixture folders go at exit.
+        atExit { sweepFixtures() }
+
         print("🧪 Running Lightspot Core Tests...\n")
 
         // No test may reach api.ipify.org: any lookup a search triggers gets a fixed answer.
@@ -217,6 +220,7 @@ struct TestRunner {
         runMacTweaksTests()
         runIntelligenceTests()
         runSettingsTests()
+        runBackgroundItemsTests()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -4644,6 +4648,52 @@ struct TestRunner {
 
     // MARK: - Test 39: macOS tweaks
 
+    /// Cleanups that must run even when an assertion ends the run (`exit(1)` skips every
+    /// `defer`): registered here and run once at exit, newest first. The first one registered,
+    /// so the last to run, sweeps this run's own fixture folders out of $TMPDIR.
+    nonisolated(unsafe) static var exitCleanups: [() -> Void] = []
+
+    static func atExit(_ cleanup: @escaping () -> Void) {
+        if exitCleanups.isEmpty { atexit { TestRunner.runExitCleanups() } }
+        exitCleanups.append(cleanup)
+    }
+
+    static func runExitCleanups() {
+        let cleanups = exitCleanups
+        exitCleanups = []
+        for cleanup in cleanups.reversed() { cleanup() }
+    }
+
+    /// This run's fixture folders: `lightspot-…` in $TMPDIR whose name holds this process's id as
+    /// one of its dash-separated parts. Another run's, with another id, stay.
+    static func sweepFixtures() {
+        let tmp = NSTemporaryDirectory()
+        let pid = String(getpid())
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: tmp)) ?? []
+        where name.hasPrefix("lightspot-") && name.split(separator: "-").contains(where: { $0 == pid }) {
+            let path = (tmp as NSString).appendingPathComponent(name)
+            // A fixture may have taken its own permissions away (a denied folder): give them back first.
+            _ = CleanDevMacEngine.run("/bin/chmod", ["-R", "u+rwx", path], timeout: 30)
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+
+    /// testMacTweaks' scratch domain, this run's own (`com.lightspot.test.tweaks.<run id>`): runs
+    /// can overlap, and none may write to another's. Letters, digits, dots and one dash, since the
+    /// toggle scripts take the domain unquoted.
+    static let tweaksScratchDomain = "com.lightspot.test.tweaks.\(getpid())-\(UUID().uuidString.prefix(8).lowercased())"
+
+    /// Removes it through cfprefsd (`defaults delete`), then its file. Safe to run twice.
+    static func removeTweaksScratchDomain() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        process.arguments = ["delete", tweaksScratchDomain]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        if (try? process.run()) != nil { process.waitUntilExit() }
+        try? FileManager.default.removeItem(atPath: NSHomeDirectory() + "/Library/Preferences/\(tweaksScratchDomain).plist")
+    }
+
     static func testMacTweaks() {
         print("Testing MacTweaks...")
         let all = QuickActionsProvider.defaultActions
@@ -4662,8 +4712,11 @@ struct TestRunner {
         assertEqual(MacTweaks.actions.first { $0.name == "Restore Dock Icons" }?.script, MacTweaksDock.restoreScript,
                     "...and Restore Dock Icons puts the icons back")
 
-        // The toggles, run for real against a scratch domain: never the user's settings.
-        let domain = "com.lightspot.test.tweaks"
+        // The toggles, run for real against a scratch domain of this run's own: never the user's
+        // settings, and never another run's (runs can overlap). Removed at the end, and at exit
+        // too: an assertion that fails exits at once.
+        let domain = tweaksScratchDomain
+        atExit { removeTweaksScratchDomain() }
         @discardableResult
         func sh(_ script: String) -> String {
             let process = Process()
@@ -4678,11 +4731,7 @@ struct TestRunner {
             return output.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         func read(_ key: String) -> String { sh("defaults read \(domain) \(key) 2>/dev/null") }
-        sh("defaults delete \(domain) 2>/dev/null")
-        defer {
-            sh("defaults delete \(domain) 2>/dev/null")
-            try? FileManager.default.removeItem(atPath: NSHomeDirectory() + "/Library/Preferences/\(domain).plist")
-        }
+        defer { removeTweaksScratchDomain() }
 
         let offByDefault = MacTweaks.toggleScript(domain: domain, keys: ["Shown"], defaultValue: false)
         sh(offByDefault)
@@ -6035,7 +6084,7 @@ extension TestRunner {
         print("Testing MacTweaksProvider...")
         // Apple Intelligence where this Mac has it: Apple silicon and a macOS with one of its features.
         assertEqual(MacTweaksSection.built, MacTweaksSection.sections(appleIntelligence: Catalog.hasAppleSilicon && !Catalog.availableFeatures.isEmpty),
-                    "Phases 1–3 build Free Up Space and Settings, and Apple Intelligence where this Mac has it")
+                    "Free Up Space, Settings and Background Items are built everywhere, Apple Intelligence where this Mac has it")
         assertEqual(MacTweaksSection.allCases.map(\.title), ["Free Up Space", "Apple Intelligence", "Settings", "Background Items"],
                     "All four sections are modelled, in tab order")
         assertTrue(MacTweaksSection.allCases.allSatisfy { !$0.symbol.isEmpty }, "...each with an SF Symbol")
@@ -6355,8 +6404,9 @@ extension TestRunner {
         assertTrue(Catalog.availableFeatures(os: (14, 6)).isEmpty && Catalog.availableFeatures(os: (15, 0)).isEmpty,
                    "macOS 14 and 15.0 have no Apple Intelligence feature")
         assertTrue(!Catalog.availableFeatures(os: (15, 1)).isEmpty, "...15.1 has some")
-        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace, .settings], "Without a feature the section is hidden")
-        assertEqual(MacTweaksSection.sections(appleIntelligence: true), [.freeUpSpace, .appleIntelligence, .settings], "...and shown with one")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace, .settings, .backgroundItems], "Without a feature the section is hidden")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: true), [.freeUpSpace, .appleIntelligence, .settings, .backgroundItems],
+                    "...and shown with one")
         // Nits: the copy is accurate.
         assertTrue(!(Catalog.feature("image-playground")?.detail ?? "").contains("removes it"), "Image Playground is disabled, not removed")
         assertTrue(!(Catalog.feature("siri")?.detail ?? "").contains("model is removed"), "Siri's detail promises no model removal")
@@ -7789,6 +7839,8 @@ extension TestRunner {
         }
         cleanup()
         defer { cleanup() }
+        // An assertion exits at once, skipping the defer: the exit cleanups run it too.
+        atExit { cleanup() }
         assertTrue(scratch.allSatisfy { $0.hasPrefix("com.lightspot.test.") }, "Every domain this test writes is a scratch domain")
         func raw(_ domain: String, _ key: String) -> CFPropertyList? {
             let name = PreferenceStore.scratchDomain(domain, run: run) as CFString
@@ -8281,7 +8333,8 @@ extension TestRunner {
         fx.background = { entries in
             calls.keys = entries.map(\.key)
             return MacTweaksSettings.BackgroundUndo(adminCommands: ["/bin/launchctl enable 'system/us.zoom.ZoomDaemon'"],
-                                                    userSteps: { calls.user += 1; return [] }, verify: { _ in true })
+                                                    adminKeys: ["background:system/us.zoom.ZoomDaemon"],
+                                                    userSteps: { calls.user += 1; return [] }, outcome: { _, _ in .undone(line: nil) })
         }
         let result = MacTweaksSettings.apply([row!], env: fx.environment)
         assertEqual(fx.value("com.apple.finder", "AppleShowAllFiles"), nil, "A key that was unset is deleted")
@@ -8312,12 +8365,15 @@ extension TestRunner {
 
         // Without the profile, Background Items' root steps still run, in one batch.
         let zoom = #"{"kind":"background","label":"us.zoom.ZoomDaemon","tweak":"background:system/us.zoom.ZoomDaemon"}"#
+        let zoomKey = "background:system/us.zoom.ZoomDaemon"
         let enableZoom = "/bin/launchctl enable 'system/us.zoom.ZoomDaemon'"
         var backgroundOnly = MacTweaksJournal()
         backgroundOnly.recordIfAbsent("background:system/us.zoom.ZoomDaemon", Data(zoom.utf8))
         let noProfile = SettingsFixture("undo-all-no-profile")
         try? backgroundOnly.saveAhead(url: noProfile.journalURL)
-        noProfile.background = { _ in MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], verify: { _ in true }) }
+        noProfile.background = { _ in
+            MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], adminKeys: [zoomKey], outcome: { _, _ in .undone(line: nil) })
+        }
         var undoAll = MacTweaksSettings.apply(noProfile.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: noProfile.environment)
         assertTrue(noProfile.adminScripts.count == 1 && noProfile.adminScripts[0].contains(enableZoom) && !noProfile.adminScripts[0].contains("profiles"),
                    "Without the profile, the background items' root steps run in one batch")
@@ -8328,7 +8384,7 @@ extension TestRunner {
         gone.installProfile(.init(ai: nil, tweaks: ["analytics"]))
         gone.background = { [unowned gone] _ in
             gone.removeProfile()
-            return MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], verify: { _ in true })
+            return MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], adminKeys: [zoomKey], outcome: { _, _ in .undone(line: nil) })
         }
         undoAll = MacTweaksSettings.apply(gone.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: gone.environment)
         assertTrue(gone.adminScripts.count == 1 && gone.adminScripts[0].contains(enableZoom) && !gone.adminScripts[0].contains("profiles"),
@@ -8338,7 +8394,9 @@ extension TestRunner {
         let cancelledBatch = SettingsFixture("undo-all-batch-cancelled")
         try? backgroundOnly.saveAhead(url: cancelledBatch.journalURL)
         cancelledBatch.adminAnswer = .cancelled
-        cancelledBatch.background = { _ in MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], verify: { _ in false }) }
+        cancelledBatch.background = { _ in
+            MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], adminKeys: [zoomKey], outcome: { _, _ in .kept(problem: nil) })
+        }
         undoAll = MacTweaksSettings.apply(cancelledBatch.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: cancelledBatch.environment)
         assertEqual(undoAll.receipt.problems, ["The administrator prompt was cancelled, so background items for every account stay off."],
                     "A cancelled prompt without the profile names only what stays")
@@ -8391,7 +8449,7 @@ extension TestRunner {
 
         // The provider: built, scanned, applied with a full rescan, the sibling's scan dropped.
         assertTrue(MacTweaksSection.built.contains(.settings), "Settings is built on every Mac")
-        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace, .settings], "...Apple Intelligence or not")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace, .settings, .backgroundItems], "...Apple Intelligence or not")
         let provider = MacTweaksProvider(environment: fx.environment)
         func wait(_ section: MacTweaksSection, _ done: (MacTweaksProvider.SectionState) -> Bool) -> MacTweaksProvider.SectionState {
             let deadline = Date().addingTimeInterval(20)
@@ -8438,5 +8496,1636 @@ extension TestRunner {
         assertEqual(SearchEngine.shared.searchImmediate(SearchQuery("restore dock icons"))[.topHit]?.first?.title, "Restore Dock Icons",
                     "'restore dock icons' is the quick action's")
         print("✅ Settings' ticks, provider and search row passed!\n")
+    }
+}
+
+// MARK: - Background Items (Mac Tweaks phase 4)
+
+/// A fake Mac for Background Items: phase 1's fixture (a fake root and home, the Trash, the
+/// administrator batch run as this user, owners, the clock) plus the three launchd folders, a
+/// fake `launchctl` keeping launchd's state in files beside it, the journal in memory (each entry
+/// kept as its JSON, so every flow round-trips it) and LaunchServices' app names. The real
+/// launchctl never runs.
+final class BackgroundFixture: @unchecked Sendable {
+    let mac: MacTweaksFixture
+    let state: String
+    let launchctl: String
+    let uid = getuid()
+    private let lock = NSLock()
+    private var stored: [String: Data] = [:]
+    private var journalStatus = MacTweaksBackground.JournalStatus.ready
+    private var recordFailure: String?
+    private var apps: [String: String] = [:]
+    private var foreignPaths: Set<String> = []
+
+    init(_ name: String) {
+        mac = MacTweaksFixture("bg-" + name)
+        state = mac.base + "/launchd"
+        launchctl = mac.bin + "/launchctl"
+        for folder in [state, mac.home + "/Library/LaunchAgents", mac.root + "/Library/LaunchAgents", mac.root + "/Library/LaunchDaemons"] {
+            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        }
+        FileManager.default.createFile(atPath: launchctl, contents: Data(Self.fakeLaunchctl(state: state).utf8),
+                                       attributes: [.posixPermissions: 0o755])
+    }
+
+    /// launchd in files: `overrides-<domain>` holds `disabled<TAB>label` or `enabled<TAB>label`
+    /// lines, `loaded` the loaded targets, `refuse-<verb>` the labels that verb fails for,
+    /// `print-status` `<status><TAB><target>` lines, `unreadable-<domain>` makes print-disabled
+    /// fail, and `calls` gets every call. Labels are matched as whole fixed lines, so none reads as
+    /// an option or a pattern; `bootstrap` reads the label from the plist, as launchd does.
+    static func fakeLaunchctl(state: String) -> String {
+        """
+        #!/bin/sh
+        state=\(MacTweaksStorage.shellQuote(state))
+        printf '%s\\n' "$*" >> "$state/calls"
+        label="${2##*/}"
+        domain="${2%/*}"
+        key() { printf '%s' "$1" | /usr/bin/tr '/' '-'; }
+        has() { [ -f "$2" ] && /usr/bin/grep -q -x -F -e "$1" "$2"; }
+        case "$1" in
+        print-disabled)
+          if [ -f "$state/unreadable-$(key "$2")" ]; then echo 'Bad request.' >&2; exit 64; fi
+          printf '\\n\\tdisabled services = {\\n'
+          file="$state/overrides-$(key "$2")"
+          if [ -f "$file" ]; then
+            while IFS='\t' read -r value name; do printf '\\t\\t"%s" => %s\\n' "$name" "$value"; done < "$file"
+          fi
+          printf '\\t}\\n' ;;
+        print)
+          if [ -f "$state/print-status" ]; then
+            while IFS='\t' read -r status target; do
+              if [ "$target" = "$2" ]; then echo 'Unexpected answer.' >&2; exit "$status"; fi
+            done < "$state/print-status"
+          fi
+          if has "$2" "$state/loaded"; then printf '%s = {\\n}\\n' "$2"; exit 0; fi
+          printf 'Bad request.\\nCould not find service "%s" in domain\\n' "$label" >&2; exit 113 ;;
+        disable|enable)
+          if has "$label" "$state/refuse-$1"; then printf 'Could not %s service: 1: Operation not permitted\\n' "$1" >&2; exit 1; fi
+          file="$state/overrides-$(key "$domain")"
+          /usr/bin/touch "$file"
+          /usr/bin/grep -v -x -F -e "disabled\t$label" -e "enabled\t$label" "$file" > "$file.tmp"
+          /bin/mv "$file.tmp" "$file"
+          printf '%sd\\t%s\\n' "$1" "$label" >> "$file" ;;
+        bootout)
+          if has "$label" "$state/refuse-bootout"; then echo 'Boot-out failed: 5: Input/output error' >&2; exit 5; fi
+          if ! has "$2" "$state/loaded"; then echo 'Boot-out failed: 3: No such process' >&2; exit 3; fi
+          /usr/bin/grep -v -x -F -e "$2" "$state/loaded" > "$state/loaded.tmp"
+          /bin/mv "$state/loaded.tmp" "$state/loaded" ;;
+        bootstrap)
+          name=$(/usr/bin/plutil -extract Label raw -o - "$3" 2>/dev/null) || { echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5; }
+          if has "disabled\t$name" "$state/overrides-$(key "$2")" || has "$name" "$state/refuse-bootstrap"; then
+            echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5
+          fi
+          if has "$2/$name" "$state/loaded"; then echo 'Bootstrap failed: 37: Operation already in progress' >&2; exit 37; fi
+          printf '%s/%s\\n' "$2" "$name" >> "$state/loaded" ;;
+        *)
+          echo "Unrecognized subcommand: $1" >&2; exit 64 ;;
+        esac
+        """
+    }
+
+    var userAgents: String { mac.home + "/Library/LaunchAgents" }
+    var allUsersAgents: String { mac.root + "/Library/LaunchAgents" }
+    var daemons: String { mac.root + "/Library/LaunchDaemons" }
+    var gui: String { "gui/\(uid)" }
+    var trash: String { mac.home + "/.Trash" }
+
+    var environment: MacTweaksProvider.Environment {
+        var environment = mac.environment
+        let path = launchctl
+        environment.backgroundItems.launchctlPath = path
+        environment.backgroundItems.launchctl = { MacTweaksBackground.run(path, $0) }
+        environment.backgroundItems.appName = { [self] id in locked { apps[id] } }
+        environment.backgroundItems.journal = journal
+        return environment
+    }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    var journal: MacTweaksBackground.Journal {
+        MacTweaksBackground.Journal(
+            status: { [self] in locked { journalStatus } },
+            entries: { [self] in
+                locked { stored.keys.sorted().compactMap { key in stored[key].flatMap { MacTweaksBackground.Entry(key: key, json: $0) } } }
+            },
+            recordAhead: { [self] entries in
+                note("journal record " + entries.map(\.key).sorted().joined(separator: ","))
+                return locked { () -> MacTweaksBackground.JournalWrite in
+                    if let recordFailure { return .failed(recordFailure) }
+                    var added = Set<String>()
+                    for entry in entries where stored[entry.key] == nil {
+                        stored[entry.key] = entry.json
+                        added.insert(entry.key)
+                    }
+                    return .saved(added: added)
+                }
+            },
+            remove: { [self] keys in
+                note("journal remove " + keys.sorted().joined(separator: ","))
+                locked { for key in keys { stored[key] = nil } }
+                return nil
+            })
+    }
+
+    func seed(_ entry: MacTweaksBackground.Entry) { locked { stored[entry.key] = entry.json } }
+    func entry(_ key: String) -> MacTweaksBackground.Entry? { locked { stored[key].flatMap { MacTweaksBackground.Entry(key: key, json: $0) } } }
+    var journalKeys: Set<String> { locked { Set(stored.keys) } }
+    func setJournal(_ status: MacTweaksBackground.JournalStatus) { locked { journalStatus = status } }
+    func failRecord(_ reason: String?) { locked { recordFailure = reason } }
+    func setApp(_ id: String, _ name: String) { locked { apps[id] = name } }
+    /// A plist root owns, as everything in /Library is.
+    func setForeign(_ path: String) {
+        let all = locked { () -> Set<String> in
+            foreignPaths.insert(path)
+            return foreignPaths
+        }
+        mac.setForeign(all)
+    }
+
+    private func append(_ name: String, _ line: String) {
+        let path = state + "/" + name
+        if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+        guard let handle = FileHandle(forWritingAtPath: path) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data((line + "\n").utf8))
+    }
+
+    private func lines(_ name: String) -> [String] {
+        ((try? String(contentsOfFile: state + "/" + name, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    }
+
+    private static func fileKey(_ domain: String) -> String { domain.replacingOccurrences(of: "/", with: "-") }
+
+    func note(_ line: String) { append("calls", line) }
+    var calls: [String] { lines("calls") }
+    /// The calls that would change launchd.
+    var writes: [String] {
+        calls.filter { ["disable", "enable", "bootout", "bootstrap"].contains(String($0.split(separator: " ").first ?? "")) }
+    }
+    func clearCalls() { try? FileManager.default.removeItem(atPath: state + "/calls") }
+    var loaded: Set<String> { Set(lines("loaded")) }
+    func load(_ target: String) { append("loaded", target) }
+    func setOverride(_ domain: String, _ label: String, disabled: Bool) {
+        append("overrides-" + Self.fileKey(domain), (disabled ? "disabled" : "enabled") + "\t" + label)
+    }
+    /// launchd's overrides now: label → disabled.
+    func overrides(_ domain: String) -> [String: Bool] {
+        var list: [String: Bool] = [:]
+        for line in lines("overrides-" + Self.fileKey(domain)) {
+            let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+            if parts.count == 2 { list[parts[1]] = parts[0] == "disabled" }
+        }
+        return list
+    }
+    func refuse(_ verb: String, _ label: String) { append("refuse-" + verb, label) }
+    func printStatus(_ target: String, _ status: Int32) { append("print-status", "\(status)\t\(target)") }
+    func breakList(_ domain: String) { append("unreadable-" + Self.fileKey(domain), "") }
+
+    @discardableResult
+    func plist(_ folder: String, _ file: String, _ dict: [String: Any], binary: Bool = false) -> String {
+        let path = folder + "/" + file
+        let data = try? PropertyListSerialization.data(fromPropertyList: dict, format: binary ? .binary : .xml, options: 0)
+        FileManager.default.createFile(atPath: path, contents: data)
+        return path
+    }
+
+    /// A plist for `label`, running `program` (by default an app's executable named after the
+    /// label's last part, so that is its owner), created unless `present` is false.
+    @discardableResult
+    func item(_ folder: String, _ label: String, program: String? = nil, present: Bool = true,
+              extra: [String: Any] = [:], file: String? = nil) -> String {
+        let name = label.split(separator: ".").last.map(String.init) ?? label
+        let run = program ?? mac.base + "/Apps/\(name).app/Contents/MacOS/\(name)"
+        if present { mac.make(run, bytes: 10) }
+        var dict = extra
+        dict["Label"] = label
+        if dict["ProgramArguments"] == nil { dict["ProgramArguments"] = [run] }
+        return plist(folder, file ?? label + ".plist", dict)
+    }
+
+    /// The program `item` gives a label by default.
+    func program(_ label: String) -> String {
+        let name = label.split(separator: ".").last.map(String.init) ?? label
+        return mac.base + "/Apps/\(name).app/Contents/MacOS/\(name)"
+    }
+}
+
+extension TestRunner {
+    static func runBackgroundItemsTests() {
+        testBackgroundVerdicts()
+        testBackgroundScan()
+        testBackgroundTurnOffAndOn()
+        testBackgroundAdminBatch()
+        testBackgroundLeftovers()
+        testBackgroundUndo()
+        testBackgroundProvider()
+        testBackgroundEdgeCases()
+        testBackgroundJournalFile()
+        testBackgroundUndoEverything()
+    }
+
+    /// A scan's row for `label`.
+    static func bgRow(_ rows: [MacTweaksRow], _ label: String, system: Bool = false) -> MacTweaksRow? {
+        rows.first { $0.id == MacTweaksBackground.key(label: label, system: system) }
+    }
+
+    static func bgKey(_ label: String, system: Bool = false) -> String { MacTweaksBackground.key(label: label, system: system) }
+
+    // MARK: Background Items: RemoveMacAI's verdicts, launchd's lists, the runner
+
+    static func testBackgroundVerdicts() {
+        print("Testing Background Items verdicts...")
+        typealias B = MacTweaksBackground
+        func owner(_ label: String, _ program: String, _ arguments: [String] = [], app: String? = nil) -> String {
+            B.owner(label: label, program: program, arguments: arguments) { app }
+        }
+        assertEqual(owner("com.example.sync", "/bin/bash", ["/bin/bash", "/Users/x/bin/sync.sh"]), "sync.sh",
+                    "A script is named after itself, not its interpreter (RemoveMacAI's test)")
+        assertEqual(owner("dev.orbstack.OrbStack.privhelper", "/Library/PrivilegedHelperTools/dev.orbstack.OrbStack.privhelper"),
+                    "OrbStack", "A helper named after its label takes the label's third part")
+        assertEqual(owner("com.google.GoogleUpdater.wake",
+                          "/Users/x/Library/Application Support/Google/GoogleUpdater/Current/GoogleUpdater.app/Contents/MacOS/GoogleUpdater"),
+                    "GoogleUpdater", "An app's executable is named after the app")
+        assertEqual(owner("com.docker.vmnetd", "/Library/PrivilegedHelperTools/com.docker.vmnetd", app: "Docker"), "Docker",
+                    "Where the label would name it, the app its plist names comes first")
+        assertEqual(owner("us.zoom.ZoomDaemon", "/Library/PrivilegedHelperTools/us.zoom.ZoomDaemon"), "ZoomDaemon",
+                    "...and without one, the label's third part")
+        assertEqual(owner("com.example.helper", "/usr/local/bin/helperd", app: "Example"), "helperd",
+                    "An app's name never replaces the name of what it runs")
+        assertEqual(owner("local.job", ""), "local.job", "A two-part label with nothing to run names itself")
+
+        assertTrue(B.isUpdater(label: "com.google.GoogleUpdater.wake", program: "/x/GoogleUpdater"), "GoogleUpdater is an updater")
+        assertTrue(B.isUpdater(label: "com.microsoft.autoupdate.helper", program: "/x/helper"), "...the label alone can say so")
+        assertTrue(!B.isUpdater(label: "com.example.vpn", program: "/Library/Example Updates/vpnd"),
+                   "A folder named Updates doesn't make a VPN an updater (RemoveMacAI's test)")
+
+        let fm = FileManager.default
+        let base = NSTemporaryDirectory() + "lightspot-bg-verdicts-\(getpid())"
+        try? fm.removeItem(atPath: base)
+        try? fm.createDirectory(atPath: base, withIntermediateDirectories: true)
+        fm.createFile(atPath: base + "/present.sh", contents: Data("echo\n".utf8))
+        fm.createFile(atPath: base + "/file", contents: Data())
+        try? fm.createDirectory(atPath: base + "/locked", withIntermediateDirectories: false, attributes: [.posixPermissions: 0o000])
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base + "/locked")
+            try? fm.removeItem(atPath: base)
+        }
+        func leftover(_ program: String, _ arguments: [String] = []) -> Bool {
+            B.isLeftover(B.Item(label: "com.example.item", plist: "", place: .userAgents, program: program, arguments: arguments,
+                                associatedIDs: [], plistDisabled: false, isLink: false, ownerUID: getuid()))
+        }
+        let gone = base + "/gone.sh"
+        assertTrue(leftover("/Applications/Gone-\(UUID().uuidString).app/Contents/MacOS/helper"), "A deleted app's helper is left over")
+        assertTrue(leftover("/bin/bash", ["/bin/bash", gone]), "...and so is a deleted script, judged instead of its interpreter")
+        assertTrue(!leftover("/bin/bash", ["/bin/bash", base + "/present.sh"]), "...but not a script that is there")
+        assertTrue(!leftover("helper"), "A relative program is never judged")
+        assertTrue(!leftover(""), "...nor an empty one")
+        assertTrue(!leftover("/bin/bash", ["/bin/bash", "-c", "echo ok", gone]), "Inline code (-c) is never judged")
+        assertTrue(!leftover("/bin/zsh", ["/bin/zsh", "-lc", "sync"]), "...nor -lc")
+        assertTrue(!leftover("/usr/bin/osascript", ["/usr/bin/osascript", "-e", "beep"]), "...nor osascript -e")
+        assertTrue(!leftover("/bin/sh", ["/bin/sh"]), "...nor an interpreter with no script")
+        assertTrue(leftover("/bin/zsh", ["/bin/zsh", "-l", gone]), "Options before a script are skipped")
+        assertTrue(!leftover(base + "/locked/helper"), "A path Lightspot can't look into (EACCES) is not missing")
+        assertTrue(leftover(base + "/file/helper"), "A file in the middle of the path (ENOTDIR) is")
+
+        // lookUp: one component at a time, never into a folder macOS guards.
+        let guardedFolder = base + "/Guarded"
+        try? fm.createDirectory(atPath: guardedFolder, withIntermediateDirectories: true)
+        fm.createFile(atPath: guardedFolder + "/secret.plist", contents: Data())
+        try? fm.createSymbolicLink(atPath: base + "/through", withDestinationPath: guardedFolder)
+        try? fm.createSymbolicLink(atPath: base + "/loop-a", withDestinationPath: base + "/loop-b")
+        try? fm.createSymbolicLink(atPath: base + "/loop-b", withDestinationPath: base + "/loop-a")
+        let physicalBase = MacTweaksStorage.resolved(base) ?? base
+        let guarded = [physicalBase + "/Guarded"]
+        assertEqual(B.lookUp(base + "/present.sh"), .found(physicalBase + "/present.sh", regularFile: true), "A file is found, its links resolved")
+        assertEqual(B.lookUp(base + "/nothing"), .missing, "A missing one is missing")
+        assertEqual(B.lookUp(base + "/through/secret.plist"), .found(physicalBase + "/Guarded/secret.plist", regularFile: true),
+                    "A linked folder is followed")
+        assertEqual(B.lookUp(base + "/through/secret.plist", guarded: guarded), .unknown, "...but never into a guarded folder")
+        assertEqual(B.lookUp(base + "/loop-a"), .unknown, "A loop of links ends")
+        assertEqual(B.lookUp("relative/path"), .unknown, "A relative path says nothing")
+        let inGuarded = B.Item(label: "com.example.item", plist: "", place: .userAgents, program: guardedFolder + "/gone", arguments: [],
+                               associatedIDs: [], plistDisabled: false, isLink: false, ownerUID: getuid())
+        assertTrue(B.isLeftover(inGuarded) && !B.isLeftover(inGuarded, guarded: guarded),
+                   "What runs from a guarded folder is never looked at, so never judged gone")
+
+        for label in hostileNames where !label.contains("\"") && !label.contains("\t") && !label.contains("\n") && label.allSatisfy(\.isASCII) {
+            assertTrue(B.isActionable(label), "'\(label)' can be handed to launchctl, quoted")
+        }
+        for label in ["", "a/b", "x \"q\" y", "tab\there", "new\nline", "bell\u{7}", String(repeating: "x", count: 513), "unicode é ü 日本 🙂"] {
+            assertTrue(!B.isActionable(label), "'\(label.prefix(16))' can't: launchctl or print-disabled would read it as something else")
+        }
+        // Why accents can't: a child process gets its arguments decomposed, so é reaches launchctl
+        // as e + U+0301 (27.2). Shown, not asserted: the rule stays safe if Foundation changes.
+        let spelled = B.run("/usr/bin/printf", ["%s", "\u{E9}"]).output
+        print("     (a child process gets é as \(Array(spelled.utf8).map { String(format: "%02x", $0) }.joined(separator: " ")); c3 a9 is as written)")
+
+        let printed = "\n\tdisabled services = {\n\t\t\"com.example.off\" => disabled\n\t\t\"com.example.on\" => enabled\n"
+            + "\t\t\"odd => label\" => disabled\n\t}\n"
+        assertEqual(B.overrides(printed), ["com.example.off": true, "com.example.on": false, "odd => label": true],
+                    "print-disabled as 26.7.2 and 27.2 print it, a label holding => included")
+        assertEqual(B.overrides("\"a\" => true\n\"b\" => false\nnot a line\n\"c\" => maybe"), ["a": true, "b": false],
+                    "...and as older systems did; anything else is no entry")
+        assertEqual([B.Loaded(status: 0), B.Loaded(status: 113), B.Loaded(status: 112), B.Loaded(status: -1)],
+                    [.yes, .no, .unknown, .unknown], "print's status: 0 loaded, 113 not, anything else says nothing")
+        assertEqual(B.parse(key: "background:gui/com.example.a")?.label, "com.example.a", "A key names its label")
+        assertEqual(B.parse(key: "background:system/x")?.system, true, "...and its domain")
+        assertTrue(B.parse(key: "service:com.apple.rcd") == nil, "...and no other key is one")
+
+        // The runner: stderr kept (launchctl's reasons are there), stdin closed, a timeout.
+        let both = B.run("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"])
+        assertTrue(both.status == 3 && both.output.contains("out") && both.output.contains("err"), "The runner keeps stderr and the status")
+        let started = Date()
+        assertEqual(B.run("/bin/cat", []).status, 0, "...gives stdin /dev/null, so nothing waits on it")
+        assertEqual(B.run("/bin/sleep", ["5"], timeout: 1).status, -1, "...and stops a child past its timeout")
+        assertTrue(Date().timeIntervalSince(started) < 4, "...without waiting it out")
+        print("✅ Background Items verdicts passed!\n")
+    }
+
+    // MARK: Background Items: the scan, the states, the rows
+
+    static func testBackgroundScan() {
+        print("Testing Background Items scan...")
+        typealias B = MacTweaksBackground
+        let fx = BackgroundFixture("scan")
+        let fm = FileManager.default
+        let gui = fx.gui
+        let agents = fx.userAgents
+        func app(_ name: String) -> String { fx.mac.make(fx.mac.base + "/Apps/\(name).app/Contents/MacOS/\(name)", bytes: 10) }
+
+        // Left out: a Keystone stub, macOS's own, a list, a huge plist, a dot file, another name, a FIFO.
+        fx.plist(agents, "com.google.keystone.agent.plist", [:])
+        fx.item(agents, "com.apple.helper")
+        fm.createFile(atPath: agents + "/array.plist",
+                      contents: try? PropertyListSerialization.data(fromPropertyList: ["Label", "x"], format: .xml, options: 0))
+        fx.plist(agents, "big.plist", ["Label": "com.example.big", "Program": "/bin/true", "Padding": String(repeating: "x", count: 1_100_000)])
+        fx.item(agents, "com.example.shadow", file: "._shadow.plist")
+        fx.item(agents, "com.example.notes", file: "notes.txt")
+        assertEqual(mkfifo(agents + "/fifo.plist", 0o644), 0, "(a FIFO named like a plist)")
+
+        // Listed.
+        fx.plist(agents, "binary.plist", ["Label": "com.example.binary", "Program": app("Binary")], binary: true)
+        fx.setOverride(gui, "com.example.binary", disabled: true)
+        fx.item(agents, "com.example.agent", extra: ["ProgramArguments": [app("Agent"), "--token=secret"]])
+        fx.load(gui + "/com.example.agent")
+        fx.item(agents, "com.example.gone", present: false)
+        fx.load(gui + "/com.example.gone")
+        let elsewhere = fx.mac.base + "/elsewhere"
+        try? fm.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+        fx.item(elsewhere, "com.example.linked", present: false)
+        try? fm.createSymbolicLink(atPath: agents + "/com.example.linked.plist", withDestinationPath: elsewhere + "/com.example.linked.plist")
+        // A chain of links, and a relative one as GNU stow makes, are followed; one into
+        // Documents, directly or through a linked folder, is never read.
+        fx.item(elsewhere, "com.example.chain", file: "real.plist")
+        try? fm.createSymbolicLink(atPath: elsewhere + "/hop.plist", withDestinationPath: elsewhere + "/real.plist")
+        try? fm.createSymbolicLink(atPath: agents + "/com.example.chain.plist", withDestinationPath: elsewhere + "/hop.plist")
+        fx.item(elsewhere, "com.example.stowed")
+        try? fm.createSymbolicLink(atPath: agents + "/com.example.stowed.plist", withDestinationPath: "../../../elsewhere/com.example.stowed.plist")
+        let documents = fx.mac.home + "/Documents/dotfiles"
+        try? fm.createDirectory(atPath: documents, withIntermediateDirectories: true)
+        fx.item(documents, "com.example.docs")
+        try? fm.createSymbolicLink(atPath: agents + "/com.example.docs.plist", withDestinationPath: documents + "/com.example.docs.plist")
+        try? fm.createSymbolicLink(atPath: fx.mac.base + "/dotfiles", withDestinationPath: documents)
+        try? fm.createSymbolicLink(atPath: agents + "/com.example.indirect.plist", withDestinationPath: fx.mac.base + "/dotfiles/com.example.docs.plist")
+        // What it runs is in Documents: never looked at, so never judged a leftover.
+        fx.item(agents, "com.example.documents", program: fx.mac.home + "/Documents/Scripts/sync", present: false)
+        fx.item(agents, "com.example.offrun")
+        fx.setOverride(gui, "com.example.offrun", disabled: true)
+        fx.load(gui + "/com.example.offrun")
+        fx.item(agents, "com.example.overridden", extra: ["Disabled": true])
+        fx.setOverride(gui, "com.example.overridden", disabled: false)
+        let ownoff = fx.item(agents, "com.example.ownoff", extra: ["Disabled": true])
+        fx.plist(agents, "com.example.script.plist", ["Label": "com.example.script", "ProgramArguments": ["/bin/bash", fx.mac.base + "/gone/sync.sh"]])
+        fx.item(agents, "com.example.unknown")
+        fx.printStatus(gui + "/com.example.unknown", 5)
+        fx.item(agents, "com.example.updater", program: app("ExampleUpdater"))
+        fx.item(agents, "a/b", file: "unsafe.plist")
+        fx.item(fx.allUsersAgents, "com.example.agent", program: app("Duplicate"))
+        fx.item(fx.allUsersAgents, "com.example.shared")
+        let helpers = fx.mac.base + "/PrivilegedHelperTools"
+        let daemon = fx.item(fx.daemons, "com.example.daemon", program: helpers + "/com.example.daemon")
+        fx.load("system/com.example.daemon")
+        let orphan = fx.item(fx.daemons, "com.example.orphan", program: helpers + "/com.example.orphan",
+                             extra: ["AssociatedBundleIdentifiers": ["com.example.orphan-app"]])
+        let vmnetd = fx.item(fx.daemons, "com.example.vmnetd", program: helpers + "/com.example.vmnetd",
+                             extra: ["AssociatedBundleIdentifiers": "com.example.docker"])
+        fx.setApp("com.example.docker", "Docker")
+        for path in [daemon, orphan, vmnetd] { fx.setForeign(path) }
+
+        let env = fx.environment
+        let rows = B.scan(env)
+        let agentLabels = ["com.example.binary", "com.example.agent", "com.example.chain", "com.example.documents", "com.example.gone",
+                           "com.example.linked", "com.example.offrun", "com.example.overridden", "com.example.ownoff", "com.example.script",
+                           "com.example.stowed", "com.example.unknown", "com.example.updater", "a/b", "com.example.shared"]
+        let daemonLabels = ["com.example.daemon", "com.example.orphan", "com.example.vmnetd"]
+        let expected = agentLabels.map { bgKey($0) } + daemonLabels.map { bgKey($0, system: true) } + [B.loginItemsRowID]
+        assertEqual(rows.map(\.id), expected,
+                    "Every other app's plist with a Label, by folder and name; no stub, no Apple one, no list, no huge or dot file, no FIFO; the first of a label wins; the Login Items link last")
+        assertTrue(fx.calls.allSatisfy { $0.hasPrefix("print-disabled ") || $0.hasPrefix("print ") }, "A scan only reads launchd")
+        assertTrue(!fx.calls.contains("print \(gui)/a/b"), "...and never hands launchctl a label it would misread")
+        assertTrue(fx.calls.contains("print-disabled system"), "...reading the system list because there are daemons")
+
+        func row(_ label: String, system: Bool = false) -> MacTweaksRow { bgRow(rows, label, system: system)! }
+        let states = agentLabels.map { row($0).value } + daemonLabels.map { row($0, system: true).value }
+        assertEqual(states, ["Off", "On", "Not loaded", "Not loaded", "On", "Not loaded", "Off", "Not loaded", "Off", "Not loaded",
+                             "Not loaded", "Unknown", "Not loaded", "Unknown", "Not loaded", "On", "Not loaded", "Not loaded"],
+                    "Off from launchd's override or the plist's own Disabled; else On (print 0), Not loaded (113) or Unknown")
+        assertEqual(B.summary(rows: rows, ticked: []),
+                    "Found 18 background items from other apps: 3 on, 3 off, 10 not loaded, 2 unknown, 3 leftovers. macOS's own aren't listed.",
+                    "The summary counts each state")
+        assertEqual(B.summary(rows: rows, ticked: [row("com.example.gone"), row("com.example.script")]),
+                    "Found 18 background items from other apps: 3 on, 3 off, 10 not loaded, 2 unknown, 3 leftovers · 2 ticked. macOS's own aren't listed.",
+                    "...and the ticks")
+        assertTrue(row("com.example.documents").tags.isEmpty && row("com.example.documents").caveat?.contains("What it runs is gone") == false,
+                   "What runs from Documents is never looked at, so never judged gone")
+        assertEqual(row("com.example.stowed").items.first?.target, agents + "/com.example.stowed.plist", "A followed link keeps its own path")
+        assertEqual(MacTweaksTicks.defaults(rows), [bgKey("com.example.gone"), bgKey("com.example.script")],
+                    "Only leftovers that can go to the Trash start ticked")
+
+        let agent = row("com.example.agent")
+        assertEqual(agent.title, "Agent", "The owner is the title")
+        assertEqual(agent.detail, "com.example.agent · " + app("Agent"), "The detail is the label and what it runs, never its arguments")
+        assertEqual(agent.items.map(\.target), [agents + "/com.example.agent.plist", "launchctl disable \(gui)/com.example.agent",
+                                                "launchctl bootout \(gui)/com.example.agent"],
+                    "The plist first (⌥↵ shows it), then the commands its change runs")
+        assertEqual(agent.outcome, B.turnOffOutcome, "Ticking an On item turns it off")
+        assertEqual(agent.caveat, "Another copy is installed at \(fx.allUsersAgents)/com.example.agent.plist, and launchd runs only one of them. "
+                    + B.warning("Agent"), "Anything but an updater carries the warning; a second copy of its label is named")
+        assertTrue(agent.tags.isEmpty && agent.symbol == "gearshape" && agent.revealsInFinder && !agent.readOnly, "...and no tag")
+        let updater = row("com.example.updater")
+        assertTrue(updater.tags == [B.updaterTag] && updater.symbol == "arrow.triangle.2.circlepath", "An updater is tagged")
+        assertEqual(updater.caveat, B.notLoadedNote, "...without the warning; not loaded, it says Login Items may have switched it off")
+        assertEqual(updater.outcome, B.turnOffIdleOutcome, "...and turning it off keeps it off whatever Login Items says")
+        let goneRow = row("com.example.gone")
+        assertTrue(goneRow.tags == [B.leftoverTag] && goneRow.isDefault && goneRow.symbol == "questionmark.folder", "A leftover is tagged and ticked")
+        assertEqual(goneRow.caveat, "What it runs is gone, so it can't run.", "...says what it runs is gone, and carries no warning")
+        assertEqual(goneRow.outcome, B.trashOutcome, "...and goes to the Trash")
+        assertEqual(goneRow.items.map(\.target).last, "launchctl bootout \(gui)/com.example.gone", "...stopped first while loaded")
+        let script = row("com.example.script")
+        assertTrue(script.title == "sync.sh" && script.tags == [B.leftoverTag], "A deleted script is a leftover named after itself")
+        assertEqual(script.detail, "com.example.script · /bin/bash " + fx.mac.base + "/gone/sync.sh", "...shown with its interpreter")
+        let linked = row("com.example.linked")
+        assertTrue(linked.tags == [B.leftoverTag] && !linked.isDefault && linked.outcome == B.turnOffIdleOutcome,
+                   "A leftover whose plist is a link is never moved: it is turned off instead")
+        assertTrue(linked.caveat?.hasSuffix("What it runs is gone. Its file is a link, so Lightspot doesn't move it.") == true, "...and says so")
+        let offrun = row("com.example.offrun")
+        assertEqual(offrun.caveat, "Off, but still running until you log out or restart. " + B.warning("offrun"), "Off but loaded says so")
+        assertEqual(offrun.items.count, 2, "...and turning it on only enables it: it is loaded")
+        assertEqual(offrun.outcome, B.turnOnOutcome, "Ticking an Off item turns it back on")
+        let ownoffRow = row("com.example.ownoff")
+        assertEqual(ownoffRow.caveat, "Its own file keeps it off. " + B.warning("ownoff"), "A plist's own Disabled reads Off")
+        assertEqual(ownoffRow.items.map(\.target), [ownoff, "launchctl enable \(gui)/com.example.ownoff",
+                                                    "launchctl bootstrap \(gui) ~/Library/LaunchAgents/com.example.ownoff.plist"],
+                    "...and turning it on enables, then bootstraps it")
+        assertEqual(row("com.example.binary").caveat, B.warning("Binary"), "A binary plist reads too; an override is no plist note")
+        assertEqual(row("com.example.overridden").caveat, B.notLoadedNote + " " + B.warning("overridden"),
+                    "An enabled override beats the plist's own Disabled")
+        assertEqual(row("com.example.unknown").caveat, "launchd didn't say whether it's loaded. " + B.warning("unknown"), "Unknown says so")
+        let unsafe = row("a/b")
+        assertTrue(unsafe.readOnly && unsafe.caveat?.hasPrefix(B.unsafeLabelNote) == true, "A label launchctl would misread is read-only")
+        assertEqual(unsafe.items.count, 1, "...and, running nothing, lists no command")
+        assertTrue(row("com.example.shared").caveat?.contains("Installed for every account. Turning it off here is for your account only.") == true,
+                   "An agent for every account is turned off for this one only")
+        let daemonRow = row("com.example.daemon", system: true)
+        assertEqual(daemonRow.tags, [B.allUsersTag, MacTweaksStorage.passwordTag], "A daemon is for all users and needs the administrator")
+        assertTrue(daemonRow.items.first?.isForeign == true && daemonRow.symbol == "gearshape.2", "...its plist is root's")
+        assertEqual(daemonRow.items.dropFirst().map(\.target), ["launchctl disable system/com.example.daemon", "launchctl bootout system/com.example.daemon"],
+                    "...and its commands name the system domain")
+        assertTrue(row("com.example.orphan", system: true).caveat?.contains("The app it came with (com.example.orphan-app) isn't installed.") == true,
+                   "A daemon whose app LaunchServices doesn't know says so")
+        let vmnetdRow = row("com.example.vmnetd", system: true)
+        assertTrue(vmnetdRow.title == "Docker" && vmnetdRow.caveat?.contains("isn't installed") == false,
+                   "...one whose app it knows is named after that app")
+        let link = rows.last
+        assertTrue(link?.link == .settings(deepLink: B.loginItemsLink) && !MacTweaksTicks.isTickable(link), "The last row opens Login Items")
+
+        assertEqual(B.scan(env, only: [bgKey("com.example.agent"), bgKey("com.example.daemon", system: true)]).map(\.id),
+                    [bgKey("com.example.agent"), bgKey("com.example.daemon", system: true)], "The verify pass scans only what it is asked")
+
+        // Plan notes and titles read nothing but the rows.
+        let turnedOffNote = "Turned-off items stay off after a restart, until you turn them back on here "
+            + "or with Undo everything Lightspot changed, in Settings."
+        assertEqual(B.planNotes([agent]), [turnedOffNote], "Turning an agent off needs no password, and the plan says how to undo it")
+        assertEqual(B.planNotes([daemonRow]), [turnedOffNote, "Items for all users change for every account on this Mac.", MacTweaksStorage.passwordNote],
+                    "A daemon changes for every account and asks for the password")
+        assertEqual(B.planNotes([goneRow]), ["Leftover files go to the Trash."], "A leftover goes to the Trash")
+        assertEqual(B.planNotes([ownoffRow]), [], "Turning one back on needs no note")
+        assertEqual(B.applyTitle(ticked: [agent, updater]), "Turn off 2 items", "The plan's title: turning off")
+        assertEqual(B.applyTitle(ticked: [ownoffRow]), "Turn 1 item back on", "...back on")
+        assertEqual(B.applyTitle(ticked: [goneRow, script]), "Move 2 leftovers to the Trash", "...leftovers")
+        assertEqual(B.applyTitle(ticked: [agent, ownoffRow]), "Apply 2 changes", "...or a mix")
+
+        // The journal: what Lightspot turned off; unreadable, the old file kept aside; blocked, read-only.
+        fx.seed(B.Entry(item: B.items(env).first { $0.label == "com.example.binary" }!, owner: "Binary",
+                        wasDisabled: false, wasLoaded: true, date: Date()))
+        fx.setJournal(.unreadable("garbled"))
+        let unreadable = B.scan(env)
+        assertTrue(bgRow(unreadable, "com.example.binary")?.caveat?.contains("Lightspot turned it off.") == true, "An Off item Lightspot turned off says so")
+        assertTrue(bgRow(unreadable, "com.example.agent")?.caveat?.contains(B.unreadableJournalNote) == true,
+                   "With the journal unreadable, a turn-off says the old one is kept aside")
+        assertTrue(bgRow(unreadable, "com.example.ownoff")?.caveat?.contains(B.unreadableJournalNote) == false, "...a turn-on records nothing")
+        let lockedReason = MacTweaksJournal.blockedReason("~/Library/Application Support/Lightspot/tweaks-journal.json")
+        assertTrue(lockedReason.hasPrefix(B.blockedPrefix), "(phase 3's blocked reason starts as the section expects)")
+        fx.setJournal(.blocked(lockedReason))
+        let blocked = B.scan(env)
+        assertTrue(blocked.filter { !$0.isLink }.allSatisfy { $0.readOnly && $0.caveat?.hasPrefix(lockedReason) == true },
+                   "A blocked journal makes every row read-only, and says why in phase 3's words")
+        assertTrue(!MacTweaksTicks.hasTickable(blocked), "...so nothing can be ticked")
+        assertTrue(B.summary(rows: blocked, ticked: []).hasSuffix(B.blockedSummary), "...and the summary says so")
+        fx.setJournal(.ready)
+        fx.breakList("system")
+        let unread = B.scan(env)
+        let unreadDaemon = bgRow(unread, "com.example.daemon", system: true)
+        assertTrue(unreadDaemon?.readOnly == true && unreadDaemon?.caveat?.hasPrefix(B.unreadNote) == true && unreadDaemon?.value == "Unknown",
+                   "Without the system list, daemons are read-only")
+        assertTrue(bgRow(unread, "com.example.agent")?.readOnly == false, "...and agents are not")
+        print("✅ Background Items scan passed!\n")
+    }
+
+    // MARK: Background Items: turning user agents off and on
+
+    static func testBackgroundTurnOffAndOn() {
+        print("Testing Background Items turn off and on...")
+        typealias B = MacTweaksBackground
+        let fx = BackgroundFixture("toggle")
+        let gui = fx.gui
+        for label in ["com.example.a", "com.example.b", "com.example.c", "com.example.d"] { fx.item(fx.userAgents, label) }
+        fx.load(gui + "/com.example.a")
+        fx.setOverride(gui, "com.example.c", disabled: true)
+        fx.setOverride(gui, "com.example.d", disabled: true)
+        fx.load(gui + "/com.example.d")
+        let env = fx.environment
+        let rows = B.scan(env)
+        let items = B.items(env)
+        func row(_ label: String) -> MacTweaksRow { bgRow(rows, label)! }
+        func item(_ label: String) -> B.Item { items.first { $0.label == label }! }
+        // An earlier turn-off left a's entry (it wasn't loaded then), and c's.
+        fx.seed(B.Entry(item: item("com.example.a"), owner: "a", wasDisabled: false, wasLoaded: false, date: Date()))
+        fx.seed(B.Entry(item: item("com.example.c"), owner: "c", wasDisabled: false, wasLoaded: true, date: Date()))
+        fx.clearCalls()
+        let result = B.apply(["com.example.a", "com.example.b", "com.example.c", "com.example.d"].map(row), env: env)
+        let calls = fx.calls
+        let recorded = calls.firstIndex { $0.hasPrefix("journal record ") } ?? calls.count
+        let firstWrite = calls.firstIndex { fx.writes.contains($0) } ?? calls.count
+        assertTrue(recorded < firstWrite, "Turn-offs are journaled before launchctl changes anything")
+        assertEqual(calls[recorded], "journal record " + [bgKey("com.example.a"), bgKey("com.example.b")].joined(separator: ","),
+                    "...the turn-offs only")
+        assertEqual(fx.writes, ["disable \(gui)/com.example.a", "bootout \(gui)/com.example.a", "disable \(gui)/com.example.b",
+                                "enable \(gui)/com.example.c", "bootstrap \(gui) \(item("com.example.c").plist)", "enable \(gui)/com.example.d"],
+                    "Off is disable, then bootout while loaded; on is enable, then bootstrap while not loaded")
+        let overrides = fx.overrides(gui)
+        assertEqual([overrides["com.example.a"], overrides["com.example.b"], overrides["com.example.c"], overrides["com.example.d"]],
+                    [true, true, false, false], "launchd's switches say what was asked")
+        assertEqual(fx.loaded, [gui + "/com.example.c", gui + "/com.example.d"], "a stopped, c started, d still running")
+        assertEqual(fx.entry(bgKey("com.example.a"))?.wasLoaded, false, "An earlier entry is never overwritten: the first previous state wins")
+        let bEntry = fx.entry(bgKey("com.example.b"))
+        assertTrue(bEntry?.wasLoaded == false && bEntry?.wasDisabled == false && bEntry?.owner == "b", "b's entry says it was on but not loaded")
+        assertTrue(fx.entry(bgKey("com.example.c")) == nil, "Turning c back on removes its entry")
+        assertEqual(result.receipt.headline, "Changed 4 background items.", "The receipt says what happened, on one line")
+        assertEqual(result.receipt.lines, ["Turned off: a, b.", "Turned back on: c, d."], "...one wrapped line per kind, as Settings' receipts")
+        assertTrue(result.receipt.problems.isEmpty && result.receipt.isSuccess, "...with the green check")
+        assertEqual(result.receipt.notes, ["Turn them back on here, or with Undo everything Lightspot changed, in Settings."],
+                    "...and how to undo it")
+        assertEqual(result.rescanned.map(\.value), ["Off", "Off", "On", "On"], "The rows are scanned again")
+        let log = (try? String(contentsOfFile: fx.mac.home + "/Library/Application Support/Lightspot/mac-tweaks.log", encoding: .utf8)) ?? ""
+        assertTrue(log.contains("▸ Background Items") && log.contains("launchctl disable \(gui)/com.example.a: status 0"), "The receipt is logged")
+
+        // Refusals, each verified by reading launchd again.
+        let failing = BackgroundFixture("toggle-refused")
+        for label in ["com.example.e", "com.example.f", "com.example.g", "com.example.h"] { failing.item(failing.userAgents, label) }
+        failing.load(gui + "/com.example.e")
+        failing.refuse("bootout", "com.example.e")
+        failing.load(gui + "/com.example.f")
+        failing.refuse("disable", "com.example.f")
+        failing.setOverride(gui, "com.example.g", disabled: true)
+        failing.refuse("bootstrap", "com.example.g")
+        failing.setOverride(gui, "com.example.h", disabled: true)
+        failing.refuse("enable", "com.example.h")
+        let failingEnv = failing.environment
+        let failingItems = B.items(failingEnv)
+        for label in ["com.example.g", "com.example.h"] {
+            failing.seed(B.Entry(item: failingItems.first { $0.label == label }!, owner: "x", wasDisabled: false, wasLoaded: true, date: Date()))
+        }
+        let refused = B.apply(B.scan(failingEnv).filter { !$0.isLink }, env: failingEnv)
+        assertEqual(refused.receipt.headline, "Changed 2 background items.", "Only what launchd confirms counts")
+        assertEqual(refused.receipt.lines, ["Turned off: e.", "Turned back on: g."], "...by kind")
+        assertEqual(refused.receipt.problems, [
+            "e is off, but still running until you log out or restart (Input/output error).",
+            "f is still on (Operation not permitted).",
+            "g is on again, but it didn't load (Input/output error). Login Items & Extensions in System Settings may have it switched off.",
+            "h is still off (Operation not permitted).",
+        ], "Each refusal is reported in launchctl's words")
+        assertTrue(!refused.receipt.isSuccess, "...without the green check")
+        assertTrue(failing.loaded.contains(gui + "/com.example.e") && failing.overrides(gui)["com.example.e"] == true, "e is off but still loaded")
+        assertTrue(failing.entry(bgKey("com.example.e")) != nil, "...and journaled")
+        assertTrue(failing.entry(bgKey("com.example.f")) == nil, "A turn-off that didn't take loses the entry it just wrote")
+        assertTrue(failing.entry(bgKey("com.example.g")) == nil && failing.entry(bgKey("com.example.h")) != nil,
+                   "A turn-on removes the entry only once launchd says it is on")
+
+        // What changed since the scan.
+        let moved = BackgroundFixture("toggle-changed")
+        for label in ["com.example.i", "com.example.j", "com.example.k", "com.example.l"] { moved.item(moved.userAgents, label) }
+        for label in ["com.example.i", "com.example.j", "com.example.k"] { moved.load(gui + "/" + label) }
+        moved.setOverride(gui, "com.example.l", disabled: true)
+        let movedEnv = moved.environment
+        let movedRows = B.scan(movedEnv).filter { !$0.isLink }
+        moved.setOverride(gui, "com.example.i", disabled: true)
+        try? FileManager.default.removeItem(atPath: moved.userAgents + "/com.example.j.plist")
+        moved.plist(moved.userAgents, "com.example.k.plist", ["Label": "com.example.other", "Program": "/bin/true"])
+        _ = B.run(moved.launchctl, ["enable", gui + "/com.example.l"])
+        moved.load(gui + "/com.example.l")
+        moved.clearCalls()
+        let changed = B.apply(movedRows, env: movedEnv)
+        assertTrue(moved.writes.isEmpty, "Nothing that changed since the scan is touched")
+        assertEqual(changed.receipt.lines, ["Already off: i.", "Already on: l.", "Already gone: j."],
+                    "An item already as asked, or gone, is in a line of its kind")
+        assertEqual(changed.receipt.problems, ["k changed since the scan, so Lightspot left it alone."], "A different plist is left alone")
+        assertEqual(changed.receipt.headline, "Nothing changed.", "...and nothing changed")
+
+        // The journal can't be written: turn-offs don't run; blocked, nothing runs.
+        let journal = BackgroundFixture("toggle-journal")
+        journal.item(journal.userAgents, "com.example.m")
+        journal.load(gui + "/com.example.m")
+        journal.item(journal.userAgents, "com.example.n")
+        journal.setOverride(gui, "com.example.n", disabled: true)
+        let journalEnv = journal.environment
+        let journalRows = B.scan(journalEnv).filter { !$0.isLink }
+        journal.failRecord("disk full")
+        let unsaved = B.apply(journalRows, env: journalEnv)
+        assertTrue(!journal.writes.contains { $0.contains("com.example.m") }, "A turn-off that can't be journaled doesn't run")
+        assertEqual(unsaved.receipt.problems, ["Lightspot couldn't record what m was, so it left it on: disk full"], "...and says so")
+        assertEqual(journal.overrides(gui)["com.example.n"], false, "...while a turn-on, which records nothing, goes ahead")
+        journal.failRecord(nil)
+        let locked = MacTweaksJournal.blockedReason("~/Library/Application Support/Lightspot/tweaks-journal.json")
+        journal.setJournal(.blocked(locked))
+        journal.clearCalls()
+        let refusedAll = B.apply(journalRows, env: journalEnv)
+        assertTrue(journal.writes.isEmpty && refusedAll.receipt.headline == "Nothing changed." && !refusedAll.receipt.isSuccess,
+                   "A blocked journal changes nothing at all")
+        assertTrue(refusedAll.receipt.problems.contains(locked), "...and says why")
+        print("✅ Background Items turn off and on passed!\n")
+    }
+
+    // MARK: Background Items: daemons, and leftovers root moves, in one administrator batch
+
+    static func testBackgroundAdminBatch() {
+        print("Testing Background Items administrator batch...")
+        typealias B = MacTweaksBackground
+        let fm = FileManager.default
+        let fx = BackgroundFixture("batch")
+        let s1 = fx.item(fx.daemons, "com.example.s1")
+        fx.load("system/com.example.s1")
+        let s2 = fx.item(fx.daemons, "com.example.s2")
+        fx.setOverride("system", "com.example.s2", disabled: true)
+        let dupDaemon = fx.item(fx.daemons, "com.example.dupdaemon", present: false, file: "dup.plist")
+        fx.load("system/com.example.dupdaemon")
+        let dupAgent = fx.item(fx.userAgents, "com.example.dupagent", present: false, file: "dup.plist")
+        for path in [s1, s2, dupDaemon, dupAgent] { fx.setForeign(path) }
+        fx.mac.setDenied([dupAgent])
+        let env = fx.environment
+        let rows = B.scan(env).filter { !$0.isLink }
+        assertEqual(rows.map { B.change(of: $0) }, [.trash, .turnOff, .turnOn, .trash], "(a root-owned agent leftover, then three daemons)")
+        assertTrue(rows[0].tags.contains(MacTweaksStorage.passwordTag) && B.needsAdministrator(rows[0]),
+                   "A leftover this user can't move may ask for the password")
+        let result = B.apply(rows, env: env)
+        assertEqual(fx.mac.adminScripts.count, 1, "Every daemon, and every move only root can make, shares one prompt")
+        let script = fx.mac.adminScripts.first ?? ""
+        assertTrue(script.hasPrefix("exec </dev/null") && script.hasSuffix("exit 0"), "The batch reads no stdin and always exits 0")
+        // Written out, not built with the engine's own functions, so a quoting change can't pass unseen.
+        let quoted = "'" + fx.launchctl + "'"
+        let offStep = "\(quoted) disable 'system/com.example.s1' && if \(quoted) print 'system/com.example.s1' >/dev/null 2>&1; "
+            + "then \(quoted) bootout 'system/com.example.s1'; fi"
+        let onStep = "\(quoted) enable 'system/com.example.s2' && if ! \(quoted) print 'system/com.example.s2' >/dev/null 2>&1; "
+            + "then \(quoted) bootstrap 'system' '\(s2)'; fi"
+        assertTrue(script.contains(offStep) && script.contains(onStep), "...naming launchctl by its absolute path, every argument quoted")
+        assertTrue(fx.overrides("system")["com.example.s1"] == true && !fx.loaded.contains("system/com.example.s1"), "s1 is off and stopped")
+        assertTrue(fx.overrides("system")["com.example.s2"] == false && fx.loaded.contains("system/com.example.s2"), "s2 is on and loaded")
+        assertTrue(!fm.fileExists(atPath: dupDaemon) && !fm.fileExists(atPath: dupAgent), "Both leftovers left their folders")
+        assertTrue(fm.fileExists(atPath: fx.trash + "/dup.plist") && fm.fileExists(atPath: fx.trash + "/dup 2.plist"),
+                   "...for Trash names unique within the batch")
+        assertEqual(fx.entry(bgKey("com.example.s1", system: true))?.wasLoaded, true, "The daemon's turn-off was journaled")
+        assertEqual(result.receipt.headline, "Changed 4 background items.", "The receipt sums it up")
+        assertEqual(result.receipt.lines, ["Turned off: s1.", "Turned back on: s2.", "Moved to the Trash: dupagent, dupdaemon."],
+                    "...one line per kind")
+        assertTrue(result.receipt.problems.isEmpty, "...with nothing left over")
+
+        // Hostile labels reach launchctl exactly, through /bin/sh -c and do shell script.
+        let hostile = BackgroundFixture("batch-hostile")
+        let labels = hostileNames.filter { B.isActionable($0) }
+        for (index, label) in labels.enumerated() {
+            hostile.setForeign(hostile.item(hostile.daemons, label, file: "hostile-\(index).plist"))
+            hostile.load("system/" + label)
+        }
+        let hostileEnv = hostile.environment
+        _ = B.apply(B.scan(hostileEnv).filter { !$0.isLink }, env: hostileEnv)
+        assertEqual(hostile.mac.adminScripts.count, 1, "\(labels.count) daemons, one prompt")
+        let hostileOverrides = hostile.overrides("system")
+        for label in labels {
+            assertTrue(hostile.calls.contains("disable system/" + label) && hostileOverrides[label] == true
+                       && !hostile.loaded.contains("system/" + label), "'\(label)' reached launchctl exactly")
+        }
+        let three = Array(labels.prefix(3))
+        let back = MacTweaksStorage.adminScript(three.map { B.turnOnCommand(hostile.launchctl, "system/" + $0, domain: "system", plist: "", bootstrap: false) },
+                                                tag: "__LS_HOSTILE")
+        var error: NSDictionary?
+        let ran = NSAppleScript(source: QuickActionsProvider.doShellScriptSource(back, administrator: false))?.executeAndReturnError(&error)
+        let dialog = MacTweaksStorage.batchResults((ran?.stringValue ?? "").replacingOccurrences(of: "\r", with: "\n"), tag: "__LS_HOSTILE")
+        assertTrue(error == nil && dialog.count == 3 && dialog.values.allSatisfy { $0.status == 0 }, "The same steps run under do shell script")
+        assertTrue(three.allSatisfy { hostile.overrides("system")[$0] == false }, "...exactly")
+
+        // A cancelled or refused prompt changes no daemon, and keeps no entry it wrote.
+        let cancel = BackgroundFixture("batch-cancel")
+        cancel.setForeign(cancel.item(cancel.daemons, "com.example.c1"))
+        cancel.load("system/com.example.c1")
+        let cancelEnv = cancel.environment
+        let cancelRows = B.scan(cancelEnv).filter { !$0.isLink }
+        cancel.mac.setAdminAnswer(.cancelled)
+        let cancelled = B.apply(cancelRows, env: cancelEnv)
+        assertEqual(cancelled.receipt.problems, ["c1 is still on (it needs Touch ID or your password, and the prompt was cancelled)."],
+                    "A cancelled prompt is reported")
+        assertTrue(cancel.overrides("system")["com.example.c1"] == nil && cancel.loaded.contains("system/com.example.c1"), "...and nothing changed")
+        assertTrue(cancel.journalKeys.isEmpty && cancel.calls.contains("journal remove " + bgKey("com.example.c1", system: true)),
+                   "...the entry written ahead is taken back")
+        cancel.mac.setAdminAnswer(.refused("not an administrator"))
+        let notAllowed = B.apply(cancelRows, env: cancelEnv)
+        assertEqual(notAllowed.receipt.problems, ["c1 is still on (it needs Touch ID or your password, and macOS didn't accept it)."],
+                    "A refused one too")
+        assertEqual(cancel.mac.adminScripts.count, 2, "One prompt per apply")
+
+        // The live values.
+        assertEqual(B.Environment.live.launchctlPath, "/bin/launchctl", "The live batch names /bin/launchctl")
+        assertTrue(B.Environment.live.journal == nil && B.Environment.inert.journal == nil,
+                   "The live section uses the journal file, through Settings' file system")
+        assertEqual(B.Environment.inert.launchctl(["print-disabled", "system"]).status, -1, "The inert environment runs nothing")
+        print("✅ Background Items administrator batch passed!\n")
+    }
+
+    // MARK: Background Items: leftovers
+
+    static func testBackgroundLeftovers() {
+        print("Testing Background Items leftovers...")
+        typealias B = MacTweaksBackground
+        let fm = FileManager.default
+        let fx = BackgroundFixture("leftovers")
+        let gui = fx.gui
+        let agents = fx.userAgents
+        let l1 = fx.item(agents, "com.example.l1", present: false)
+        fx.load(gui + "/com.example.l1")
+        let l2 = fx.item(agents, "com.example.l2", present: false)
+        fx.load(gui + "/com.example.l2")
+        fx.refuse("bootout", "com.example.l2")
+        let l3 = fx.item(agents, "com.example.l3", present: false)
+        let l4 = fx.item(agents, "com.example.l4", present: false)
+        let l5 = fx.item(agents, "com.example.l5", present: false)
+        let l7 = fx.item(fx.daemons, "com.example.l7", present: false)
+        fx.load("system/com.example.l7")
+        fx.refuse("bootout", "com.example.l7")
+        fx.setForeign(l7)
+        fx.mac.setStuck([l4])
+        fx.mac.setBroken([l5])
+        let env = fx.environment
+        let rows = B.scan(env)
+        assertEqual(MacTweaksTicks.defaults(rows), Set(["l1", "l2", "l3", "l4", "l5"].map { bgKey("com.example." + $0) } + [bgKey("com.example.l7", system: true)]),
+                    "Every leftover starts ticked")
+        fx.seed(B.Entry(item: B.items(env).first { $0.label == "com.example.l1" }!, owner: "l1", wasDisabled: false, wasLoaded: true, date: Date()))
+        fx.mac.make(fx.program("com.example.l3"), bytes: 10)
+        let result = B.apply(rows.filter { !$0.isLink }, env: env)
+        assertTrue(!fm.fileExists(atPath: l1) && fm.fileExists(atPath: fx.trash + "/com.example.l1.plist") && !fx.loaded.contains(gui + "/com.example.l1"),
+                   "A leftover is stopped, then moved to the Trash")
+        assertTrue(fx.entry(bgKey("com.example.l1")) == nil, "...and its journal entry goes with it")
+        assertTrue([l2, l3, l4, l5, l7].allSatisfy { fm.fileExists(atPath: $0) }, "Nothing else moved")
+        let full = CocoaError(.fileWriteOutOfSpace).localizedDescription
+        assertEqual(result.receipt.problems, [
+            "l3 stays: what it runs is back.",
+            "l2 stays: it was still running after Lightspot stopped it.",
+            "l4 stays: macOS didn't let Lightspot move it (\(CocoaError(.fileWriteNoPermission).localizedDescription)).",
+            "l5 stays: " + full + (full.hasSuffix(".") ? "" : "."),
+            "l7 stays (still running after bootout).",
+        ], "One still loaded after bootout stays, as does one whose program came back; refusals in macOS's words, one period")
+        assertEqual(result.receipt.headline, "Moved 1 leftover to the Trash.", "Only the moved one counts")
+        assertTrue(!fx.writes.contains("bootout \(gui)/com.example.l3"), "An item no longer left over isn't even stopped")
+
+        // The folder swapped for a symlink during the prompt: the guard keeps root out of it.
+        let swap = BackgroundFixture("leftovers-swap")
+        let swapped = swap.item(swap.daemons, "com.example.swapped", present: false)
+        swap.setForeign(swapped)
+        let swapEnv = swap.environment
+        let swapRows = B.scan(swapEnv).filter { !$0.isLink }
+        let elsewhere = swap.mac.base + "/elsewhere"
+        let realFolder = swap.mac.base + "/daemons-real"
+        let folder = swap.daemons
+        swap.mac.setBeforeAdmin {
+            let fm = FileManager.default
+            try? fm.moveItem(atPath: folder, toPath: realFolder)
+            try? fm.createDirectory(atPath: elsewhere, withIntermediateDirectories: true)
+            fm.createFile(atPath: elsewhere + "/com.example.swapped.plist", contents: Data("decoy".utf8))
+            try? fm.createSymbolicLink(atPath: folder, withDestinationPath: elsewhere)
+        }
+        let swapResult = B.apply(swapRows, env: swapEnv)
+        assertTrue(fm.fileExists(atPath: elsewhere + "/com.example.swapped.plist") && fm.fileExists(atPath: realFolder + "/com.example.swapped.plist")
+                   && !fm.fileExists(atPath: swap.trash + "/com.example.swapped.plist"), "A folder swapped for a symlink keeps root out of it")
+        assertEqual(swapResult.receipt.problems, ["swapped stays (the item or the Trash changed before the move)."], "...and says so")
+        print("✅ Background Items leftovers passed!\n")
+    }
+
+    // MARK: Background Items: Undo everything's hook, and the journal's entries
+
+    static func testBackgroundUndo() {
+        print("Testing Background Items Undo everything hook...")
+        typealias B = MacTweaksBackground
+        let fx = BackgroundFixture("undo")
+        let gui = fx.gui
+        for label in ["com.example.a1", "com.example.a2", "com.example.w"] { fx.item(fx.userAgents, label) }
+        let s1 = fx.item(fx.daemons, "com.example.s1")
+        fx.item(fx.daemons, "com.example.s2")
+        for label in ["com.example.a1", "com.example.a2", "com.example.w"] { fx.setOverride(gui, label, disabled: true) }
+        for label in ["com.example.s1", "com.example.s2"] { fx.setOverride("system", label, disabled: true) }
+        let env = fx.environment
+        let current = B.items(env)
+        func entry(_ label: String, loaded: Bool, disabled: Bool = false, plist: String? = nil, system: Bool = false) -> B.Entry {
+            let item = B.Item(label: label, plist: plist ?? (current.first { $0.label == label }?.plist ?? "/gone/\(label).plist"),
+                              place: system ? .daemons : .userAgents, program: "", arguments: [], associatedIDs: [],
+                              plistDisabled: false, isLink: false, ownerUID: nil)
+            return B.Entry(item: item, owner: label.components(separatedBy: ".").last ?? label, wasDisabled: disabled, wasLoaded: loaded, date: Date())
+        }
+        let entries = [
+            entry("com.example.a1", loaded: true),
+            entry("com.example.a2", loaded: false),
+            entry("com.example.s1", loaded: true, plist: "/private/tmp/evil.plist", system: true),
+            entry("com.example.s2", loaded: false, system: true),
+            entry("com.example.w", loaded: true, disabled: true),
+            entry("com.example.gone", loaded: true),
+            entry("com.apple.Siri.agent", loaded: true),
+            entry("a/b", loaded: true),
+        ]
+        fx.clearCalls()
+        let undo = B.undo(entries, environment: env)
+        assertTrue(fx.writes.isEmpty, "Building the hook changes nothing")
+        assertEqual(undo.adminKeys, [bgKey("com.example.s1", system: true), bgKey("com.example.s2", system: true)],
+                    "Each administrator step names the entry it undoes")
+        assertEqual(undo.refused, [bgKey("com.apple.Siri.agent"), bgKey("a/b")], "What Lightspot never changes is kept without trying")
+        let quoted = "'" + fx.launchctl + "'"
+        assertEqual(undo.adminCommands, [
+            "\(quoted) enable 'system/com.example.s1' && if ! \(quoted) print 'system/com.example.s1' >/dev/null 2>&1; then \(quoted) bootstrap 'system' '\(s1)'; fi",
+            "\(quoted) enable 'system/com.example.s2'",
+        ], "Daemons join the one batch: enable, and bootstrap only what was loaded, from the plist the scan found")
+        assertTrue(!undo.adminCommands.joined().contains("evil"), "...never a path the journal alone names")
+        assertEqual(undo.userSteps(), [], "User agents turn back on as this user")
+        if case .ran = fx.mac.environment.runAdmin(MacTweaksStorage.adminScript(undo.adminCommands, tag: "__LS_UNDO")) {} else {
+            assertTrue(false, "The batch runs")
+        }
+        let guiOverrides = fx.overrides(gui)
+        let systemOverrides = fx.overrides("system")
+        assertEqual([guiOverrides["com.example.a1"], guiOverrides["com.example.a2"], systemOverrides["com.example.s1"], systemOverrides["com.example.s2"]],
+                    [false, false, false, false], "Every switch Lightspot turned off is back on")
+        assertEqual(guiOverrides["com.example.w"], true, "An item that was off before Lightspot stays off")
+        assertEqual(fx.loaded, [gui + "/com.example.a1", "system/com.example.s1"], "Only what was loaded before is started again")
+        for done in entries.prefix(4) { assertEqual(undo.outcome(done.key, (0, "")), .undone(line: nil), "\(done.label) is back on, so its entry goes") }
+        assertEqual(undo.outcome(entries[4].key, nil), .undone(line: "w: left off, as it was before Lightspot."), "One off before Lightspot stays off")
+        assertEqual(undo.outcome(entries[5].key, nil),
+                    .dropped(line: "gone: its plist is gone, so Lightspot ran nothing and dropped its entry; launchd keeps its switch off."),
+                    "One whose plist is gone runs nothing and is dropped, saying so")
+        for kept in entries.suffix(2) { assertEqual(undo.outcome(kept.key, nil), .kept(problem: nil), "\(kept.label)'s entry stays: Lightspot never changes it") }
+        assertTrue(!fx.calls.contains { $0.contains("com.apple.Siri.agent") || $0.contains("a/b") }, "...and nothing runs for it")
+        assertEqual(B.undoPlanLine(entries[0], userID: fx.uid),
+                    "a1: back on and started again (launchctl enable \(gui)/com.example.a1, then launchctl bootstrap).",
+                    "The plan line of what was loaded, without the journal's plist path")
+        assertEqual(B.undoPlanLine(entries[3], userID: fx.uid),
+                    "s2: launchd's switch back on; it wasn't loaded before (launchctl enable system/com.example.s2).", "...of what wasn't")
+        assertEqual(B.undoPlanLine(entries[4], userID: fx.uid), "w: it was off before Lightspot, so it stays off.", "...and of what was off")
+        assertEqual(B.undoPlanLines([(entries[5].key, entries[5].json), (entries[0].key, entries[0].json)], environment: env), [
+            entries[5].key: "gone: its plist is gone, so Lightspot runs nothing and drops its entry; launchd keeps its switch off.",
+            entries[0].key: "a1: back on and started again (launchctl enable \(gui)/com.example.a1, then launchctl bootstrap).",
+        ], "The plan says an entry whose plist is gone runs nothing and is dropped, looking once for the plists")
+
+        // The entry's JSON: the journal stores it as it is.
+        let original = entries[0]
+        assertEqual(B.Entry(key: original.key, json: original.json), original, "An entry round-trips through its JSON")
+        let object = (try? JSONSerialization.jsonObject(with: original.json)) as? [String: Any] ?? [:]
+        assertEqual(Set(object.keys), ["kind", "tweak", "label", "domain", "plist", "owner", "wasDisabled", "wasLoaded", "date"],
+                    "It holds what undoing it needs, and phase 3's fields")
+        assertTrue(object["kind"] as? String == "background" && object["tweak"] as? String == original.key && object["domain"] as? String == "gui",
+                   "...its kind, its key as the tweak, its domain")
+        func variant(_ change: (inout [String: Any]) -> Void) -> Data {
+            var copy = object
+            change(&copy)
+            return (try? JSONSerialization.data(withJSONObject: copy)) ?? Data()
+        }
+        assertTrue(B.Entry(key: original.key, json: variant { $0["future"] = 1 }) != nil, "A field a later version adds is tolerated")
+        assertTrue(B.Entry(key: original.key, json: variant { $0["kind"] = "service" }) == nil, "...another kind is not one")
+        assertTrue(B.Entry(key: original.key, json: variant { $0["label"] = "com.example.other" }) == nil, "...nor one whose label contradicts its key")
+        assertTrue(B.Entry(key: original.key, json: variant { $0["domain"] = "system" }) == nil, "...or its domain")
+        assertEqual(B.Entry(key: original.key, json: variant { $0["wasLoaded"] = nil })?.wasLoaded, true,
+                    "Without wasLoaded, undo starts the item again, as RemoveMacAI's does")
+        assertTrue(B.Entry(key: "pref:x", json: original.json) == nil, "A key of another kind is never one")
+        print("✅ Background Items Undo everything hook passed!\n")
+    }
+
+    // MARK: Background Items: in the provider
+
+    static func testBackgroundProvider() {
+        print("Testing Background Items in the provider...")
+        typealias B = MacTweaksBackground
+        assertTrue(MacTweaksSection.built.contains(.backgroundItems) && MacTweaksSection.built.last == .backgroundItems,
+                   "Background Items is built on every Mac, as the last tab")
+        let fx = BackgroundFixture("provider")
+        fx.item(fx.userAgents, "com.example.p1")
+        fx.load(fx.gui + "/com.example.p1")
+        fx.item(fx.userAgents, "com.example.p2", present: false)
+        assertTrue(MacTweaksProvider.engine(for: .backgroundItems, environment: fx.environment) != nil, "It has an engine")
+        let provider = MacTweaksProvider(environment: fx.environment)
+        func wait(_ section: MacTweaksSection = .backgroundItems, _ done: (MacTweaksProvider.SectionState) -> Bool) -> MacTweaksProvider.SectionState {
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                let state = provider.snapshot[section]
+                if done(state) { return state }
+                usleep(10_000)
+            }
+            print("❌ FAIL: \(section.title) never got there; it is at \(provider.snapshot[section].phase)")
+            exit(1)
+        }
+        // Settings scanned first, so the apply below has a scan of it to make stale.
+        provider.open(.settings)
+        _ = wait(.settings) { $0.phase == .ready }
+        provider.open(.backgroundItems)
+        let ready = wait { $0.phase == .ready }
+        if case .settings(let deepLink)? = ready.rows.last?.link, let url = URL(string: deepLink) {
+            assertTrue(deepLink == B.loginItemsLink && SystemSettingsOpener.opensInSystemSettings(url),
+                       "The last row opens Login Items through SystemSettingsOpener, as every settings link does")
+        } else {
+            assertTrue(false, "The last row is a settings link")
+        }
+        let p1 = bgKey("com.example.p1"), p2 = bgKey("com.example.p2")
+        assertEqual(ready.rows.map(\.id), [p1, p2, B.loginItemsRowID], "Opening the section scans it")
+        assertEqual(MacTweaksTicks.defaults(ready.rows), [p2], "Only the leftover starts ticked")
+        fx.clearCalls()
+        let notes = provider.planNotes(.backgroundItems, rows: Array(ready.rows.prefix(2)))
+        assertTrue(fx.calls.isEmpty, "The plan reads nothing")
+        assertEqual(notes, [B.turnedOffNote, "Leftover files go to the Trash."], "...and says where things go")
+        assertEqual(B.summary(rows: ready.rows, ticked: [ready.rows[1]]),
+                    "Found 2 background items from other apps: 1 on, 1 not loaded, 1 leftover · 1 ticked. macOS's own aren't listed.",
+                    "The summary")
+        provider.apply(.backgroundItems, ids: [p1, p2, B.loginItemsRowID])
+        let finished = wait { $0.phase == .finished }
+        assertEqual(finished.receipt?.headline, "Changed 2 background items.", "Applying ends on a receipt")
+        assertEqual(finished.receipt?.lines, ["Turned off: p1.", "Moved to the Trash: p2."], "...one line per kind")
+        assertTrue(provider.snapshot[.settings].scannedAt == nil,
+                   "Settings' scan no longer stands: its Undo everything row lists what Background Items journals")
+        assertEqual(finished.rows.map(\.id), [p1, B.loginItemsRowID], "...the leftover's row gone, the link kept")
+        assertEqual(finished.rows.first?.value, "Off", "...and the turned-off item reads Off")
+
+        // Which scans an apply makes stale.
+        let undoRow = MacTweaksRow(id: MacTweaksSettings.undoEverythingID, symbol: "arrow.uturn.backward", title: "Undo everything", detail: "")
+        assertEqual(MacTweaksProvider.staleAfterApply(.backgroundItems, applied: []), [.settings], "A Background Items apply makes Settings' scan stale")
+        assertTrue(MacTweaksProvider.staleAfterApply(.settings, applied: [undoRow]).contains(.backgroundItems),
+                   "...and Undo everything makes Background Items' stale")
+        assertTrue(!MacTweaksProvider.staleAfterApply(.settings, applied: []).contains(.backgroundItems), "...but no other Settings change does")
+        assertEqual(MacTweaksProvider.staleAfterApply(.freeUpSpace, applied: []), [], "Free Up Space makes none stale")
+
+        // The search phrases open the section; with System Settings' own terms indexed, as the app
+        // has them, a bare word and System Settings' own words keep their Top Hits.
+        _ = SettingsProvider.shared.loadSearchTerms()
+        for phrase in ["turn off launch agents", "turn off background items", "disable launch agents", "turn off google updater", "launch daemons"] {
+            let top = SearchEngine.shared.searchImmediate(SearchQuery(phrase))[.topHit]?.first
+            assertEqual(top?.id, "top-" + MacTweaksProvider.backgroundResultID, "'\(phrase)' opens Mac Tweaks' Background Items")
+            if case .runQuickAction(let script, _) = top?.action {
+                assertEqual(MacTweaksProvider.section(forScript: script), .backgroundItems, "...on its section")
+            }
+        }
+        for (query, title, category) in [("disable", "Accessibility", ResultCategory.systemSettings), ("background items", "Login Items", .systemSettings),
+                                         ("login items", "Login Items", .systemSettings), ("launch agents", "Login Items", .systemSettings),
+                                         ("launch", "Login Items", .systemSettings), ("background", "Wallpaper", .systemSettings),
+                                         ("turn off", "Shut Down", .quickActions)] {
+            let results = SearchEngine.shared.searchImmediate(SearchQuery(query))
+            let top = results[.topHit]?.first
+            assertTrue(top?.title == title && top?.promotedFrom == category, "'\(query)' keeps its Top Hit, \(title): got \(top?.title ?? "none")")
+        }
+        for phrase in ["background items", "launch agents"] {
+            assertTrue((SearchEngine.shared.searchImmediate(SearchQuery(phrase))[.quickActions] ?? []).contains { $0.id == MacTweaksProvider.backgroundResultID },
+                       "'\(phrase)' shows Mac Tweaks' row below System Settings' Login Items")
+        }
+        for word in ["disable", "launch", "background", "agents"] {
+            assertTrue((SearchEngine.shared.searchImmediate(SearchQuery(word))[.quickActions] ?? []).allSatisfy { $0.id != MacTweaksProvider.backgroundResultID },
+                       "'\(word)' alone never brings the row up: a prefix counts from the phrase's second word")
+        }
+        SettingsProvider.shared.loadSearchTerms(from: [], languages: ["en"])
+        assertTrue(MacTweaksProvider.isOpenScript(MacTweaksProvider.openBackgroundScript), "Its script opens the overlay")
+        print("✅ Background Items in the provider passed!\n")
+    }
+
+    // MARK: Background Items: edge cases (each one a rule the review probed)
+
+    static func testBackgroundEdgeCases() {
+        print("Testing Background Items edge cases...")
+        typealias B = MacTweaksBackground
+        let fm = FileManager.default
+
+        // launchd's list can't be read once a turn-off ran: the entry written ahead stays, so
+        // Undo everything can still turn it back on, and the item counts neither way.
+        do {
+            let fx = BackgroundFixture("edge-unread")
+            fx.item(fx.userAgents, "com.example.p1")
+            fx.load(fx.gui + "/com.example.p1")
+            var env = fx.environment
+            let path = fx.launchctl
+            let gui = fx.gui
+            env.backgroundItems.launchctl = { arguments in
+                let result = B.run(path, arguments)
+                if arguments.first == "disable" && result.status == 0 { fx.breakList(gui) }
+                return result
+            }
+            let result = B.apply(B.scan(env).filter { !$0.isLink }, env: env)
+            assertTrue(fx.overrides(gui)["com.example.p1"] == true && fx.entry(bgKey("com.example.p1")) != nil,
+                       "When launchd's list can't be read after a turn-off, the entry written ahead stays")
+            assertEqual(result.receipt.headline, "launchd didn't confirm what changed.", "...the item counts neither way")
+            assertEqual(result.receipt.problems, ["p1: launchd didn't say whether it's off now. Lightspot kept its record, "
+                                                  + "so Undo everything can still turn it back on."], "...and the receipt says so")
+        }
+
+        // An agent for every account: its note follows what Space does; a leftover there is moved
+        // out of a folder every account shares, so it is for all users.
+        do {
+            let fx = BackgroundFixture("edge-allusers")
+            let left = fx.item(fx.allUsersAgents, "com.example.allleft", present: false)
+            fx.setForeign(left)
+            fx.mac.setDenied([left])
+            fx.item(fx.allUsersAgents, "com.example.alloff")
+            fx.setOverride(fx.gui, "com.example.alloff", disabled: true)
+            fx.item(fx.allUsersAgents, "com.example.allon")
+            fx.load(fx.gui + "/com.example.allon")
+            fx.item(fx.allUsersAgents, "com.example.allmine", present: false)
+            let env = fx.environment
+            let rows = B.scan(env).filter { !$0.isLink }
+            guard let leftRow = bgRow(rows, "com.example.allleft"), let offRow = bgRow(rows, "com.example.alloff"),
+                  let onRow = bgRow(rows, "com.example.allon"), let mineRow = bgRow(rows, "com.example.allmine") else {
+                assertTrue(false, "(four agents for every account)")
+                return
+            }
+            assertTrue(leftRow.caveat?.contains("Installed for every account: its file goes to the Trash for all of them.") == true
+                       && leftRow.tags == [B.leftoverTag, B.allUsersTag, MacTweaksStorage.passwordTag], "A leftover for every account is for all users")
+            assertTrue(mineRow.tags == [B.leftoverTag, B.allUsersTag, MacTweaksStorage.passwordTag] && B.needsAdministrator(mineRow)
+                       && B.planNotes([mineRow]).contains(MacTweaksStorage.passwordNote),
+                       "...whoever owns its file: root moves it out of the shared folder, so it may ask for the password")
+            assertTrue(offRow.caveat?.contains("Installed for every account. Turning it back on here is for your account only.") == true,
+                       "An Off one says it turns back on for this account")
+            assertTrue(onRow.caveat?.contains("Installed for every account. Turning it off here is for your account only.") == true
+                       && !onRow.tags.contains(B.allUsersTag), "An On one says it turns off for this account, and isn't for all users")
+            assertTrue(B.planNotes([leftRow]).contains("Items for all users change for every account on this Mac."),
+                       "The plan says the leftover's move is for every account")
+            let result = B.apply([leftRow], env: env)
+            assertTrue(result.receipt.headline == "Moved 1 leftover to the Trash." && fx.mac.adminScripts.count == 1 && !fm.fileExists(atPath: left),
+                       "...and root moves it, behind one prompt")
+        }
+
+        // The guarded folders, in any case and normalization, as the disk reads them; another
+        // disk and a cloud folder are never looked at, so nothing there is judged gone.
+        do {
+            let base = NSTemporaryDirectory() + "lightspot-bg-case-\(getpid())"
+            try? fm.removeItem(atPath: base)
+            defer { try? fm.removeItem(atPath: base) }
+            try? fm.createDirectory(atPath: base + "/Guarded", withIntermediateDirectories: true)
+            fm.createFile(atPath: base + "/Guarded/secret.plist", contents: Data())
+            let guarded = [(MacTweaksStorage.resolved(base) ?? base) + "/Guarded"]
+            for spelling in ["Guarded", "guarded", "GUARDED"] {
+                assertEqual(B.lookUp(base + "/" + spelling + "/secret.plist", guarded: guarded), .unknown, "'\(spelling)' is the guarded folder too")
+            }
+            let fx = BackgroundFixture("edge-case-scan")
+            let documents = fx.mac.home + "/Documents/dotfiles"
+            try? fm.createDirectory(atPath: documents, withIntermediateDirectories: true)
+            fx.item(documents, "com.example.docs")
+            try? fm.createSymbolicLink(atPath: fx.userAgents + "/com.example.docs.plist",
+                                       withDestinationPath: fx.mac.home + "/documents/dotfiles/com.example.docs.plist")
+            fx.item(fx.userAgents, "com.example.docsrun", program: fx.mac.home + "/DOCUMENTS/Scripts/gone", present: false)
+            fx.item(fx.userAgents, "com.example.backup", program: "/Volumes/Not-Mounted-\(getpid())/Tools/backup", present: false)
+            fx.item(fx.userAgents, "com.example.cloud", program: fx.mac.home + "/Library/CloudStorage/Drive/sync", present: false)
+            let rows = B.scan(fx.environment).filter { !$0.isLink }
+            assertEqual(rows.map(\.id), [bgKey("com.example.backup"), bgKey("com.example.cloud"), bgKey("com.example.docsrun")],
+                        "A link into ~/documents is never read, whatever its case")
+            assertTrue(rows.allSatisfy { !$0.tags.contains(B.leftoverTag) && !$0.isDefault && B.change(of: $0) != .trash },
+                       "What runs from ~/DOCUMENTS, a disk that isn't mounted or a cloud folder is never judged gone, so never ticked for the Trash")
+        }
+
+        // Undo everything's plan promises only what the hook does, and never shows the journal's path.
+        do {
+            func entry(_ label: String) -> B.Entry {
+                let item = B.Item(label: label, plist: "/Library/LaunchAgents/journal-says.plist", place: .userAgents, program: "", arguments: [],
+                                  associatedIDs: [], plistDisabled: false, isLink: false, ownerUID: nil)
+                return B.Entry(item: item, owner: "owner", wasDisabled: false, wasLoaded: true, date: Date())
+            }
+            assertEqual(B.undoPlanLine(entry("com.apple.Siri.agent"), userID: 501), "com.apple.Siri.agent: kept: Lightspot can't undo this entry.",
+                        "A label Lightspot never changes is kept, and the plan says so")
+            assertEqual(B.undoPlanLine(entry("a/b"), userID: 501), "a/b: kept: Lightspot can't undo this entry.", "...as is one launchctl would misread")
+            assertTrue(!B.undoPlanLine(entry("com.example.x"), userID: 501).contains("journal-says"), "...and no line shows the journal's plist path")
+        }
+
+        // A daemon that is off but still running stops at the next restart, not at a logout.
+        do {
+            let fx = BackgroundFixture("edge-daemon-running")
+            fx.setForeign(fx.item(fx.daemons, "com.example.daemon"))
+            fx.setOverride("system", "com.example.daemon", disabled: true)
+            fx.load("system/com.example.daemon")
+            assertTrue(B.scan(fx.environment).first?.caveat?.hasPrefix("Off, but still running until you restart.") == true,
+                       "A daemon runs until the Mac restarts")
+        }
+
+        // A turn-off whose loaded state launchd didn't give is never said to be not loaded.
+        do {
+            let fx = BackgroundFixture("edge-unknown")
+            fx.item(fx.userAgents, "com.example.u")
+            fx.printStatus(fx.gui + "/com.example.u", 5)
+            let env = fx.environment
+            let rows = B.scan(env).filter { !$0.isLink }
+            let result = B.apply(rows, env: env)
+            assertTrue(rows.first?.value == "Unknown" && result.receipt.lines == ["Turned off: u."] && result.receipt.problems.isEmpty,
+                       "Unknown is never 'it wasn't loaded'")
+        }
+
+        // Undo everything's user step when launchctl refuses without a word: no empty brackets.
+        do {
+            let fx = BackgroundFixture("edge-undo-empty")
+            fx.item(fx.userAgents, "com.example.q")
+            fx.setOverride(fx.gui, "com.example.q", disabled: true)
+            var env = fx.environment
+            let path = fx.launchctl
+            env.backgroundItems.launchctl = { arguments in arguments.first == "enable" ? (1, "") : B.run(path, arguments) }
+            if let item = B.items(env).first {
+                let entry = B.Entry(item: item, owner: "q", wasDisabled: false, wasLoaded: true, date: Date())
+                let undo = B.undo([entry], environment: env)
+                assertTrue(undo.userSteps().isEmpty && undo.log().contains("launchctl enable \(fx.gui)/com.example.q: status 1"),
+                           "The refused enable is logged, not a problem yet")
+                assertEqual(undo.outcome(entry.key, nil), .kept(problem: "q: still off."), "A refusal without words gives no empty brackets")
+            } else {
+                assertTrue(false, "(the agent is listed)")
+            }
+        }
+
+        // Daemons whose plist names hold quotes, spaces and shell characters, turned back on in the
+        // batch: each is bootstrapped from its own plist.
+        do {
+            let fx = BackgroundFixture("edge-hostile-plists")
+            let names = ["a b.plist", "c'd.plist", "dollar $HOME and $(id -u) and `id`.plist", "semi; colon & amp | pipe.plist",
+                         "-n starts with a dash.plist", "back\\slash.plist", "x; sudo y.plist", "* glob ?.plist"]
+            for (index, name) in names.enumerated() {
+                fx.setForeign(fx.item(fx.daemons, "com.example.h\(index)", file: name))
+                fx.setOverride("system", "com.example.h\(index)", disabled: true)
+            }
+            let env = fx.environment
+            let rows = B.scan(env).filter { !$0.isLink }
+            _ = B.apply(rows, env: env)
+            assertTrue(rows.count == names.count && fx.mac.adminScripts.count == 1, "\(names.count) daemons, one prompt")
+            let overrides = fx.overrides("system")
+            let loaded = fx.loaded
+            for index in names.indices {
+                assertTrue(overrides["com.example.h\(index)"] == false && loaded.contains("system/com.example.h\(index)"),
+                           "'\(names[index])' is enabled and bootstrapped from its own plist")
+            }
+        }
+
+        // A label launchctl would misread is read-only, and apply refuses it anyway, with that reason.
+        do {
+            let fx = BackgroundFixture("edge-unsafe-apply")
+            fx.item(fx.userAgents, "a/b", file: "unsafe.plist")
+            let env = fx.environment
+            let rows = B.scan(env).filter { !$0.isLink }
+            fx.clearCalls()
+            let result = B.apply(rows, env: env)
+            assertTrue(rows.first?.readOnly == true && fx.writes.isEmpty, "A label launchctl would misread is never handed to it")
+            assertEqual(result.receipt.problems, ["b stays as it is: its label can't be passed to launchctl safely."], "...and apply says why")
+        }
+
+        // One label twice: a leftover copy here, a working one for every account. Stopping the
+        // copy would stop the shared job, so it is never ticked for the Trash.
+        do {
+            let fx = BackgroundFixture("edge-dup")
+            fx.item(fx.userAgents, "com.example.dup", present: false)
+            fx.item(fx.allUsersAgents, "com.example.dup", program: fx.program("com.example.working"))
+            fx.load(fx.gui + "/com.example.dup")
+            let rows = B.scan(fx.environment).filter { !$0.isLink }
+            assertTrue(rows.count == 1 && rows[0].isDefault == false && B.change(of: rows[0]) == .turnOff,
+                       "A leftover copy beside a working one is never ticked for the Trash")
+            assertTrue(rows.first?.caveat?.contains("Another copy is installed at \(fx.allUsersAgents)/com.example.dup.plist, "
+                                                    + "and launchd runs only one of them, so Lightspot moves neither file.") == true, "...and says why")
+        }
+
+        // A disable launchctl reports as done but launchd doesn't keep counts for nothing: only
+        // reading launchd again decides.
+        do {
+            let fx = BackgroundFixture("edge-noop-disable")
+            fx.item(fx.userAgents, "com.example.n")
+            fx.load(fx.gui + "/com.example.n")
+            var env = fx.environment
+            let path = fx.launchctl
+            env.backgroundItems.launchctl = { arguments in arguments.first == "disable" ? (0, "") : B.run(path, arguments) }
+            let result = B.apply(B.scan(env).filter { !$0.isLink }, env: env)
+            assertTrue(result.receipt.headline == "Nothing changed." && result.receipt.problems == ["n is still on (launchctl reported no error)."],
+                       "An agent's disable that exits 0 without effect counts for nothing")
+            assertTrue(fx.entry(bgKey("com.example.n")) == nil, "...and the entry written ahead is taken back")
+        }
+        do {
+            let fx = BackgroundFixture("edge-noop-disable-daemon")
+            fx.setForeign(fx.item(fx.daemons, "com.example.nd"))
+            fx.load("system/com.example.nd")
+            let wrapper = fx.mac.bin + "/noop-launchctl"
+            fm.createFile(atPath: wrapper, contents: Data("#!/bin/sh\n[ \"$1\" = disable ] && exit 0\nexec \(MacTweaksStorage.shellQuote(fx.launchctl)) \"$@\"\n".utf8),
+                          attributes: [.posixPermissions: 0o755])
+            var env = fx.environment
+            env.backgroundItems.launchctlPath = wrapper
+            let result = B.apply(B.scan(env).filter { !$0.isLink }, env: env)
+            assertTrue(result.receipt.headline == "Nothing changed." && result.receipt.problems == ["nd is still on (launchctl reported no error)."],
+                       "A daemon's batch step that exits 0 without effect counts for nothing")
+            assertTrue(fx.overrides("system")["com.example.nd"] == nil && fx.entry(bgKey("com.example.nd", system: true)) == nil,
+                       "...and its entry is taken back")
+        }
+
+        // A refused disable stops nothing, as the user or as root.
+        do {
+            let fx = BackgroundFixture("edge-refused-disable")
+            fx.item(fx.userAgents, "com.example.ra")
+            fx.load(fx.gui + "/com.example.ra")
+            fx.refuse("disable", "com.example.ra")
+            fx.setForeign(fx.item(fx.daemons, "com.example.rd"))
+            fx.load("system/com.example.rd")
+            fx.refuse("disable", "com.example.rd")
+            let env = fx.environment
+            let result = B.apply(B.scan(env).filter { !$0.isLink }, env: env)
+            assertTrue(fx.loaded.contains(fx.gui + "/com.example.ra") && fx.loaded.contains("system/com.example.rd")
+                       && !fx.writes.contains { $0.hasPrefix("bootout ") }, "A refused disable stops nothing: no bootout runs")
+            assertEqual(result.receipt.problems, ["ra is still on (Operation not permitted).", "rd is still on (Operation not permitted)."],
+                        "...and each is reported")
+        }
+
+        // Undo everything gives root nothing for a daemon no scan finds, whatever the journal says.
+        do {
+            let fx = BackgroundFixture("edge-undo-unscanned")
+            fx.item(fx.daemons, "com.example.real")
+            fx.setOverride("system", "com.example.real", disabled: true)
+            let item = B.Item(label: "com.example.unscanned", plist: "/private/tmp/edge-unscanned.plist", place: .daemons, program: "",
+                              arguments: [], associatedIDs: [], plistDisabled: false, isLink: false, ownerUID: nil)
+            let entry = B.Entry(item: item, owner: "unscanned", wasDisabled: false, wasLoaded: true, date: Date())
+            let undo = B.undo([entry], environment: fx.environment)
+            assertTrue(undo.adminCommands.isEmpty, "A daemon no scan finds gets no root command, the journal's plist path least of all")
+            if case .dropped = undo.outcome(entry.key, nil) {} else { assertTrue(false, "...and its entry is dropped: there is nothing to turn back on") }
+        }
+
+        // The first previous state survives a later turn-off that fails.
+        do {
+            let fx = BackgroundFixture("edge-first-previous")
+            fx.item(fx.userAgents, "com.example.fp")
+            fx.load(fx.gui + "/com.example.fp")
+            let env = fx.environment
+            let earlier = Date(timeIntervalSince1970: 1_700_000_000)
+            if let item = B.items(env).first {
+                fx.seed(B.Entry(item: item, owner: "fp", wasDisabled: false, wasLoaded: false, date: earlier))
+            }
+            fx.refuse("disable", "com.example.fp")
+            _ = B.apply(B.scan(env).filter { !$0.isLink }, env: env)
+            let kept = fx.entry(bgKey("com.example.fp"))
+            assertTrue(kept?.wasLoaded == false && kept?.date == earlier, "A failed turn-off never takes back an earlier entry")
+        }
+
+        // The gate's physical half: the home's Library is a link, so the agents folder resolves
+        // outside the home. The row is read-only, and apply refuses it, saying why.
+        do {
+            let fx = BackgroundFixture("edge-linked-library")
+            let elsewhere = fx.mac.base + "/OtherLibrary"
+            try? fm.moveItem(atPath: fx.mac.home + "/Library", toPath: elsewhere)
+            try? fm.createSymbolicLink(atPath: fx.mac.home + "/Library", withDestinationPath: elsewhere)
+            let left = fx.item(fx.userAgents, "com.example.ll", present: false)
+            fx.setForeign(left)
+            fx.mac.setDenied([left])
+            let env = fx.environment
+            let rows = B.scan(env).filter { !$0.isLink }
+            assertTrue(rows.count == 1 && rows[0].readOnly && rows[0].caveat?.hasPrefix(B.elsewhereNote) == true,
+                       "A row whose folder resolves elsewhere is read-only")
+            let result = B.apply(rows, env: env)
+            assertTrue(fx.mac.adminScripts.isEmpty && fm.fileExists(atPath: elsewhere + "/LaunchAgents/com.example.ll.plist"),
+                       "...nothing is moved, and nothing asked")
+            assertEqual(result.receipt.problems, ["ll stays as it is: a link on the way to its folder leads somewhere else."], "...and apply says why")
+        }
+        print("✅ Background Items edge cases passed!\n")
+    }
+
+    // MARK: Background Items: phase 3's journal file, through the adapter
+
+    static func testBackgroundJournalFile() {
+        print("Testing Background Items' journal file...")
+        typealias B = MacTweaksBackground
+        let fm = FileManager.default
+        let fx = BackgroundFixture("journal-file")
+        fx.item(fx.userAgents, "com.example.ja")
+        fx.load(fx.gui + "/com.example.ja")
+        fx.item(fx.userAgents, "com.example.jb")
+        var env = fx.environment
+        env.backgroundItems.journal = nil
+        env.settings.fileSystem = .live
+        let url = MacTweaksJournal.url(home: fx.mac.home)
+        let journal = B.journal(env)
+        let items = B.items(env)
+        guard let a = items.first(where: { $0.label == "com.example.ja" }), let b = items.first(where: { $0.label == "com.example.jb" }) else {
+            assertTrue(false, "(two agents)")
+            return
+        }
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let ea = B.Entry(item: a, owner: "ja", wasDisabled: false, wasLoaded: true, date: date)
+        let eb = B.Entry(item: b, owner: "jb", wasDisabled: false, wasLoaded: false, date: date)
+
+        // No file: ready and empty, and nothing reads one into being.
+        assertEqual(journal.status(), .ready, "Without a file the journal is ready")
+        assertTrue(journal.entries().isEmpty && !fm.fileExists(atPath: url.path), "...empty, and reading creates nothing")
+        assertEqual(journal.remove([ea.key]), nil, "Removing from no file is nothing to do")
+        assertTrue(!fm.fileExists(atPath: url.path), "...and creates no file")
+
+        // Settings' entries and a kind this version doesn't know share the file, byte for byte.
+        var shared = MacTweaksJournal()
+        shared.recordIfAbsent("pref:com.apple.finder:AppleShowAllFiles",
+                              MacTweaksJournal.Entry.pref(tweak: "hidden-files", date: date, domain: "com.apple.finder", key: "AppleShowAllFiles",
+                                                          previous: nil, restart: ["Finder"]))
+        shared.recordIfAbsent("firmware:x", Data(#"{"kind":"firmware","note":"kept as it is"}"#.utf8))
+        try? shared.saveAhead(url: url, fileSystem: .live)
+        let before = MacTweaksJournal.load(url: url).journal
+        assertEqual(journal.recordAhead([ea, eb]), .saved(added: [ea.key, eb.key]), "Turn-offs are recorded ahead")
+        let after = MacTweaksJournal.load(url: url).journal
+        assertTrue(after?.json("pref:com.apple.finder:AppleShowAllFiles") == before?.json("pref:com.apple.finder:AppleShowAllFiles")
+                   && after?.json("firmware:x") == before?.json("firmware:x") && before?.json("firmware:x") != nil,
+                   "...beside Settings' entry and a kind this version doesn't know, both kept byte for byte")
+        if let data = after?.json(ea.key), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            assertEqual(Set(object.keys), ["kind", "tweak", "label", "domain", "plist", "owner", "wasDisabled", "wasLoaded", "date"],
+                        "An entry holds what Undo everything needs")
+            assertTrue(object["kind"] as? String == "background" && object["tweak"] as? String == ea.key && object["domain"] as? String == "gui"
+                       && object["label"] as? String == "com.example.ja" && object["wasLoaded"] as? Bool == true
+                       && object["date"] as? String == "2027-01-15T08:00:00Z", "...in phase 3's format")
+        } else {
+            assertTrue(false, "(the entry is a JSON object)")
+        }
+        assertEqual(journal.entries(), [ea, eb], "The entries read back as written")
+
+        // The first previous state wins, and a call that adds nothing writes nothing.
+        let later = B.Entry(item: a, owner: "ja", wasDisabled: false, wasLoaded: false, date: date.addingTimeInterval(60))
+        let bytes = fm.contents(atPath: url.path)
+        assertEqual(journal.recordAhead([later]), .saved(added: []), "An entry already there is kept")
+        assertTrue(fm.contents(atPath: url.path) == bytes && journal.entries().first == ea, "...as it was, the file untouched")
+
+        // Removing takes out those keys only; the last entry takes the file with it.
+        assertEqual(journal.remove([ea.key]), nil, "An entry is removed")
+        assertTrue(journal.entries() == [eb] && MacTweaksJournal.load(url: url).journal?.json("firmware:x") != nil,
+                   "...the rest stays, Background Items' and the others'")
+        var only = MacTweaksJournal()
+        only.recordIfAbsent(eb.key, eb.json)
+        try? only.saveAhead(url: url, fileSystem: .live)
+        assertEqual(journal.remove([eb.key]), nil, "The last entry is removed")
+        assertTrue(!fm.fileExists(atPath: url.path), "...and an empty journal leaves no file")
+
+        // Unreadable: a scan reports it and moves nothing; the first turn-off keeps it aside, and
+        // the receipt says where, in Settings' words.
+        let folder = url.deletingLastPathComponent().path
+        let garbage = Data("{ not json".utf8)
+        fm.createFile(atPath: url.path, contents: garbage)
+        if case .unreadable(let reason) = journal.status() {
+            assertEqual(reason, MacTweaksJournal.unreadableReason("~/Library/Application Support/Lightspot/tweaks-journal.json"),
+                        "An unreadable file is reported in phase 3's words")
+        } else {
+            assertTrue(false, "An unreadable file reads as unreadable")
+        }
+        let unreadableRows = B.scan(env).filter { !$0.isLink }
+        assertTrue(journal.entries().isEmpty && fm.contents(atPath: url.path) == garbage, "...holds nothing readable, and the scan moved nothing")
+        assertTrue(bgRow(unreadableRows, "com.example.ja")?.caveat?.contains(B.unreadableJournalNote) == true, "A turn-off row says it is kept aside")
+        let keptAside = B.apply(unreadableRows.filter { $0.id == ea.key }, env: env)
+        let aside = ((try? fm.contentsOfDirectory(atPath: folder)) ?? []).filter { $0.hasPrefix("tweaks-journal-unreadable-") }
+        assertTrue(aside.count == 1 && fm.contents(atPath: folder + "/" + (aside.first ?? "")) == garbage,
+                   "The first turn-off keeps the unreadable file aside, whole")
+        assertEqual(keptAside.receipt.notes.first,
+                    "Lightspot couldn't read its undo journal, so it kept it as \(aside.first ?? ""). Undo can't put back what that file recorded.",
+                    "...and its receipt says where, as Settings' does")
+        assertTrue(journal.entries().map(\.key) == [ea.key] && fx.overrides(fx.gui)["com.example.ja"] == true,
+                   "...then records the turn-off in a new journal, and turns it off")
+
+        // Blocked: unreadable and unmovable, nothing is written and nothing changes.
+        fm.createFile(atPath: url.path, contents: garbage)
+        var stuck = MacTweaksJournal.FileSystem.live
+        stuck.canRename = { _ in false }
+        stuck.move = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        var blockedEnv = env
+        blockedEnv.settings.fileSystem = stuck
+        let blockedJournal = B.journal(blockedEnv)
+        assertTrue(blockedJournal.status().isBlocked, "Unreadable and unmovable is blocked")
+        if case .failed = blockedJournal.recordAhead([eb]) {} else { assertTrue(false, "A blocked journal records nothing") }
+        assertEqual(fm.contents(atPath: url.path), garbage, "...and its file is never overwritten")
+        let blockedRows = B.scan(blockedEnv).filter { !$0.isLink }
+        assertTrue(blockedRows.allSatisfy { $0.readOnly && $0.caveat?.hasPrefix(B.blockedPrefix) == true }, "Every row is read-only, saying why")
+        fx.clearCalls()
+        let refused = B.apply(blockedRows, env: blockedEnv)
+        assertTrue(fx.writes.isEmpty && refused.receipt.headline == "Nothing changed.", "...and an apply changes nothing")
+
+        // Kept aside, then the save fails: the receipt still names where the old file went.
+        func asideFiles() -> Set<String> { Set(((try? fm.contentsOfDirectory(atPath: folder)) ?? []).filter { $0.hasPrefix("tweaks-journal-unreadable-") }) }
+        fm.createFile(atPath: url.path, contents: garbage)
+        var keptThenFull = MacTweaksJournal.FileSystem.live
+        keptThenFull.write = { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        var keptEnv = env
+        keptEnv.settings.fileSystem = keptThenFull
+        let asideBefore = asideFiles()
+        let keptThenFailed = B.apply(B.scan(keptEnv).filter { $0.id == eb.key }, env: keptEnv)
+        let newAside = asideFiles().subtracting(asideBefore)
+        assertTrue(newAside.count == 1 && keptThenFailed.receipt.problems.first?.hasPrefix("Lightspot couldn't record what jb was, so it left it on") == true,
+                   "An unreadable journal kept aside, then a save that fails: the turn-off doesn't run")
+        assertEqual(keptThenFailed.receipt.notes.first,
+                    "Lightspot couldn't read its undo journal, so it kept it as \(newAside.first ?? ""). Undo can't put back what that file recorded.",
+                    "...and the receipt still names where the old file went")
+
+        // A journal that can't be saved stops the turn-off.
+        try? fm.removeItem(atPath: url.path)
+        var full = MacTweaksJournal.FileSystem.live
+        full.write = { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        var fullEnv = env
+        fullEnv.settings.fileSystem = full
+        let fullRows = B.scan(fullEnv).filter { $0.id == eb.key }
+        fx.clearCalls()
+        let unsaved = B.apply(fullRows, env: fullEnv)
+        assertTrue(fx.writes.isEmpty && unsaved.receipt.problems.first?.hasPrefix("Lightspot couldn't record what jb was, so it left it on") == true,
+                   "A journal that can't be saved stops the turn-off")
+
+        // Through the section: a turn-off is in the file, its turn back on takes it out.
+        _ = B.apply(B.scan(env).filter { $0.id == eb.key }, env: env)
+        assertTrue(MacTweaksJournal.load(url: url).journal?.json(eb.key) != nil && fx.overrides(fx.gui)["com.example.jb"] == true,
+                   "A turn-off is journaled in the file")
+        let offRows = B.scan(env).filter { $0.id == eb.key }
+        assertTrue(offRows.first?.caveat?.contains("Lightspot turned it off.") == true, "...and the next scan says Lightspot did it")
+        _ = B.apply(offRows, env: env)
+        assertTrue(!fm.fileExists(atPath: url.path) && fx.overrides(fx.gui)["com.example.jb"] == false,
+                   "Turning it back on removes the entry, and the empty journal its file")
+
+        // An ordinary Settings apply, on its fixture's store, leaves Background Items' entries
+        // byte for byte: wasLoaded false and a field this version doesn't know included.
+        let settings = SettingsFixture("bg-entry-kept")
+        let keptKey = "background:gui/com.example.kept"
+        var both = MacTweaksJournal()
+        both.recordIfAbsent("pref:com.apple.dock:show-recents",
+                            MacTweaksJournal.Entry.pref(tweak: "dock-recents", date: date, domain: "com.apple.dock", key: "show-recents",
+                                                        previous: .int(1), restart: ["Dock"]))
+        both.recordIfAbsent(keptKey, Data(#"{"date":"2027-01-15T08:00:00Z","domain":"gui","future":{"kept":[1,2]},"kind":"background","label":"com.example.kept","owner":"kept","plist":"/Library/LaunchAgents/com.example.kept.plist","tweak":"background:gui/com.example.kept","wasDisabled":false,"wasLoaded":false}"#.utf8))
+        try? both.saveAhead(url: settings.journalURL)
+        let keptBefore = MacTweaksJournal.load(url: settings.journalURL).journal?.json(keptKey)
+        settings.apply(["file-extensions"])
+        let afterSettings = MacTweaksJournal.load(url: settings.journalURL).journal
+        assertTrue(settings.value("NSGlobalDomain", "AppleShowAllExtensions") == .bool(true) && keptBefore != nil
+                   && afterSettings?.keys.contains("pref:NSGlobalDomain:AppleShowAllExtensions") == true,
+                   "(the Settings apply changed its setting and journaled it)")
+        assertEqual(afterSettings?.json(keptKey), keptBefore, "An ordinary Settings apply leaves a background entry byte for byte")
+        print("✅ Background Items' journal file passed!\n")
+    }
+
+    // MARK: Background Items in Settings' Undo everything, through the real hook
+
+    static func testBackgroundUndoEverything() {
+        print("Testing Background Items in Undo everything...")
+        typealias B = MacTweaksBackground
+        let fm = FileManager.default
+        let fx = BackgroundFixture("undo-everything")
+        fx.item(fx.userAgents, "com.example.ua")
+        fx.load(fx.gui + "/com.example.ua")
+        fx.setForeign(fx.item(fx.daemons, "com.example.ud"))
+        fx.load("system/com.example.ud")
+        fx.setForeign(fx.item(fx.daemons, "com.example.idle"))
+        var env = fx.environment
+        env.backgroundItems.journal = nil
+        env.settings.fileSystem = .live
+        let url = MacTweaksJournal.url(home: fx.mac.home)
+        let ua = bgKey("com.example.ua"), ud = bgKey("com.example.ud", system: true), idle = bgKey("com.example.idle", system: true)
+        let provider = MacTweaksProvider(environment: env)
+        func wait(_ section: MacTweaksSection, _ done: (MacTweaksProvider.SectionState) -> Bool) -> MacTweaksProvider.SectionState {
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                let state = provider.snapshot[section]
+                if done(state) { return state }
+                usleep(10_000)
+            }
+            print("❌ FAIL: \(section.title) never got there; it is at \(provider.snapshot[section].phase)")
+            exit(1)
+        }
+        func log() -> String { (try? String(contentsOfFile: fx.mac.home + "/Library/Application Support/Lightspot/mac-tweaks.log", encoding: .utf8)) ?? "" }
+
+        // Turned off here: the agent as the user, the two daemons in one batch, all journaled.
+        let off = B.apply(B.scan(env).filter { !$0.isLink }, env: env)
+        assertEqual(off.receipt.lines, ["Turned off: ua, idle, ud."], "(three items turned off)")
+        assertEqual(MacTweaksJournal.load(url: url).journal?.entries(kind: B.Entry.kind).map(\.key), [ua, idle, ud], "Each turn-off is in the journal file")
+
+        // Settings as the app runs it: the provider's own engine. Undo everything lists each one
+        // in Background Items' words, and says the daemons may ask for a password.
+        provider.open(.settings)
+        let ready = wait(.settings) { $0.phase == .ready }
+        guard let undoRow = ready.rows.first(where: { $0.id == MacTweaksSettings.undoEverythingID }) else {
+            assertTrue(false, "Undo everything is offered for what Background Items turned off")
+            return
+        }
+        let plan = undoRow.items.map(\.target)
+        assertTrue(B.journal(env).entries().allSatisfy { plan.contains(B.undoPlanLine($0, userID: fx.uid)) }
+                   && plan.contains("ud: back on and started again (launchctl enable system/com.example.ud, then launchctl bootstrap)."),
+                   "Through the provider's engine, its plan lines are Background Items' own")
+        let notes = provider.planNotes(.settings, rows: [undoRow])
+        assertTrue(notes.contains("Puts back 3 background items Lightspot turned off.") && notes.contains(MacTweaksStorage.passwordNote)
+                   && notes.contains(MacTweaksSettings.backgroundForEveryoneNote),
+                   "With daemons journaled and no profile, the plan says macOS may ask for a password, for every account")
+        // With the profile installed too, one sentence covers the profile and the daemons; with
+        // only an agent journaled and no profile, nothing asks for a password.
+        func daemonEntry(_ label: String, system: Bool) -> B.Entry {
+            B.Entry(item: B.Item(label: label, plist: (system ? "/Library/LaunchDaemons/" : fx.userAgents + "/") + label + ".plist",
+                                 place: system ? .daemons : .userAgents, program: "", arguments: [], associatedIDs: [],
+                                 plistDisabled: false, isLink: false, ownerUID: nil),
+                    owner: label, wasDisabled: false, wasLoaded: true, date: Date())
+        }
+        for (name, system, profile) in [("notes-profile", true, true), ("notes-agent", false, false)] {
+            let other = SettingsFixture(name)
+            var entries = MacTweaksJournal()
+            let entry = daemonEntry("com.example.n", system: system)
+            entries.recordIfAbsent(entry.key, entry.json)
+            try? entries.saveAhead(url: other.journalURL)
+            if profile { other.installProfile(.init(ai: nil, tweaks: ["analytics"])) }
+            guard let row = other.row(MacTweaksSettings.undoEverythingID) else { continue }
+            let otherNotes = MacTweaksSettings.planNotes(ticked: [row], context: other.reading)
+            if profile {
+                assertTrue(otherNotes.contains("Lightspot asks for your administrator password to remove its profile and turn background items "
+                                               + "for every account back on.") && otherNotes.contains(MacTweaksSettings.backgroundForEveryoneNote)
+                           && !otherNotes.contains(MacTweaksStorage.passwordNote),
+                           "With the profile installed, one sentence covers the profile and the daemons")
+            } else {
+                assertTrue(!otherNotes.contains(MacTweaksStorage.passwordNote) && !otherNotes.contains(MacTweaksSettings.backgroundForEveryoneNote),
+                           "An agent alone asks for no password and changes no other account")
+            }
+        }
+        let asked = fx.mac.adminScripts.count
+        provider.apply(.settings, ids: [MacTweaksSettings.undoEverythingID])
+        let undone = wait(.settings) { $0.phase == .finished }
+        assertEqual(fx.mac.adminScripts.count, asked + 1, "Undo everything asks once")
+        let script = fx.mac.adminScripts.last ?? ""
+        assertTrue(!script.contains("/usr/bin/profiles") && script.contains("enable 'system/com.example.ud'")
+                   && script.contains("enable 'system/com.example.idle'") && !script.contains("com.example.ua"),
+                   "...one batch for the daemons, no profile to remove, the agent left to this user")
+        assertTrue(fx.overrides(fx.gui)["com.example.ua"] == false && fx.loaded.contains(fx.gui + "/com.example.ua"), "The agent is on and running again")
+        assertTrue(fx.overrides("system")["com.example.ud"] == false && fx.loaded.contains("system/com.example.ud"), "...as is the daemon that ran")
+        assertTrue(fx.overrides("system")["com.example.idle"] == false && !fx.loaded.contains("system/com.example.idle"),
+                   "...and the one that wasn't loaded is switched back on, not started")
+        assertTrue(!fm.fileExists(atPath: url.path), "Every entry went, and with them the journal file")
+        assertEqual(undone.receipt?.headline, "Everything Lightspot changed is back.", "The receipt says so")
+        assertTrue(log().contains("launchctl enable \(fx.gui)/com.example.ua: status 0") && log().contains("\(ud): back as it was"),
+                   "The log has the agent's launchctl calls and each entry's outcome")
+
+        // A stale plan never drives Undo everything: Settings shows its rows, Background Items
+        // applies, and an apply from those rows scans again instead.
+        _ = B.apply(B.scan(env).filter { $0.id == ua }, env: env)
+        provider.startScan(.settings, force: true)
+        _ = wait(.settings) { $0.phase == .ready && $0.rows.contains { $0.id == MacTweaksSettings.undoEverythingID } }
+        provider.open(.backgroundItems)
+        _ = wait(.backgroundItems) { $0.phase == .ready }
+        provider.apply(.backgroundItems, ids: [idle])
+        _ = wait(.backgroundItems) { $0.phase == .finished }
+        assertTrue(provider.snapshot[.settings].isStale, "Background Items' apply makes Settings' rows stale")
+        let scriptsBefore = fx.mac.adminScripts.count
+        provider.apply(.settings, ids: [MacTweaksSettings.undoEverythingID])
+        let rescanned = wait(.settings) { $0.phase == .ready && !$0.isStale }
+        assertTrue(rescanned.receipt == nil && fx.mac.adminScripts.count == scriptsBefore
+                   && B.journal(env).entries().map(\.key) == [ua, idle] && fx.overrides(fx.gui)["com.example.ua"] == true,
+                   "An apply from stale rows changes nothing and scans again")
+        assertTrue(rescanned.rows.first { $0.id == MacTweaksSettings.undoEverythingID }?.items.count == 2,
+                   "...and the new rows list both entries")
+
+        // A daemon root refuses, an entry that doesn't decode and one whose plist is gone: each
+        // is said, the refusal in launchctl's words; the static engine, as tests build it.
+        _ = B.apply(B.scan(env).filter { $0.id == ud }, env: env)
+        fx.refuse("enable", "com.example.ud")
+        let broken = bgKey("com.example.broken")
+        let gone = B.Entry(item: B.Item(label: "com.example.gone", plist: fx.userAgents + "/com.example.gone.plist", place: .userAgents,
+                                        program: "", arguments: [], associatedIDs: [], plistDisabled: false, isLink: false, ownerUID: nil),
+                           owner: "gone", wasDisabled: false, wasLoaded: true, date: Date())
+        var seeded = MacTweaksJournal.load(url: url).journal ?? MacTweaksJournal()
+        seeded.recordIfAbsent(broken, Data(#"{"kind":"background","label":"com.example.other","wasDisabled":false}"#.utf8))
+        seeded.recordIfAbsent(gone.key, gone.json)
+        try? seeded.saveAhead(url: url, fileSystem: .live)
+        guard let settings = MacTweaksProvider.engine(for: .settings, environment: env),
+              let again = settings.scan(only: nil, progress: nil).first(where: { $0.id == MacTweaksSettings.undoEverythingID }) else {
+            assertTrue(false, "(Undo everything again)")
+            return
+        }
+        let lines = again.items.map(\.target)
+        assertTrue(lines.contains(broken + ": kept, its journal entry can't be read, so Lightspot can't tell what to put back")
+                   && lines.contains("gone: its plist is gone, so Lightspot runs nothing and drops its entry; launchd keeps its switch off."),
+                   "The plan says what is kept and what is dropped without running anything")
+        let result = settings.apply([again], progress: nil)
+        assertTrue(result.receipt.problems.contains("ud: still off (Operation not permitted)."), "A daemon root refuses is said, in launchctl's words")
+        assertTrue(result.receipt.notes.contains("Kept: 1 background item whose journal entry can't be read, so Lightspot can't tell what to put back (\(broken))."),
+                   "...an entry that doesn't decode is noted as kept")
+        assertTrue(result.receipt.lines.contains("gone: its plist is gone, so Lightspot ran nothing and dropped its entry; launchd keeps its switch off."),
+                   "...and one whose plist is gone is dropped, saying nothing ran")
+        assertEqual(result.receipt.headline, "Some changes couldn't be undone.", "...so the receipt never says everything is back")
+        let left = Set(MacTweaksJournal.load(url: url).journal?.keys ?? [])
+        assertEqual(left, [ud, broken], "The refused daemon's entry and the unreadable one stay; the others went")
+        assertTrue(log().contains("\(ud): kept (ud: still off (Operation not permitted).)") && log().contains("\(gone.key): its plist is gone"),
+                   "The log has each entry's outcome")
+        print("✅ Background Items in Undo everything passed!\n")
     }
 }

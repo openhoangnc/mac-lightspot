@@ -279,8 +279,11 @@ mac_tweaks_notice() {
     fi
     echo "--> Mac Tweaks' changes stay on this Mac:"
     if [ -f "${TWEAKS_JOURNAL}" ]; then
-        echo "    - settings Lightspot changed; their earlier values are kept in"
-        echo "      ~/Library/Application Support/${APP_NAME}/tweaks-journal.json"
+        echo "    - the settings Lightspot changed and the background items it turned off; what each"
+        echo "      was before is kept in ~/Library/Application Support/${APP_NAME}/tweaks-journal.json"
+        if /usr/bin/grep -q '"background:system/' "${TWEAKS_JOURNAL}" 2>/dev/null; then
+            echo "      (background items for all users among them stay off for every account)"
+        fi
     fi
     if [ "${UNREADABLE_JOURNALS}" -eq 1 ]; then
         echo "    - undo journals Lightspot couldn't read, kept aside as"
@@ -294,11 +297,11 @@ mac_tweaks_notice() {
         echo "      ~/Library/Application Support/${APP_NAME}/dock-backup.plist"
     fi
     if [ -f "${TWEAKS_JOURNAL}" ] && [ "${TWEAKS_PROFILE}" -eq 1 ]; then
-        echo "    To undo the settings, reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\" in"
+        echo "    To undo them, reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\" in"
         echo "    Mac Tweaks > Settings, or remove \"Lightspot Mac Tweaks\" in System Settings > General >"
-        echo "    Device Management for the locked ones."
+        echo "    Device Management for the locked settings."
     elif [ -f "${TWEAKS_JOURNAL}" ]; then
-        echo "    To undo the settings, reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\" in"
+        echo "    To undo them, reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\" in"
         echo "    Mac Tweaks > Settings."
     elif [ "${TWEAKS_PROFILE}" -eq 1 ]; then
         echo "    To undo the settings, remove \"Lightspot Mac Tweaks\" in System Settings > General >"

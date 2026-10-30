@@ -61,7 +61,9 @@ struct MacTweaksHeader: View {
     let onClose: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        // Four tabs on one line in the overlay's 708 pt: 700 pt at this spacing and the tabs'
+        // 8 pt padding, measured with the widest tab selected (722 pt at 10 and 9).
+        HStack(spacing: 8) {
             Image(systemName: MacTweaksProvider.symbol)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.white.opacity(0.85))
@@ -98,9 +100,10 @@ struct MacTweaksTab: View {
                 .font(.system(size: 10.5, weight: .semibold))
             Text(section.title)
                 .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                .lineLimit(1)
         }
         .foregroundColor(.white.opacity(selected ? 0.95 : 0.55))
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(Capsule().fill(Color.white.opacity(selected ? 0.16 : 0.06)))
     }
