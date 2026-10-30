@@ -3,7 +3,7 @@ import AppKit
 // MARK: - Mac Tweaks Provider
 //
 // The "Mac Tweaks" search row and the state behind its overlay: one section per job
-// (Free Up Space now; Apple Intelligence, Settings and Background Items in later
+// (Free Up Space and Apple Intelligence now; Settings and Background Items in later
 // releases), each with an engine that scans and applies. Scans and applies run on the
 // provider's own queue and publish snapshots, so `search()` and the overlay only ever
 // read memory (invariant 0). Nothing runs until the user opens Mac Tweaks: at launch
@@ -39,9 +39,25 @@ enum MacTweaksSection: String, CaseIterable, Sendable {
         }
     }
 
+    /// What the overlay says while the section's scan starts.
+    var scanningTitle: String {
+        switch self {
+        case .freeUpSpace: return "Looking for space to free…"
+        case .appleIntelligence: return "Checking Apple Intelligence…"
+        case .settings: return "Reading your settings…"
+        case .backgroundItems: return "Looking at background items…"
+        }
+    }
+
     /// The sections this build has, in tab order. Only these are shown, scanned or reachable
-    /// with ⇥.
-    static let built: [MacTweaksSection] = [.freeUpSpace]
+    /// with ⇥. Apple Intelligence only where it exists: Apple silicon, and a macOS with at least
+    /// one of its features (none before 15.1).
+    static let built: [MacTweaksSection] =
+        sections(appleIntelligence: Catalog.hasAppleSilicon && !Catalog.availableFeatures.isEmpty)
+
+    static func sections(appleIntelligence: Bool) -> [MacTweaksSection] {
+        appleIntelligence ? [.freeUpSpace, .appleIntelligence] : [.freeUpSpace]
+    }
 
     /// Its position in `allCases`: per-section state is kept in arrays, not in dictionaries
     /// keyed by the section, whose generic code costs binary size for nothing at four keys.
@@ -61,6 +77,8 @@ enum MacTweaksLink: Sendable, Equatable {
     case cleanDevMac
     /// A System Settings pane.
     case settings(deepLink: String)
+    /// Another Mac Tweaks section (Free Up Space's "Apple Intelligence models" row).
+    case section(MacTweaksSection)
 }
 
 /// One thing a row acts on.
@@ -97,6 +115,12 @@ struct MacTweaksRow: Sendable, Equatable, Identifiable {
     var link: MacTweaksLink?
     /// ⌥↵: shows its first item in Finder.
     var revealsInFinder = false
+    /// Shown with a lock instead of a checkbox; Space does nothing (a feature another profile
+    /// sets, or one Lightspot's own profile already locks off).
+    var readOnly = false
+    /// Applied on its own: ticking it unticks every other row, and ticking another unticks it
+    /// (Apple Intelligence's turn-on and finish rows).
+    var exclusive = false
 
     var isLink: Bool { link != nil }
 
@@ -116,6 +140,36 @@ struct MacTweaksReceipt: Sendable, Equatable {
     var notes: [String] = []
     /// What ⌥↵ shows in Finder from the receipt: an app macOS wouldn't let go.
     var reveal: String?
+    /// It did what was asked: the receipt shows the green check only then.
+    var isSuccess = true
+}
+
+/// Which rows are ticked: each row's default after a scan, and Space's change. Pure, so it is
+/// tested; the overlay's model applies it.
+enum MacTweaksTicks {
+    /// A row Space can tick: not a link, not read-only.
+    static func isTickable(_ row: MacTweaksRow?) -> Bool {
+        guard let row else { return false }
+        return !row.isLink && !row.readOnly
+    }
+
+    static func hasTickable(_ rows: [MacTweaksRow]) -> Bool { rows.contains { isTickable($0) } }
+
+    /// The rows ticked after a scan: those that default to it, an exclusive one alone.
+    static func defaults(_ rows: [MacTweaksRow]) -> Set<String> {
+        let ticked = rows.filter { $0.isDefault && isTickable($0) }
+        if let exclusive = ticked.first(where: \.exclusive) { return [exclusive.id] }
+        return Set(ticked.map(\.id))
+    }
+
+    /// Space on `id`: ticks or unticks it. An exclusive row is applied alone, so ticking it
+    /// unticks the rest, and ticking any other row unticks the exclusive ones.
+    static func toggled(_ ticks: Set<String>, _ id: String, in rows: [MacTweaksRow]) -> Set<String> {
+        guard let row = rows.first(where: { $0.id == id }), isTickable(row) else { return ticks }
+        if ticks.contains(id) { return ticks.subtracting([id]) }
+        if row.exclusive { return [id] }
+        return ticks.subtracting(rows.filter(\.exclusive).map(\.id)).union([id])
+    }
 }
 
 /// One section's engine. Both calls block: the provider runs them on its queue.
@@ -154,28 +208,84 @@ final class MacTweaksProvider: @unchecked Sendable {
     ]
     private static let lowercaseTitle = title.lowercased()
 
+    /// The row that opens Mac Tweaks on its Apple Intelligence section.
+    static let intelligenceResultID = "action-mac-tweaks-apple-intelligence"
+    static let openIntelligenceScript = "internal:mac-tweaks:apple-intelligence"
+    static let intelligenceTitle = "Mac Tweaks: Apple Intelligence"
+    static let intelligenceSubtitle = "Turn Apple Intelligence off for every account and remove its models"
+    /// Its phrases and their weights. A bare "apple intelligence" weighs under the 0.95 System
+    /// Settings gives its own keywords, so the "Apple Intelligence & Siri" pane stays first for it.
+    static let intelligenceKeywords: [(phrase: String, weight: Double)] = [
+        ("apple intelligence", 0.9),
+        ("turn off apple intelligence", 0.95),
+        ("remove apple intelligence", 0.95),
+        ("delete apple intelligence models", 0.95),
+    ]
+
+    /// Whether a quick action's script opens Mac Tweaks, and on which section (nil: as left).
+    static func isOpenScript(_ script: String) -> Bool { script == openScript || script == openIntelligenceScript }
+    static func section(forScript script: String) -> MacTweaksSection? {
+        script == openIntelligenceScript ? .appleIntelligence : nil
+    }
+
     /// Pure in-memory: static keywords and the last scan's total.
     func search(_ query: SearchQuery) -> [SearchResult] {
         guard !query.isEmpty else { return [] }
+        var results: [SearchResult] = []
         var best = FuzzyMatcher.score(query: query, targetLower: Self.lowercaseTitle, targetTokens: [], targetInitials: nil)
         for keyword in Self.keywords {
             if let score = FuzzyMatcher.score(query: query, targetLower: keyword, targetTokens: [], targetInitials: nil) {
                 best = max(best ?? 0, score * 0.95)
             }
         }
-        guard let score = best else { return [] }
-        lock.lock()
-        let freeable = state.freeableBytes
-        lock.unlock()
-        return [SearchResult(
-            id: Self.resultID,
-            title: Self.title,
-            subtitle: Self.subtitle(freeableBytes: freeable),
-            iconType: .systemSymbol(name: Self.symbol),
-            category: .quickActions,
-            score: score,
-            action: .runQuickAction(script: Self.openScript, usesOsascript: false)
-        )]
+        if let score = best {
+            lock.lock()
+            let freeable = state.freeableBytes
+            lock.unlock()
+            results.append(SearchResult(
+                id: Self.resultID,
+                title: Self.title,
+                subtitle: Self.subtitle(freeableBytes: freeable),
+                iconType: .systemSymbol(name: Self.symbol),
+                category: .quickActions,
+                score: score,
+                action: .runQuickAction(script: Self.openScript, usesOsascript: false)
+            ))
+        }
+        if MacTweaksSection.built.contains(.appleIntelligence) {
+            var intelligence: Double?
+            for keyword in Self.intelligenceKeywords {
+                if let score = FuzzyMatcher.score(query: query, targetLower: keyword.phrase, targetTokens: [], targetInitials: nil) {
+                    intelligence = max(intelligence ?? 0, score * keyword.weight)
+                }
+            }
+            if let score = intelligence {
+                results.append(SearchResult(
+                    id: Self.intelligenceResultID,
+                    title: Self.intelligenceTitle,
+                    subtitle: Self.intelligenceSubtitle,
+                    iconType: .systemSymbol(name: MacTweaksSection.appleIntelligence.symbol),
+                    category: .quickActions,
+                    score: score,
+                    action: .runQuickAction(script: Self.openIntelligenceScript, usesOsascript: false)
+                ))
+            }
+        }
+        return results
+    }
+
+    // MARK: Overlay copy that depends on where a section stands
+
+    /// The steps view's line while an apply runs, and while it waits for System Settings.
+    static let workingNote = "This keeps running if you close the panel. Reopen Mac Tweaks to see the result."
+    static let waitNote = "Lightspot checks every second for 10 minutes. Esc stops waiting; the profile stays in System Settings."
+    /// The overlay's close button: it closes the panel and leaves a running apply or wait going.
+    static let closeHelp = "Close. A running apply, or a wait for System Settings, keeps going."
+
+    /// The footer's Esc while an apply runs: it stops a wait for System Settings, else closes.
+    static func escapeLabel(_ state: SectionState) -> String {
+        if case .applying = state.phase, state.waiting { return "Stop waiting" }
+        return "Close"
     }
 
     static func subtitle(freeableBytes: Int64?) -> String {
@@ -218,6 +328,9 @@ final class MacTweaksProvider: @unchecked Sendable {
         var finishedAt: Date?
         /// Bumped by every completed scan, so the overlay resets its ticks to the defaults.
         var generation = 0
+        /// The apply is waiting for System Settings (the profile's approval or removal): Esc
+        /// stops that wait, and the footer says so.
+        var waiting = false
     }
 
     struct Snapshot: Sendable {
@@ -229,6 +342,10 @@ final class MacTweaksProvider: @unchecked Sendable {
         /// What Free Up Space offered at its last scan: the row's subtitle. It outlives the
         /// rows, which closing the overlay drops.
         var freeableBytes: Int64?
+        /// What Apple Intelligence's last scan (or an apply's rescan) read: the inventory and the
+        /// markers. The summary, the plan and Free Up Space's link row are built from it, so none
+        /// of them reads anything. Kept like `freeableBytes`: it is small and outlives the rows.
+        var appleIntelligenceScan: MacTweaksIntelligence.ScanContext?
 
         subscript(section: MacTweaksSection) -> SectionState {
             get { sections[section.index] }
@@ -261,8 +378,18 @@ final class MacTweaksProvider: @unchecked Sendable {
         /// holds in memory, else cdm's local folder, else the app's own copy. Never fetched.
         var cleanDevMacRules: @Sendable (_ home: String) -> CleanDevMacRuleSet? = { MacTweaksStorage.cleanDevMacRules(home: $0) }
         var now: @Sendable () -> Date = { Date() }
+        /// Everything the Apple Intelligence section reads or changes, injected the same way.
+        /// `.inert` so Free Up Space tests that build `Environment(home:)` need nothing more.
+        var intelligence = MacTweaksIntelligence.Environment.inert
+        /// Apple Intelligence's models on disk, for Free Up Space's link row. The provider sets
+        /// it to the last Apple Intelligence scan's total; nil (no row) everywhere else.
+        var appleIntelligenceModelBytes: @Sendable () -> Int64? = { nil }
 
-        static var live: Environment { Environment(home: NSHomeDirectory()) }
+        static var live: Environment {
+            var environment = Environment(home: NSHomeDirectory())
+            environment.intelligence = .live(home: environment.home)
+            return environment
+        }
 
         /// The receipts log, capped like cdm's clean.log.
         var logURL: URL { URL(fileURLWithPath: home + "/Library/Application Support/Lightspot/mac-tweaks.log") }
@@ -276,6 +403,10 @@ final class MacTweaksProvider: @unchecked Sendable {
     private var state = Snapshot()
     private var observer: (@Sendable () -> Void)?
     private var lastProgressReport = Date.distantPast
+    /// Per section: Esc stopped its wait for System Settings. Set by `cancelWait` only while that
+    /// section waits (`SectionState.waiting`), reset when a wait starts, so an Esc elsewhere, or
+    /// before the wait, never stops one. Panel hiding never sets it.
+    private var waitCancelled = MacTweaksSection.allCases.map { _ in false }
     private let queue = DispatchQueue(label: "com.lightspot.mactweaks", qos: .userInitiated)
 
     init(environment: Environment = .live) {
@@ -286,8 +417,58 @@ final class MacTweaksProvider: @unchecked Sendable {
     static func engine(for section: MacTweaksSection, environment: Environment) -> MacTweaksSectionEngine? {
         switch section {
         case .freeUpSpace: return MacTweaksStorage.Engine(environment: environment)
-        case .appleIntelligence, .settings, .backgroundItems: return nil
+        case .appleIntelligence: return MacTweaksIntelligence.Engine(environment: environment)
+        case .settings, .backgroundItems: return nil
         }
+    }
+
+    /// The engine for a section, with what the provider knows: Free Up Space gets the last Apple
+    /// Intelligence scan's model total (its link row); Apple Intelligence gets the scan on show
+    /// (so its plan reads nothing) and this section's own wait and cancel flag.
+    func makeEngine(for section: MacTweaksSection) -> MacTweaksSectionEngine? {
+        var env = environment
+        let current = snapshot
+        switch section {
+        case .freeUpSpace:
+            let bytes = MacTweaksIntelligence.modelBytes(current.appleIntelligenceScan?.inventory)
+            env.appleIntelligenceModelBytes = { bytes }
+            return Self.engine(for: section, environment: env)
+        case .appleIntelligence:
+            env.intelligence.waiting = { [weak self] on in self?.setWaiting(section, on) }
+            env.intelligence.isCancelled = { [weak self] in self?.isWaitCancelled(section) ?? false }
+            return MacTweaksIntelligence.Engine(environment: env, shown: current[section].rows,
+                                                scanned: current.appleIntelligenceScan)
+        case .settings, .backgroundItems:
+            return Self.engine(for: section, environment: env)
+        }
+    }
+
+    // MARK: Waiting for System Settings
+
+    /// A section's wait starts or ends: a new wait is never already cancelled.
+    private func setWaiting(_ section: MacTweaksSection, _ on: Bool) {
+        lock.lock()
+        if on { waitCancelled[section.index] = false }
+        state[section].waiting = on
+        state.revision += 1
+        lock.unlock()
+        notify()
+    }
+
+    /// Esc on a section that waits for System Settings: stop that wait. Nothing otherwise, so an
+    /// Esc before the wait starts, or while another section works, changes nothing. The pending
+    /// profile stays in System Settings; the next open continues if it got installed meanwhile.
+    func cancelWait(_ section: MacTweaksSection) {
+        lock.lock()
+        if state[section].waiting { waitCancelled[section.index] = true }
+        lock.unlock()
+    }
+
+    /// Whether Esc stopped the section's running wait, read by the wait on the queue.
+    func isWaitCancelled(_ section: MacTweaksSection) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return state[section].waiting && waitCancelled[section.index]
     }
 
     /// Non-blocking: the latest state, for the overlay.
@@ -393,7 +574,7 @@ final class MacTweaksProvider: @unchecked Sendable {
 
     /// Starts a scan unless one is running or (without `force`) a recent one stands.
     func startScan(_ section: MacTweaksSection, force: Bool = false) {
-        guard let engine = Self.engine(for: section, environment: environment) else { return }
+        guard let engine = makeEngine(for: section) else { return }
         lock.lock()
         let current = state[section]
         guard !current.phase.isBusy, force || !(current.phase == .ready && isFresh(current.scannedAt)) else {
@@ -401,7 +582,7 @@ final class MacTweaksProvider: @unchecked Sendable {
             return
         }
         // The old rows go now, not when the new ones arrive.
-        state[section] = SectionState(phase: .scanning("Looking for space to free…"), generation: current.generation)
+        state[section] = SectionState(phase: .scanning(section.scanningTitle), generation: current.generation)
         state.revision += 1
         lock.unlock()
         notify()
@@ -411,12 +592,16 @@ final class MacTweaksProvider: @unchecked Sendable {
                 self.reportScanProgress(section, line)
             }
             let now = environment.now()
+            // What the Apple Intelligence scan read, for the summary, the plan and Free Up
+            // Space's link row.
+            let context = (engine as? MacTweaksIntelligence.Engine)?.lastContext
             update { state in
                 state[section].phase = .ready
                 state[section].rows = rows
                 state[section].scannedAt = now
                 state[section].generation += 1
                 if section == .freeUpSpace { state.freeableBytes = Self.freeableBytes(rows) }
+                if let context { state.appleIntelligenceScan = context }
             }
         }
     }
@@ -426,7 +611,7 @@ final class MacTweaksProvider: @unchecked Sendable {
     /// Applies the rows of the current scan whose IDs are given. Only from `.ready`: the
     /// overlay shows the plan first, and the rows must be the ones it showed.
     func apply(_ section: MacTweaksSection, ids: Set<String>) {
-        guard let engine = Self.engine(for: section, environment: environment) else { return }
+        guard let engine = makeEngine(for: section) else { return }
         lock.lock()
         let selected = state[section].rows.filter { ids.contains($0.id) && !$0.isLink }
         guard state[section].phase == .ready, !selected.isEmpty else {
@@ -461,14 +646,17 @@ final class MacTweaksProvider: @unchecked Sendable {
                 state[section].phase = .finished
                 state[section].receipt = result.receipt
                 state[section].finishedAt = now
+                state[section].waiting = false
                 if section == .freeUpSpace { state.freeableBytes = Self.freeableBytes(rows) }
+                // An apply's rescan, with its own inventory's availability.
+                if let context = (engine as? MacTweaksIntelligence.Engine)?.lastContext { state.appleIntelligenceScan = context }
             }
         }
     }
 
     /// The plan's closing sentences for the ticked rows of `section`.
     func planNotes(_ section: MacTweaksSection, rows: [MacTweaksRow]) -> [String] {
-        Self.engine(for: section, environment: environment)?.planNotes(for: rows) ?? []
+        makeEngine(for: section)?.planNotes(for: rows) ?? []
     }
 
     // MARK: Receipts

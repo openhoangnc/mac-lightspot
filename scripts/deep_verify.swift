@@ -63,12 +63,20 @@ struct DeepVerifier {
         let termKeys = SettingsProvider.shared.loadSearchTerms()
         print("System Settings search terms indexed: \(termKeys) keys")
         check("System Settings search terms load (> 1,000 keys)", termKeys > 1_000)
-        // Terms that exist only in Apple's .searchTerms files, not in Lightspot's keywords.
+        // Terms that exist only in Apple's .searchTerms files, not in Lightspot's keywords. Only
+        // where this macOS's pane still ships the term: on 27.2 the Wi-Fi pane ships no
+        // .searchTerms file at all, so "Known networks" has nothing to come from.
         for (query, pane, setting) in [("lockdown mode", "Privacy & Security", "Lockdown Mode"),
                                        ("power nap", "Battery", "Power Nap"),
                                        ("universal control", "Displays", "Universal Control"),
                                        ("known networks", "Wi-Fi", "Known networks"),
                                        ("sticky keys", "Accessibility", "Sticky Keys")] {
+            let shipped = settings.first { $0.name == pane }.flatMap { panes[$0.extensionID] }
+                .map { SettingsSearchTerms.termsFiles(of: $0, languages: ["en"]).flatMap(SettingsSearchTerms.entries(inFile:)) } ?? []
+            guard shipped.contains(where: { $0.title.caseInsensitiveCompare(setting) == .orderedSame }) else {
+                print("     ⚠️ \(pane) ships no '\(setting)' search term on this macOS — skipping '\(query)'")
+                continue
+            }
             let row = SettingsProvider.shared.search(SearchQuery(query)).first
             check("'\(query)' finds \(pane) → \(setting)",
                   row?.title == pane && row?.subtitle.hasSuffix("→ \(setting)") == true)
@@ -544,6 +552,112 @@ struct DeepVerifier {
         malloc_zone_pressure_relief(nil, 0)
         let residentAfter = residentBytes()
         print("     Resident memory: \(residentBefore / 1_048_576) MB before the scan, \(residentAfter / 1_048_576) MB once its rows were dropped")
+
+        // ----------------------------------------------------
+        // SECTION 13: Mac Tweaks' Apple Intelligence on this Mac — reads only, never resets
+        // ----------------------------------------------------
+        print("\n--- 13. Testing Mac Tweaks' Apple Intelligence on this Mac (reads only) ---")
+        let aiRecord = TweaksRecorder()
+        var aiEnvironment = MacTweaksProvider.Environment.live
+        // deep_verify calls the read-only bridge in-process; the app spawns the helper child.
+        // Nothing here resets a set, installs a profile or opens System Settings.
+        aiEnvironment.intelligence.assetInventory = { AssetServiceHelper.inventory(bridge: AssetServiceBridge()) }
+        aiEnvironment.intelligence.resetAssetSet = { set in aiRecord.forbidden("reset " + set); return .noAnswer }
+        aiEnvironment.intelligence.presentProfile = { _ in aiRecord.forbidden("presentProfile") }
+        aiEnvironment.intelligence.openDeviceManagement = { aiRecord.forbidden("openDeviceManagement") }
+        // A scan that finds the profile installed removes its file; here nothing is removed.
+        aiEnvironment.intelligence.removeProfileFile = {}
+        aiEnvironment.intelligence.sleep = { _ in }
+        let aiInventory = aiEnvironment.intelligence.assetInventory()
+        print("     Asset service available: \(aiInventory?.available == true)")
+        for set in Catalog.modelSets {
+            let info = aiInventory?.info(set.name)
+            print("     \(set.title): known \(info?.known ?? false), \(info.map { $0.bytes.map { "\($0) bytes" } ?? "size unknown" } ?? "n/a")")
+        }
+        let aiRows = MacTweaksIntelligence.scan(aiEnvironment, inventory: aiInventory)
+        for row in aiRows { print("     \(row.title): \(row.countLabel ?? "")\(row.readOnly ? " [read-only]" : "")") }
+        // Every expectation below follows what this Mac reports, never one macOS's state: 26.7.2
+        // retired Spatial Photos' set and had no models on disk; 27.2 knows the set again and
+        // downloaded the models.
+        let spatialOnThisMacOS = Catalog.availableFeatures.contains { $0.id == "spatial-photos" }
+        let spatialKnown = aiInventory?.info(Catalog.spatialModels)?.known
+        let spatialShown = spatialOnThisMacOS && (aiInventory?.available != true || spatialKnown == true)
+        print("     Spatial Photos: \(spatialOnThisMacOS ? "on this macOS" : "not on this macOS"), its set \(spatialKnown.map { $0 ? "known" : "retired" } ?? "unknown to the service")")
+        check("Spatial Photos is \(spatialShown ? "shown" : "hidden"), as this macOS and the service report it",
+              aiRows.contains { $0.id == "spatial-photos" } == spatialShown)
+        let assistantEnabled = CFPreferencesCopyAppValue("Assistant Enabled" as CFString, "com.apple.assistant.support" as CFString) as? Bool
+        if let siri = Catalog.availableFeatures.first(where: { $0.id == "siri" }) {
+            // A profile forcing any Siri key makes it Managed (or Locked off, Lightspot's own),
+            // whatever Assistant Enabled says.
+            let siriForced = MacTweaksIntelligence.switches(siri).contains {
+                CFPreferencesAppValueIsForced($0.key as CFString, $0.domain as CFString)
+            }
+            print("     com.apple.assistant.support Assistant Enabled: \(assistantEnabled.map { "\($0)" } ?? "unset"); a profile forces a Siri key: \(siriForced)")
+            let expected = siriForced ? [FeatureState.managed.label, FeatureState.lockedOff.label]
+                : [assistantEnabled == false ? FeatureState.off.label : FeatureState.on.label]
+            check("Siri shows \(expected.joined(separator: " or ")), as \(siriForced ? "a profile forcing its keys" : "Assistant Enabled (\(assistantEnabled.map { "\($0)" } ?? "unset"))") says",
+                  aiRows.first { $0.id == "siri" }?.countLabel.map(expected.contains) == true)
+        }
+        let aiModelBytes = MacTweaksIntelligence.modelBytes(aiInventory)
+        print("     Apple Intelligence models on disk: \(aiModelBytes.map { $0 == 0 ? "none (0 bytes)" : MacTweaksProvider.size($0) } ?? "unknown")")
+        // What the summary and the plan say, and that they match what apply would do (B4), with
+        // every shown feature ticked: whatever the models' state, three checks.
+        let aiContext = MacTweaksIntelligence.ScanContext(inventory: aiInventory, installed: MacTweaksProfile.installed(),
+                                                          removeMacAI: MacTweaksProfile.removeMacAIInstalled())
+        let aiTicked = aiRows.filter { !$0.readOnly && !MacTweaksIntelligence.isActionRow($0.id) }
+        let aiPlan = MacTweaksIntelligence.planNotes(ticked: aiTicked, shown: aiRows, context: aiContext)
+        print("     Summary: \(MacTweaksIntelligence.summary(rows: aiRows, context: aiContext))")
+        print("     Plan: \(aiPlan.joined(separator: " "))")
+        let aiKept = Set(Catalog.availableFeatures.map(\.id)).subtracting(aiTicked.map(\.id))
+        let aiRemoval = MacTweaksIntelligence.removalPlan(keeping: aiKept, inventory: aiInventory)
+        print("     A turn-off would \(aiRemoval.isNeeded ? "ask the asset service to remove \(aiRemoval.removing.count) sets" : "send no reset")")
+        let installedContext = MacTweaksIntelligence.ScanContext(
+            inventory: aiInventory,
+            installed: MacTweaksProfile.Installed(on: true, ai: true, kept: aiKept, features: Set(Catalog.availableFeatures.map(\.id))))
+        let finishOffered = MacTweaksIntelligence.scan(aiEnvironment, context: installedContext).contains { $0.id == MacTweaksIntelligence.finishRemovalID }
+        check("Apple Intelligence never reset a set, presented a profile or opened Settings", aiRecord.forbiddenCalls.isEmpty)
+        let removalBytes = aiRemoval.bytes.map { MacTweaksProvider.size($0) } ?? "unknown"
+        let deletes = aiPlan.contains { $0.hasPrefix("Deletes ") || $0.hasPrefix("Asks macOS to remove the models") }
+        if aiInventory?.available != true {
+            check("With the asset service silent, turning off sends no reset", !aiRemoval.isNeeded)
+            check("...and the plan says the service didn't answer", aiPlan.contains { $0.hasPrefix("Apple's asset service didn't answer") })
+            check("...and the section, once the profile is in, offers no finish row", !finishOffered)
+        } else if aiRemoval.bytes == 0 {
+            check("With the models to remove at 0 bytes, turning off sends no reset", !aiRemoval.isNeeded)
+            check("...and the plan deletes nothing and mentions no folder files",
+                  !deletes && !aiPlan.joined().lowercased().contains("folder"))
+            check("...and the section, once the profile is in, offers no finish row", !finishOffered)
+        } else {
+            check("With the models to remove at \(removalBytes), turning off asks the asset service to remove them", aiRemoval.isNeeded)
+            check("...and the plan says what it deletes",
+                  aiPlan.contains { $0.hasPrefix(aiRemoval.bytes == nil ? "Asks macOS to remove the models" : "Deletes \(removalBytes) of models") })
+            check("...and the section, once the profile is in, offers to finish the removal", finishOffered)
+        }
+        // The profile is well-formed data (plutil -lint on a temp copy); nothing is installed.
+        if let profileData = try? MacTweaksProfile.data(.init(ai: [], tweaks: [])) {
+            let tempProfile = NSTemporaryDirectory() + "lightspot-profile-verify-\(getpid()).mobileconfig"
+            try? profileData.write(to: URL(fileURLWithPath: tempProfile))
+            let lint = CleanDevMacEngine.run("/usr/bin/plutil", ["-lint", tempProfile], timeout: 10)
+            check("The profile is well-formed (plutil -lint)", lint.status == 0)
+            let plist = (try? PropertyListSerialization.propertyList(from: profileData, format: nil)) as? [String: Any]
+            let payloads = plist?["PayloadContent"] as? [[String: Any]] ?? []
+            let marker = payloads.first { ($0["PayloadIdentifier"] as? String)?.hasSuffix(".preferences.com.lightspot.app.tweaks") == true }
+            let settings = ((marker?["PayloadContent"] as? [String: Any])?["com.lightspot.app.tweaks"] as? [String: Any])
+                .flatMap { ($0["Forced"] as? [[String: Any]])?.first?["mcx_preference_settings"] as? [String: Any] }
+            check("The profile's marker reads back as installed", settings != nil && MacTweaksProfile.read(forced: true) { settings?[$0] }.on)
+            try? FileManager.default.removeItem(atPath: tempProfile)
+        }
+        // profiles with read-only verbs only; the owner's profiles are left untouched.
+        let profilesStatus = CleanDevMacEngine.run("/usr/bin/profiles", ["status", "-type", "configuration"], timeout: 10)
+        print("     profiles status -type configuration: rc \(profilesStatus.status), \(profilesStatus.output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        let ours = MacTweaksProfile.installed()
+        print("     Lightspot's profile: \(ours.on ? "installed" + (ours.ai ? ", turning Apple Intelligence off" : "") : "not installed")")
+        check("The section offers to turn Apple Intelligence back on exactly while Lightspot's profile turns it off",
+              aiRows.contains { $0.id == MacTweaksIntelligence.turnOnID } == (ours.on && ours.ai))
+        check("Device Management names an installed pane", panes["com.apple.Profiles-Settings.extension"] != nil)
+        let aiSymbols = Array(MacTweaksIntelligence.symbols.values)
+        let missingAISymbols = aiSymbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        check("Every Apple Intelligence SF Symbol exists\(missingAISymbols.isEmpty ? "" : ": missing " + missingAISymbols.joined(separator: ", "))", missingAISymbols.isEmpty)
 
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")

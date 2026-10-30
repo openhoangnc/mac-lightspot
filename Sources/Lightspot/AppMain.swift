@@ -12,6 +12,16 @@ struct LightspotApp {
             exit(0)
         }
 
+        // The Apple Intelligence section runs every asset-service call in a short-lived child:
+        // this binary started with `--asset-service <verb> [set]`. Handled here, before the
+        // single-instance guard and any NSApplication setup, so it never disturbs the running
+        // Lightspot (the uninstall flags above sit for the same reason). It prints one JSON
+        // object and exits; `reset` is never run by Lightspot itself.
+        if CommandLine.arguments.contains("--asset-service") {
+            let status = AssetServiceHelper.run(CommandLine.arguments, bridge: AssetServiceBridge()) { print($0) }
+            exit(status)
+        }
+
         let delegate = AppDelegate()
 
         // One Lightspot per user; see SingleInstanceGuard. Checked after the helper

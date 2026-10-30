@@ -214,6 +214,7 @@ struct TestRunner {
         testMacTweaks()
         testCleanDevMacRepoScan()
         runMacTweaksTests()
+        runIntelligenceTests()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -5842,7 +5843,9 @@ extension TestRunner {
 
     static func testMacTweaksProvider() {
         print("Testing MacTweaksProvider...")
-        assertEqual(MacTweaksSection.built, [.freeUpSpace], "Phase 1 builds Free Up Space only")
+        // Apple Intelligence where this Mac has it: Apple silicon and a macOS with one of its features.
+        assertEqual(MacTweaksSection.built, MacTweaksSection.sections(appleIntelligence: Catalog.hasAppleSilicon && !Catalog.availableFeatures.isEmpty),
+                    "Phases 1–2 build Free Up Space, and Apple Intelligence where this Mac has it")
         assertEqual(MacTweaksSection.allCases.map(\.title), ["Free Up Space", "Apple Intelligence", "Settings", "Background Items"],
                     "All four sections are modelled, in tab order")
         assertTrue(MacTweaksSection.allCases.allSatisfy { !$0.symbol.isEmpty }, "...each with an SF Symbol")
@@ -5942,5 +5945,962 @@ extension TestRunner {
         assertEqual(notes(["simulators"]), ["Simulators are deleted right away."], "No password for simulators alone")
 
         print("✅ MacTweaksProvider passed all tests!\n")
+    }
+}
+
+// MARK: - Apple Intelligence (Mac Tweaks phase 2)
+
+/// A fake Mac for the Apple Intelligence section: the marker, other profiles' forced keys, the
+/// asset inventory, the reset outcomes, a fake clock and a cancel flag. Nothing here touches the
+/// asset service, installs or removes a profile, or runs `profiles`.
+final class AIFixture: @unchecked Sendable {
+    var installed = MacTweaksProfile.Installed()
+    var removeMacAI = false
+    var inventory: AssetInventory?
+    var inventoryCalls = 0
+    /// Outcomes a set's reset returns in turn (for lock retries); default `.done`.
+    var resetQueues: [String: [AssetResetOutcome]] = [:]
+    /// Zero a set's bytes when its reset returns `.done`. Off for the delayed-deletion test.
+    var autoZeroOnReset = true
+    /// Runs after each reset, for tests that change the world then.
+    var afterReset: ((String) -> Void)?
+    var forced: [String: Bool] = [:]
+    var bools: [String: Bool] = [:]
+    var presented: [MacTweaksProfile.Contents] = []
+    var presentError: Error?
+    var adminScripts: [String] = []
+    var adminAnswer = QuickActionsProvider.PrivilegedRun.ran(status: 0, output: "")
+    /// Whether a batch that runs removes Lightspot's profile.
+    var adminRemovesProfile = true
+    var deviceManagementOpened = 0
+    var profileFileRemovals = 0
+    var waitStarts = 0
+    var resetCalls: [String] = []
+    /// What happened, in order: "present", "approved", "reset:<set>".
+    var events: [String] = []
+    var clock = Date(timeIntervalSince1970: 1_700_000_000)
+    var sleepLog: [TimeInterval] = []
+    var onSleep: ((Int) -> Void)?
+    var cancelled = false
+    /// A wait that never ends would hang the run: past this many sleeps the fixture cancels the
+    /// wait, and the test sees the overrun.
+    var sleepGuard = 2_000
+    /// The fake home, where an apply writes its receipts log: one per fixture, removed with it.
+    let home = NSTemporaryDirectory() + "lightspot-ai-\(getpid())-\(UUID().uuidString.prefix(8))"
+
+    deinit { try? FileManager.default.removeItem(atPath: home) }
+
+    var sleepCount: Int { sleepLog.count }
+    static let allIDs = Set(Catalog.availableFeatures.map(\.id))
+
+    func zero(_ set: String) {
+        guard let inv = inventory else { return }
+        inventory = AssetInventory(available: inv.available, sets: inv.sets.map {
+            $0.name == set ? AssetSetInfo(name: $0.name, known: $0.known, assetType: $0.assetType, bytes: 0) : $0
+        })
+    }
+
+    /// The owner approves a presented profile: its marker is now what that profile carries.
+    func approve(_ contents: MacTweaksProfile.Contents) {
+        installed = MacTweaksProfile.Installed(on: true, ai: contents.ai != nil, kept: contents.ai ?? [],
+                                               tweaks: contents.tweaks, features: Self.allIDs)
+        events.append("approved")
+    }
+
+    var environment: MacTweaksProvider.Environment {
+        var env = MacTweaksProvider.Environment(home: home)
+        env.now = { [self] in clock }
+        env.runAdmin = { [self] script in
+            adminScripts.append(script)
+            if case .ran = adminAnswer, adminRemovesProfile { installed = MacTweaksProfile.Installed() }
+            return adminAnswer
+        }
+        var ai = MacTweaksIntelligence.Environment.inert
+        ai.assetInventory = { [self] in inventoryCalls += 1; return inventory }
+        ai.resetAssetSet = { [self] set in
+            resetCalls.append(set)
+            events.append("reset:\(set)")
+            var queue = resetQueues[set] ?? []
+            let outcome = queue.isEmpty ? .done : queue.removeFirst()
+            resetQueues[set] = queue
+            if outcome == .done && autoZeroOnReset { zero(set) }
+            afterReset?(set)
+            return outcome
+        }
+        ai.profileInstalled = { [self] in installed }
+        ai.removeMacAIInstalled = { [self] in removeMacAI }
+        ai.prefForced = { [self] domain, key in forced["\(domain)|\(key)"] ?? false }
+        ai.prefBool = { [self] domain, key in bools["\(domain)|\(key)"] }
+        ai.presentProfile = { [self] contents in
+            if let presentError { throw presentError }
+            presented.append(contents)
+            events.append("present")
+        }
+        ai.removeProfileFile = { [self] in profileFileRemovals += 1; events.append("file-removed") }
+        ai.openDeviceManagement = { [self] in deviceManagementOpened += 1 }
+        ai.osVersion = { (26, 7) }
+        ai.sleep = { [self] seconds in
+            sleepLog.append(seconds)
+            clock = clock.addingTimeInterval(seconds)
+            if sleepLog.count >= sleepGuard { cancelled = true }
+            onSleep?(sleepLog.count)
+        }
+        ai.waiting = { [self] on in if on { waitStarts += 1 } }
+        ai.isCancelled = { [self] in cancelled }
+        env.intelligence = ai
+        return env
+    }
+}
+
+/// Records the bridge's resets, which a value-type fake can't keep.
+final class ResetRecorder: @unchecked Sendable {
+    var calls: [String] = []
+}
+
+/// A fake UAF bridge for the helper tests: no framework is touched.
+struct FakeAssetBridge: AssetBridging {
+    var isAvailable = true
+    var typesBySet: [String: String] = [:]
+    var bytesByType: [String: Int64]? = [:]
+    var holds: Set<String> = []
+    var operationOK = true
+    var resetResult: AssetResetOutcome = .done
+    var recorder: ResetRecorder?
+
+    func available() -> Bool { isAvailable }
+    func assetType(of setName: String) -> String? { typesBySet[setName] }
+    func inventoryBytes() -> [String: Int64]? { isAvailable ? bytesByType : nil }
+    func folderHoldsFiles(assetType: String) -> Bool { holds.contains(assetType) }
+    func operationSupported() -> Bool { operationOK }
+    func reset(set: String, timeout: TimeInterval) -> AssetResetOutcome { recorder?.calls.append(set); return resetResult }
+}
+
+extension TestRunner {
+    static func runIntelligenceTests() {
+        testIntelligenceCatalog()
+        testIntelligenceState()
+        testIntelligenceProfile()
+        testAssetServiceHelper()
+        testAssetServiceClient()
+        testIntelligenceScan()
+        testIntelligencePlan()
+        testIntelligenceApply()
+        testIntelligenceWaits()
+        testIntelligenceProvider()
+        // Fixtures whose own closures (onSleep, afterReset) keep them alive never reach deinit:
+        // remove every fake home this run made.
+        let temp = NSTemporaryDirectory()
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: temp)) ?? [] where name.hasPrefix("lightspot-ai-\(getpid())-") {
+            try? FileManager.default.removeItem(atPath: temp + name)
+        }
+        assertTrue(!((try? FileManager.default.contentsOfDirectory(atPath: temp)) ?? []).contains { $0.hasPrefix("lightspot-ai-\(getpid())-") },
+                   "The Apple Intelligence tests leave nothing in the temp folder")
+    }
+
+    /// An inventory where every catalog set is known with the given bytes, minus `retired`;
+    /// `unknownSizes` is an inventory call that failed while the service is up.
+    static func aiInventory(available: Bool = true, retired: Set<String> = [], bytes: [String: Int64] = [:],
+                            unknownSizes: Bool = false) -> AssetInventory {
+        guard available else { return AssetInventory(available: false, sets: []) }
+        return AssetInventory(available: true, sets: Catalog.modelSets.map { set in
+            let known = !retired.contains(set.name)
+            return AssetSetInfo(name: set.name, known: known, assetType: known ? set.assetType : nil,
+                                bytes: unknownSizes ? nil : (bytes[set.name] ?? 0))
+        })
+    }
+
+    /// What macOS 26.7.2 reported: every set known but Spatial Photos', all at 0 bytes. A fixture:
+    /// no test reads this Mac's own inventory, which changes with the macOS version.
+    static let spatialRetiredInventory = aiInventory(retired: [Catalog.spatialModels])
+
+    /// What macOS 27.2 reported: Spatial Photos' set known again, and the models downloaded.
+    static let downloadedInventory = aiInventory(bytes: [Catalog.foundationModels: 7_350_000_000,
+                                                         Catalog.visualModels: 101_000_000,
+                                                         Catalog.spatialModels: 502_000_000])
+
+    /// What a profile forces, by domain ("(restrictions)" for the restriction keys).
+    static func profileDomains(_ contents: MacTweaksProfile.Contents) -> [String: [String: Any]] {
+        guard let data = try? MacTweaksProfile.data(contents),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return [:] }
+        var out: [String: [String: Any]] = [:]
+        for payload in plist["PayloadContent"] as? [[String: Any]] ?? [] {
+            if payload["PayloadType"] as? String == "com.apple.applicationaccess" {
+                out["(restrictions)"] = payload.filter { $0.key.hasPrefix("allow") }
+                continue
+            }
+            for (domain, value) in payload["PayloadContent"] as? [String: Any] ?? [:] {
+                let forced = ((value as? [String: Any])?["Forced"] as? [[String: Any]])?.first?["mcx_preference_settings"] as? [String: Any]
+                out[domain] = forced ?? [:]
+            }
+        }
+        return out
+    }
+
+    /// The scan's changeable feature rows: what the overlay ticks by default.
+    static func featureRows(_ fx: AIFixture) -> [MacTweaksRow] {
+        MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory).filter { !$0.readOnly && !MacTweaksIntelligence.isActionRow($0.id) }
+    }
+
+    // MARK: Catalog
+
+    static func testIntelligenceCatalog() {
+        print("Testing Apple Intelligence catalog...")
+        assertEqual(Set(Catalog.setsToRemove(keeping: [])), Set(Catalog.availableModelSets.map(\.name)),
+                    "Off removes every model set this macOS has")
+        let keptWriting = Catalog.setsToRemove(keeping: ["writing-tools"])
+        assertTrue(!keptWriting.contains(Catalog.foundationModels) && keptWriting.contains(Catalog.visualModels),
+                   "A kept feature keeps the models it needs, and only those")
+        assertTrue(Catalog.setsToRemove(keeping: Set(Catalog.availableFeatures.map(\.id))).isEmpty,
+                   "Keeping everything removes nothing")
+        assertTrue(Catalog.features.allSatisfy { $0.modelSets.allSatisfy { Catalog.modelSet($0) != nil } },
+                   "Every model set a feature names is in the catalog")
+        assertEqual(Set(Catalog.features.map(\.id)).count, Catalog.features.count, "Feature names are unique")
+        assertTrue(Catalog.availableModelSets.allSatisfy { set in Catalog.availableFeatures.contains { $0.modelSets.contains(set.name) } },
+                   "Only model sets a feature needs are offered")
+        let mdmOnly: Set<String> = ["allowedExternalIntelligenceWorkspaceIDs", "allowSafariPrivateBrowsing", "forceBypassScreenCaptureAlert"]
+        assertTrue(mdmOnly.isDisjoint(with: Catalog.features.flatMap(\.restrictions)), "No key needs an MDM server")
+        // m14: Siri's deciding preference is Assistant Enabled.
+        assertEqual(Catalog.feature("siri")?.deciding, "Assistant Enabled", "Siri reads off from Assistant Enabled")
+        // m9: no supported feature before 15.1, so no section there; Intel Macs have none either.
+        assertTrue(Catalog.availableFeatures(os: (14, 6)).isEmpty && Catalog.availableFeatures(os: (15, 0)).isEmpty,
+                   "macOS 14 and 15.0 have no Apple Intelligence feature")
+        assertTrue(!Catalog.availableFeatures(os: (15, 1)).isEmpty, "...15.1 has some")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace], "Without a feature the section is hidden")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: true), [.freeUpSpace, .appleIntelligence], "...and shown with one")
+        // Nits: the copy is accurate.
+        assertTrue(!(Catalog.feature("image-playground")?.detail ?? "").contains("removes it"), "Image Playground is disabled, not removed")
+        assertTrue(!(Catalog.feature("siri")?.detail ?? "").contains("model is removed"), "Siri's detail promises no model removal")
+        print("✅ Apple Intelligence catalog passed!\n")
+    }
+
+    // MARK: Feature state
+
+    static func testIntelligenceState() {
+        print("Testing Apple Intelligence feature state...")
+        let fx = AIFixture()
+        let siri = Catalog.feature("siri")!
+        let writing = Catalog.feature("writing-tools")!
+        let mail = Catalog.feature("mail")!
+        let cleanUp = Catalog.feature("photos-clean-up")!
+        let all = AIFixture.allIDs
+        func state(_ f: Feature, inventory: AssetInventory? = nil) -> FeatureState {
+            MacTweaksIntelligence.state(f, inventory: inventory, env: fx.environment, ours: fx.installed)
+        }
+        // Siri is off because Assistant Enabled is false, though the menu prefs are unset (B1).
+        fx.bools["com.apple.assistant.support|Assistant Enabled"] = false
+        assertEqual(state(siri), .off, "Siri shows off when Assistant Enabled is false")
+        fx.bools["com.apple.assistant.support|Assistant Enabled"] = true
+        assertEqual(state(siri), .on, "...and on when it is true")
+        // m14: a secondary preference alone never makes Siri read off.
+        fx.bools = ["com.apple.Siri|StatusMenuVisible": false, "com.apple.Siri|VoiceTriggerUserEnabled": false]
+        assertEqual(state(siri), .on, "Siri's menu and voice prefs alone don't make it read off")
+        fx.bools = [:]
+
+        // M4: any key another profile forces makes the feature Managed, whatever its value.
+        fx.forced["com.apple.applicationaccess|allowWritingTools"] = true
+        fx.bools["com.apple.applicationaccess|allowWritingTools"] = false
+        assertEqual(state(writing), .managed, "A key another profile forces off is Managed")
+        fx.bools["com.apple.applicationaccess|allowWritingTools"] = true
+        assertEqual(state(writing), .managed, "...and so is one it forces on")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: all)
+        fx.bools["com.apple.applicationaccess|allowWritingTools"] = false
+        assertEqual(state(writing), .lockedOff, "Locked off when Lightspot's own profile forces it off")
+        fx.bools["com.apple.applicationaccess|allowWritingTools"] = true
+        assertEqual(state(writing), .managed, "...but Managed when the value isn't Lightspot's off")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["writing-tools"], features: all)
+        fx.bools["com.apple.applicationaccess|allowWritingTools"] = false
+        assertEqual(state(writing), .managed, "...or when Lightspot's profile keeps the feature")
+        fx.installed = MacTweaksProfile.Installed()
+        // Siri forced only partly by another profile.
+        fx.forced = ["com.apple.applicationaccess|allowAssistant": true]
+        fx.bools = ["com.apple.applicationaccess|allowAssistant": false]
+        assertEqual(state(siri), .managed, "A feature another profile forces only partly is Managed")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: all)
+        assertEqual(state(siri), .managed, "...even under Lightspot's profile, which forces every key")
+        fx.installed = MacTweaksProfile.Installed()
+        fx.forced = [:]; fx.bools = [:]
+
+        // m10: Mail's domain can't be read, so only a forced value counts.
+        fx.bools["group.com.apple.mail|DisableAutomaticMessageSummarization"] = true
+        fx.bools["group.com.apple.mail|PersonalizedSmartReplies"] = false
+        assertEqual(state(mail), .on, "Mail's own (unreadable) values never make it read off")
+        fx.forced["group.com.apple.mail|DisableAutomaticMessageSummarization"] = true
+        assertEqual(state(mail), .managed, "...a value another profile forces there makes it Managed")
+        fx.forced = [:]; fx.bools = [:]
+
+        // A model-only feature follows its models.
+        assertEqual(state(cleanUp, inventory: aiInventory(bytes: [Catalog.cleanUpModels: 1_000])), .on, "A model-only feature is on while its models are on disk")
+        assertEqual(state(cleanUp, inventory: aiInventory()), .off, "...off when its models are 0")
+        assertEqual(state(cleanUp, inventory: aiInventory(available: false)), .unknown, "...unknown when the service didn't answer")
+        assertEqual(state(cleanUp, inventory: aiInventory(unknownSizes: true)), .unknown, "...and when its size couldn't be read")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: all)
+        assertEqual(state(cleanUp, inventory: aiInventory()), .lockedOff, "...locked off when Lightspot's profile blocks its download")
+        print("✅ Apple Intelligence feature state passed!\n")
+    }
+
+    // MARK: Profile
+
+    static func testIntelligenceProfile() {
+        print("Testing Apple Intelligence profile...")
+        do {
+            let plist = try PropertyListSerialization.propertyList(from: MacTweaksProfile.data(.init(ai: [], tweaks: [])), format: nil) as! [String: Any]
+            assertEqual(plist["PayloadIdentifier"] as? String, "com.lightspot.app.tweaks", "The profile's identifier")
+            assertEqual(plist["PayloadScope"] as? String, "System", "It is System scope (every account)")
+            let payloads = plist["PayloadContent"] as! [[String: Any]]
+            let restrictions = payloads.first { $0["PayloadType"] as? String == "com.apple.applicationaccess" }!
+            assertTrue(restrictions["allowAssistant"] as? Bool == false && restrictions["allowWritingTools"] as? Bool == false,
+                       "It turns Siri and Writing Tools off")
+            let all = profileDomains(.init(ai: [], tweaks: []))
+            let block = all[MacTweaksProfile.downloadDomain] as? [String: String] ?? [:]
+            assertEqual(block.count, Catalog.availableModelSets.count, "A download override per removed set")
+            assertTrue(block.values.allSatisfy { $0 == MacTweaksProfile.blockedURL }, "...each pointing at the blocked URL")
+            let uuids = payloads.compactMap { $0["PayloadUUID"] as? String } + [plist["PayloadUUID"] as! String]
+            assertTrue(Set(uuids).count == uuids.count && MacTweaksProfile.uuid("a") == MacTweaksProfile.uuid("a"), "Payload UUIDs are unique and stable")
+
+            // A kept feature's keys are absent; its model isn't blocked; a removed set's is.
+            let keptWriting = profileDomains(.init(ai: ["writing-tools"], tweaks: []))
+            assertTrue(keptWriting["(restrictions)"]?["allowWritingTools"] == nil && keptWriting["(restrictions)"]?["allowGenmoji"] as? Bool == false,
+                       "A kept feature is left alone")
+            let keptBlock = keptWriting[MacTweaksProfile.downloadDomain] ?? [:]
+            assertTrue(keptBlock[MacTweaksProfile.downloadKey(Catalog.modelSet(Catalog.foundationModels)!)] == nil, "A kept feature's model isn't blocked")
+            assertTrue(keptBlock[MacTweaksProfile.downloadKey(Catalog.modelSet(Catalog.visualModels)!)] != nil, "...but a removed set's model still is")
+            // d2: keeping Siri leaves its preference payloads out, not only its restriction.
+            let keptSiri = profileDomains(.init(ai: ["siri"], tweaks: []))
+            assertTrue(keptSiri["com.apple.assistant.support"] == nil && keptSiri["com.apple.Siri"] == nil
+                       && keptSiri["(restrictions)"]?["allowAssistant"] == nil,
+                       "Keeping Siri leaves its preferences and its restriction out of the profile")
+            // B2: a feature kept because it was hidden is never touched.
+            let keptSpatial = profileDomains(.init(ai: ["spatial-photos"], tweaks: []))
+            assertTrue(keptSpatial["com.apple.spatialphotosrelive"] == nil, "A kept (hidden) Spatial Photos isn't forced off")
+            assertTrue((keptSpatial[MacTweaksProfile.downloadDomain] ?? [:])[MacTweaksProfile.downloadKey(Catalog.modelSet(Catalog.spatialModels)!)] == nil,
+                       "...and its download isn't blocked")
+
+            // Tweaks are preserved, and the marker reads back.
+            let marker = profileDomains(.init(ai: ["siri"], tweaks: ["analytics", "lookup"]))[MacTweaksProfile.identifier] ?? [:]
+            assertEqual(marker["tweaks"] as? String, "analytics,lookup", "The profile records the tweaks it holds")
+            let read = MacTweaksProfile.read(forced: true) { marker[$0] }
+            assertTrue(read.on && read.ai && read.kept == ["siri"] && read.tweaks == ["analytics", "lookup"], "The marker reads back to the contents that built it")
+            assertEqual(read.features, Set(Catalog.availableFeatures.map(\.id)), "...with the features it was made for")
+
+            // Stale detection: made before this macOS gained a feature.
+            let ids = Set(Catalog.availableFeatures.map(\.id))
+            assertTrue(MacTweaksProfile.Installed(on: true, ai: true, features: ids.subtracting(["siri"])).stale, "A profile missing a current feature is stale")
+            assertTrue(!MacTweaksProfile.Installed(on: true, ai: true, features: ids).stale, "...and current when it has them all")
+            assertTrue(MacTweaksProfile.read(forced: false) { _ in nil } == MacTweaksProfile.Installed(), "A missing marker reads as not installed")
+
+            // m4: the removal is one step of the shared administrator batch, its status reported.
+            let command = MacTweaksProfile.removeCommand()
+            assertEqual(command, "'/usr/bin/profiles' remove -identifier 'com.lightspot.app.tweaks' -forced", "The removal command, quoted")
+            let fakeBin = NSTemporaryDirectory() + "lightspot-ai-profiles-\(getpid())"
+            try? FileManager.default.createDirectory(atPath: fakeBin, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: fakeBin) }
+            FileManager.default.createFile(atPath: fakeBin + "/profiles", contents: Data("#!/bin/sh\necho \"profiles: $*\"\nexit 3\n".utf8),
+                                           attributes: [.posixPermissions: 0o755])
+            let tag = "__LS_profiletest"
+            let batch = MacTweaksStorage.adminScript([MacTweaksProfile.removeCommand(profiles: fakeBin + "/profiles")], tag: tag)
+            let ran = CleanDevMacEngine.run("/bin/sh", ["-c", batch], timeout: 10)
+            let step = MacTweaksStorage.batchResults(ran.output, tag: tag)[1]
+            assertTrue(ran.status == 0 && step?.status == 3, "The batch reports the step's own status (3), and exits 0")
+            assertTrue(step?.output.contains("remove -identifier com.lightspot.app.tweaks -forced") == true, "...and what it printed")
+        } catch { assertTrue(false, "the profile builds: \(error)") }
+        print("✅ Apple Intelligence profile passed!\n")
+    }
+
+    // MARK: Helper
+
+    static func testAssetServiceHelper() {
+        print("Testing asset-service helper...")
+        let recorder = ResetRecorder()
+        let bridge = FakeAssetBridge(
+            typesBySet: Dictionary(uniqueKeysWithValues: Catalog.modelSets.filter { $0.name != Catalog.spatialModels }.map { ($0.name, $0.assetType) }),
+            bytesByType: [Catalog.modelSet(Catalog.foundationModels)!.assetType: 500],
+            recorder: recorder)
+        let inventory = AssetServiceHelper.inventory(bridge: bridge)
+        assertTrue(inventory.available, "The helper reports the service available")
+        assertEqual(inventory.sets.count, Catalog.modelSets.count, "One entry per catalog set")
+        assertEqual(inventory.bytes(Catalog.foundationModels), 500, "It carries each set's bytes from the inventory")
+        assertEqual(inventory.info(Catalog.spatialModels)?.known, false, "A set the service doesn't know is not known")
+        assertEqual(inventory.info(Catalog.foundationModels)?.known, true, "...and a matching set is")
+        // c2: a set the service describes with another asset type is not known either.
+        var renamed = bridge; renamed.typesBySet[Catalog.codeModels] = "com.apple.MobileAsset.UAF.FM.CodeLMv2"
+        assertEqual(AssetServiceHelper.inventory(bridge: renamed).info(Catalog.codeModels)?.known, false,
+                    "A set whose asset type no longer matches is reported as not known")
+        // M3: a failed inventory call leaves the sizes unknown, never 0.
+        var noInventory = bridge; noInventory.bytesByType = nil
+        let failed = AssetServiceHelper.inventory(bridge: noInventory)
+        assertTrue(failed.available && failed.bytes(Catalog.foundationModels) == nil, "A failed inventory call reports sizes unknown, not 0")
+        assertEqual(MacTweaksIntelligence.modelBytes(failed), nil, "...so the models' total is unknown")
+
+        // The JSON it prints decodes to the same object.
+        var printed = ""
+        let code = AssetServiceHelper.run(["x", "--asset-service", "inventory"], bridge: bridge) { printed = $0 }
+        assertEqual(code, 0, "inventory exits 0")
+        assertEqual(try? JSONDecoder().decode(AssetInventory.self, from: Data(printed.utf8)), inventory, "The printed JSON decodes back to the inventory")
+        let unknownJSON = AssetServiceHelper.encode(failed)
+        assertEqual((try? JSONDecoder().decode(AssetInventory.self, from: Data(unknownJSON.utf8)))?.bytes(Catalog.foundationModels), nil,
+                    "...and an unknown size stays unknown through JSON")
+        assertEqual(AssetServiceHelper.run(["x", "--asset-service", "frobnicate"], bridge: bridge) { _ in }, 2, "An unknown verb exits 2")
+        assertEqual(AssetServiceHelper.run(["x", "--asset-service", "reset"], bridge: bridge) { _ in }, 2, "A reset without a set exits 2")
+
+        // Reset refusals, before any connection.
+        assertEqual(AssetServiceHelper.reset(set: "", bridge: bridge), .refused("refusing an empty asset set request"), "An empty set is refused")
+        if case .refused = AssetServiceHelper.reset(set: "com.example.nope", bridge: bridge) {} else { assertTrue(false, "An unknown set is refused") }
+        var mismatch = bridge; mismatch.typesBySet[Catalog.foundationModels] = "com.apple.MobileAsset.UAF.FM.Different"
+        if case .refused = AssetServiceHelper.reset(set: Catalog.foundationModels, bridge: mismatch) {} else { assertTrue(false, "A set whose type no longer matches is refused") }
+        var noService = bridge; noService.operationOK = false
+        if case .failed = AssetServiceHelper.reset(set: Catalog.foundationModels, bridge: noService) {} else { assertTrue(false, "No operation support fails, not refuses") }
+        // RemoveMacAI's `present`: nothing on disk, nothing sent.
+        recorder.calls = []
+        assertEqual(AssetServiceHelper.reset(set: Catalog.visualModels, bridge: bridge), .notPresent, "A set with no bytes and no files gets no request")
+        assertTrue(recorder.calls.isEmpty, "...the bridge is never asked")
+        var leftovers = bridge; leftovers.holds = [Catalog.visualModels]
+        assertEqual(AssetServiceHelper.reset(set: Catalog.visualModels, bridge: leftovers), .done, "A set whose folder holds files gets one")
+        assertEqual(AssetServiceHelper.reset(set: Catalog.foundationModels, bridge: bridge), .done, "...and so does one with bytes")
+        assertEqual(recorder.calls, [Catalog.visualModels, Catalog.foundationModels], "...each through the bridge")
+        let unavailable = AssetServiceHelper.inventory(bridge: FakeAssetBridge(isAvailable: false))
+        assertTrue(!unavailable.available && unavailable.sets.isEmpty, "An unavailable service reports available=false")
+        // UAF.m's request: one set, its list an NSArray copy.
+        let config = AssetServiceBridge.resetConfig(set: Catalog.foundationModels)
+        let list = config["AssetSets"] as AnyObject
+        assertTrue(config["Operation"] as? String == "ResetAssetSets" && list.isKind(of: NSArray.self)
+                   && (list as? NSArray)?.count == 1 && !NSStringFromClass(type(of: list)).contains("Swift"),
+                   "The reset config holds one set in a real NSArray")
+        print("✅ asset-service helper passed!\n")
+    }
+
+    // MARK: Client
+
+    static func testAssetServiceClient() {
+        print("Testing asset-service client...")
+        let dead = AssetServiceClient { _, _ in nil }
+        assertTrue(dead.inventory() == nil, "A child that didn't answer gives no inventory")
+        assertEqual(dead.reset("x"), .noAnswer, "...and a reset is no answer")
+        let garbage = AssetServiceClient { _, _ in (0, "not json at all") }
+        assertTrue(garbage.inventory() == nil, "Undecodable output gives no inventory")
+        assertEqual(garbage.reset("x"), .noAnswer, "...and no answer")
+        let failed = AssetServiceClient { _, _ in (1, AssetServiceHelper.encode(aiInventory())) }
+        assertTrue(failed.inventory() == nil, "A non-zero exit gives no inventory")
+        // e2: the same for a reset: good JSON from a child that exited 1 is no answer.
+        let crashedReset = AssetServiceClient { _, _ in (1, AssetServiceHelper.encodeReset(.done)) }
+        assertEqual(crashedReset.reset("x"), .noAnswer, "A reset that exits 1 counts as no answer, whatever it printed")
+        final class Captured: @unchecked Sendable { var value: [String] = [] }
+        let inventory = aiInventory(bytes: [Catalog.foundationModels: 42])
+        let captured = Captured()
+        let good = AssetServiceClient { args, _ in captured.value = args; return (0, "stray log line\n" + AssetServiceHelper.encode(inventory)) }
+        assertEqual(good.inventory(), inventory, "Good JSON decodes, past a stray log line")
+        assertEqual(captured.value, ["--asset-service", "inventory"], "The inventory verb is passed")
+        let locked = AssetServiceClient { args, _ in captured.value = args; return (0, AssetServiceHelper.encodeReset(.locked)) }
+        assertEqual(locked.reset("setX"), .locked, "A reset outcome decodes")
+        assertEqual(captured.value, ["--asset-service", "reset", "setX"], "The reset verb and set are passed")
+        assertEqual(AssetServiceClient { _, _ in (0, AssetServiceHelper.encodeReset(.notPresent)) }.reset("x"), .notPresent, "Not present decodes")
+
+        // The live runner: Clean Dev Mac's, stdin from /dev/null, stopped past the timeout.
+        let bin = NSTemporaryDirectory() + "lightspot-ai-helper-\(getpid())"
+        try? FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: bin) }
+        let quick = bin + "/quick", slow = bin + "/slow"
+        FileManager.default.createFile(atPath: quick, contents: Data("#!/bin/sh\ncat >/dev/null\necho '\(AssetServiceHelper.encode(inventory))'\n".utf8),
+                                       attributes: [.posixPermissions: 0o755])
+        FileManager.default.createFile(atPath: slow, contents: Data("#!/bin/sh\nsleep 5\n".utf8), attributes: [.posixPermissions: 0o755])
+        let live = AssetServiceClient { args, timeout in AssetServiceClient.run(executable: quick, arguments: args, timeout: timeout) }
+        assertEqual(live.inventory(), inventory, "The live runner reads a real child's JSON (its stdin is /dev/null, so cat ends)")
+        let started = Date()
+        assertTrue(AssetServiceClient.run(executable: slow, arguments: [], timeout: 1) == nil && Date().timeIntervalSince(started) < 4,
+                   "A child past its timeout is stopped and fails closed")
+        assertTrue(AssetServiceClient.run(executable: bin + "/missing", arguments: [], timeout: 1) == nil, "A missing helper fails closed")
+        print("✅ asset-service client passed!\n")
+    }
+
+    // MARK: Scan
+
+    static func testIntelligenceScan() {
+        print("Testing Apple Intelligence scan...")
+        let all = AIFixture.allIDs
+        let fx = AIFixture()
+        fx.inventory = spatialRetiredInventory
+        fx.bools["com.apple.assistant.support|Assistant Enabled"] = false
+        var rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        func row(_ id: String) -> MacTweaksRow? { rows.first { $0.id == id } }
+        assertTrue(row("spatial-photos") == nil, "Spatial Photos is hidden: the service no longer knows its set")
+        assertTrue(row("siri")?.countLabel == "Off", "Siri is listed, showing off")
+        assertEqual(row("siri")?.outcome, "Stays off, now locked off", "...and the plan says it stays off, now locked")
+        assertEqual(row("writing-tools")?.outcome, "Turned off", "An on feature is turned off")
+        assertTrue(rows.allSatisfy { !$0.readOnly && $0.isDefault }, "With no managing profile every feature is changeable and starts ticked")
+        assertTrue(!rows.contains { MacTweaksIntelligence.isActionRow($0.id) }, "No action row while Apple Intelligence is on")
+        assertEqual(fx.profileFileRemovals, 0, "Without the profile installed, its file is left alone")
+        let summary = MacTweaksIntelligence.summary(rows: rows, context: .init(inventory: fx.inventory))
+        assertTrue(summary.contains("aren't on this Mac") && summary.hasSuffix(MacTweaksIntelligence.everyAccount),
+                   "The summary says the models aren't here, and that it changes every account")
+
+        // The same code on macOS 27.2's report: Spatial Photos shown again, the models sized, and
+        // a turn-off that deletes them.
+        let downloadedRows = MacTweaksIntelligence.scan(fx.environment, inventory: downloadedInventory)
+        let downloadedContext = MacTweaksIntelligence.ScanContext(inventory: downloadedInventory)
+        assertEqual(downloadedRows.first { $0.id == "spatial-photos" }?.countLabel, "On", "With its set known again, Spatial Photos is shown, on")
+        assertTrue(MacTweaksIntelligence.summary(rows: downloadedRows, context: downloadedContext).contains("8.0 GB of models on this Mac"),
+                   "...the summary sizes the models")
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: downloadedRows, shown: downloadedRows, context: downloadedContext)
+                    .contains("Deletes 8.0 GB of models and stops macOS downloading them again."),
+                   "...and a turn-off says what it deletes")
+
+        // M4 in the scan: another profile's key makes the row read-only and unticked.
+        fx.forced["com.apple.applicationaccess|allowWritingTools"] = true
+        fx.bools["com.apple.applicationaccess|allowWritingTools"] = true
+        rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        assertTrue(row("writing-tools")?.readOnly == true && row("writing-tools")?.isDefault == false && row("writing-tools")?.countLabel == "Managed",
+                   "A feature another profile forces on is Managed, read-only and unticked")
+        fx.forced = [:]
+
+        // Lightspot's profile turns it off: the turn-on row, unticked; the features read-only; no
+        // finish row and no file left behind while the models are 0 bytes (B4, M2, m7).
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["spatial-photos"], features: all)
+        rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        assertEqual(rows.first?.id, MacTweaksIntelligence.turnOnID, "A turn-on row comes first")
+        assertTrue(rows.first?.isDefault == false && rows.first?.exclusive == true, "...unticked, and applied alone")
+        assertTrue(!rows.contains { $0.id == MacTweaksIntelligence.finishRemovalID }, "No finish row while the sets to remove hold 0 bytes")
+        assertTrue(rows.filter { !MacTweaksIntelligence.isActionRow($0.id) }.allSatisfy(\.readOnly), "...and the feature rows are read-only")
+        assertEqual(fx.profileFileRemovals, 1, "A scan that finds the profile installed removes its file")
+        // With models left in the sets it blocks, a finish row, ticked and applied alone.
+        fx.inventory = aiInventory(retired: [Catalog.spatialModels], bytes: [Catalog.foundationModels: 4_000_000_000])
+        rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        assertTrue(rows.first?.id == MacTweaksIntelligence.finishRemovalID && rows.first?.isDefault == true && rows.first?.exclusive == true,
+                   "With models still on disk, a finish row comes first, ticked")
+        assertEqual(MacTweaksTicks.defaults(rows), [MacTweaksIntelligence.finishRemovalID], "...and only it starts ticked")
+        // An unknown size counts as something to remove; a model only a kept feature needs doesn't.
+        fx.inventory = aiInventory(retired: [Catalog.spatialModels], unknownSizes: true)
+        assertTrue(MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory).contains { $0.id == MacTweaksIntelligence.finishRemovalID },
+                   "An unknown size offers the finish row")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["xcode-completion", "spatial-photos"], features: all)
+        fx.inventory = aiInventory(retired: [Catalog.spatialModels], bytes: [Catalog.codeModels: 2_000_000_000])
+        assertTrue(!MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory).contains { $0.id == MacTweaksIntelligence.finishRemovalID },
+                   "Models a kept feature needs offer no finish row")
+
+        // M5: a stale profile can be reinstalled: changeable rows, ticked from its marker, the new
+        // feature named.
+        fx.inventory = spatialRetiredInventory
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["mail"], features: all.subtracting(["safari-summaries"]))
+        rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        assertTrue(!rows.contains { $0.id == MacTweaksIntelligence.finishRemovalID }, "A stale profile offers no finish row")
+        assertTrue(rows.first { $0.id == MacTweaksIntelligence.turnOnID }?.isDefault == false, "...its turn-on row starts unticked")
+        assertTrue(rows.filter { !MacTweaksIntelligence.isActionRow($0.id) }.allSatisfy { !$0.readOnly }, "...and every feature is changeable")
+        assertTrue(row("safari-summaries")?.isDefault == true && row("safari-summaries")?.caveat == MacTweaksIntelligence.staleCaveat,
+                   "The new feature starts ticked, with a caveat")
+        assertTrue(row("mail")?.isDefault == false && row("siri")?.isDefault == true, "...the marker's kept feature unticked, the others ticked")
+        assertTrue(MacTweaksIntelligence.summary(rows: rows, context: .init(inventory: fx.inventory, installed: fx.installed)).contains("predates Safari summaries"),
+                   "The summary names the new feature")
+
+        // RemoveMacAI manages it: read-only with its caveat; Lightspot's own profile can still go.
+        fx.installed = MacTweaksProfile.Installed()
+        fx.removeMacAI = true
+        rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        assertTrue(!rows.contains { MacTweaksIntelligence.isActionRow($0.id) }, "No action row under RemoveMacAI alone")
+        assertTrue(rows.allSatisfy { $0.readOnly && $0.caveat == MacTweaksIntelligence.coexistCaveat }, "Every row is read-only and names RemoveMacAI")
+        assertTrue(!MacTweaksTicks.hasTickable(rows), "...so nothing can be ticked, and the tick buttons go")
+        assertTrue(MacTweaksIntelligence.summary(rows: rows, context: .init(inventory: fx.inventory, removeMacAI: true)).contains("RemoveMacAI"),
+                   "The summary says RemoveMacAI manages it")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: all)
+        rows = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        assertTrue(rows.contains { $0.id == MacTweaksIntelligence.turnOnID } && MacTweaksTicks.hasTickable(rows),
+                   "With Lightspot's profile installed too, its turn-on row is still offered")
+        print("✅ Apple Intelligence scan passed!\n")
+    }
+
+    // MARK: Plan
+
+    static func testIntelligencePlan() {
+        print("Testing Apple Intelligence plan...")
+        let all = AIFixture.allIDs
+        let fx = AIFixture()
+        fx.inventory = spatialRetiredInventory
+        let shown = MacTweaksIntelligence.scan(fx.environment, inventory: fx.inventory)
+        let ticked = shown.filter { !$0.readOnly && !MacTweaksIntelligence.isActionRow($0.id) }
+        let context = MacTweaksIntelligence.ScanContext(inventory: fx.inventory)
+
+        // B1: the plan is built from memory; it never reads the inventory.
+        fx.inventoryCalls = 0
+        let notes = MacTweaksIntelligence.planNotes(ticked: ticked, shown: shown, context: context)
+        let engine = MacTweaksIntelligence.Engine(environment: fx.environment, shown: shown, scanned: context)
+        _ = engine.planNotes(for: ticked)
+        _ = engine.planNotes(for: ticked)
+        assertEqual(fx.inventoryCalls, 0, "Building the plan, twice, never reads the inventory")
+
+        // B4 and M6: 26.7.2's report, every set at 0 bytes. Exactly what apply does: no reset, the
+        // download block.
+        assertEqual(notes, ["Turns these features off for every account on this Mac.",
+                            "Apple Intelligence's models aren't on this Mac. The profile stops macOS downloading them.",
+                            "System Settings asks you to approve one profile."], "This Mac's plan says what apply does")
+        assertTrue(!notes.joined().lowercased().contains("folder"), "...and mentions no folder files")
+        // Kept features are named; models only kept features need aren't "not on this Mac".
+        let keepXcode = ticked.filter { $0.id != "xcode-completion" }
+        let codeOnly = MacTweaksIntelligence.ScanContext(inventory: aiInventory(retired: [Catalog.spatialModels], bytes: [Catalog.codeModels: 2_000_000_000]))
+        let keptNotes = MacTweaksIntelligence.planNotes(ticked: keepXcode, shown: shown, context: codeOnly)
+        assertTrue(keptNotes.contains("Kept on: Xcode predictive code completion."), "The plan names the kept features")
+        assertTrue(keptNotes.contains { $0.hasPrefix("No models to remove: the ones on this Mac belong to features you kept.") },
+                   "...and says the models on disk belong to them")
+        // A size to delete, and an unknown one (m12: the plan counts what apply removes).
+        let big = MacTweaksIntelligence.ScanContext(inventory: aiInventory(retired: [Catalog.spatialModels], bytes: [Catalog.foundationModels: 4_000_000_000]))
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: ticked, shown: shown, context: big).contains("Deletes 4.0 GB of models and stops macOS downloading them again."),
+                   "The plan gives the size it deletes")
+        let unknown = MacTweaksIntelligence.ScanContext(inventory: aiInventory(retired: [Catalog.spatialModels], unknownSizes: true))
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: ticked, shown: shown, context: unknown).contains { $0.hasPrefix("Asks macOS to remove the models") },
+                   "An unknown size is a removal it asks for")
+        // A set to remove that the service doesn't know stays, and the plan says so.
+        let retiredCode = MacTweaksIntelligence.ScanContext(inventory: aiInventory(retired: [Catalog.spatialModels, Catalog.codeModels]))
+        let retiredShown = MacTweaksIntelligence.scan(fx.environment, inventory: retiredCode.inventory)
+        let retiredTicked = retiredShown.filter { !$0.readOnly && !MacTweaksIntelligence.isActionRow($0.id) } + [MacTweaksRow(id: "xcode-completion", symbol: "x", title: "x", detail: "")]
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: retiredTicked, shown: retiredShown, context: retiredCode)
+                   .contains { $0.contains("Xcode code completion models stays: not found on this version of macOS") },
+                   "A set the service doesn't know is named as staying")
+        // The profile already installed, the turn-on and the finish plans.
+        let installed = MacTweaksIntelligence.ScanContext(inventory: fx.inventory,
+            installed: MacTweaksProfile.Installed(on: true, ai: true, kept: ["spatial-photos"], features: all))
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: ticked, shown: shown, context: installed).last == "The profile is already installed.",
+                   "When the profile already matches, the plan says no approval is needed")
+        let turnOn = MacTweaksRow(id: MacTweaksIntelligence.turnOnID, symbol: "x", title: "x", detail: "")
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: [turnOn], shown: shown, context: installed)
+                   .contains("Lightspot asks for your administrator password to remove its profile."),
+                   "Turning it back on says the administrator password removes the profile")
+        let finish = MacTweaksRow(id: MacTweaksIntelligence.finishRemovalID, symbol: "x", title: "x", detail: "")
+        let finishContext = MacTweaksIntelligence.ScanContext(inventory: big.inventory, installed: installed.installed)
+        assertEqual(MacTweaksIntelligence.planNotes(ticked: [finish], shown: shown, context: finishContext),
+                    ["Apple Intelligence stays off.", "Deletes 4.0 GB of models and stops macOS downloading them again."], "The finish plan")
+        assertEqual(MacTweaksIntelligence.applyTitle(ticked: [finish]), MacTweaksIntelligence.finishRemovalTitle, "The finish row's button")
+        assertEqual(MacTweaksIntelligence.applyTitle(ticked: ticked), "Turn off \(ticked.count) features", "The turn-off button")
+
+        // m8: an action row is applied alone; ticking anything else unticks it.
+        let rows = [finish.with(exclusive: true, isDefault: true), turnOn.with(exclusive: true, isDefault: false),
+                    MacTweaksRow(id: "a", symbol: "x", title: "a", detail: ""), MacTweaksRow(id: "b", symbol: "x", title: "b", detail: "")]
+        assertEqual(MacTweaksTicks.defaults(rows), [MacTweaksIntelligence.finishRemovalID], "Defaults tick the exclusive row alone")
+        let both = MacTweaksTicks.toggled([MacTweaksIntelligence.finishRemovalID], MacTweaksIntelligence.turnOnID, in: rows)
+        assertEqual(both, [MacTweaksIntelligence.turnOnID], "Ticking turn-on unticks the finish row")
+        assertEqual(MacTweaksTicks.toggled(both, "a", in: rows), ["a"], "Ticking a feature unticks the action row")
+        assertEqual(MacTweaksTicks.toggled(["a"], "b", in: rows), ["a", "b"], "Features tick together")
+        assertEqual(MacTweaksTicks.toggled(["a", "b"], "a", in: rows), ["b"], "...and untick one by one")
+        let locked = MacTweaksRow(id: "c", symbol: "x", title: "c", detail: "").with(readOnly: true)
+        assertEqual(MacTweaksTicks.toggled(["b"], "c", in: rows + [locked]), ["b"], "A read-only row can't be ticked")
+        print("✅ Apple Intelligence plan passed!\n")
+    }
+
+    // MARK: Apply
+
+    static func testIntelligenceApply() {
+        print("Testing Apple Intelligence apply flow...")
+        let allIDs = AIFixture.allIDs
+        let ticked = Catalog.availableFeatures.map { MacTweaksRow(id: $0.id, symbol: "x", title: $0.title, detail: "") }
+
+        // A: the profile already matches, so the models go straight away; deleting shows the
+        // Storage note.
+        let a = AIFixture()
+        a.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        a.inventory = aiInventory(bytes: [Catalog.foundationModels: 100_000_000])
+        let aResult = MacTweaksIntelligence.apply(ticked, env: a.environment)
+        assertTrue(a.presented.isEmpty, "An already-matching profile isn't presented again")
+        assertEqual(a.resetCalls, [Catalog.foundationModels, Catalog.visualModels, Catalog.spatialModels, Catalog.cleanUpModels, Catalog.codeModels]
+                        .filter { Catalog.setsToRemove(keeping: []).contains($0) },
+                    "Within a needed removal every known set to remove is asked about (the helper skips empty ones)")
+        assertTrue(aResult.receipt.headline == "Apple Intelligence is off." && aResult.receipt.lines.contains { $0.hasPrefix("Deleted 100 MB") }
+                   && aResult.receipt.notes.contains(MacTweaksIntelligence.storageNote) && aResult.receipt.isSuccess,
+                   "The receipt reports the deletion and the Storage note, with the green check")
+
+        // B, and the order of events: present, approved, then the resets (mutant a).
+        let b = AIFixture()
+        b.inventory = aiInventory(bytes: [Catalog.foundationModels: 50_000_000])
+        b.resetQueues = Dictionary(uniqueKeysWithValues: Catalog.modelSets.filter { $0.name != Catalog.foundationModels }.map { ($0.name, [AssetResetOutcome.notPresent]) })
+        b.onSleep = { count in if count == 2 { b.approve(b.presented[0]) } }
+        let bRows = featureRows(b)
+        let bResult = MacTweaksIntelligence.apply(bRows, shown: bRows, env: b.environment)
+        let firstReset = b.events.firstIndex { $0.hasPrefix("reset:") }
+        assertTrue(b.events.first == "present" && b.events.firstIndex(of: "approved").map { approved in firstReset.map { $0 > approved } ?? false } == true,
+                   "The profile is presented, approved, and only then are models reset (\(b.events))")
+        assertTrue(b.sleepLog.allSatisfy { $0 == 1 } && b.sleepCount == 2, "The approval wait polls every second")
+        let removedAt = b.events.firstIndex(of: "file-removed")
+        assertTrue(removedAt.map { at in (b.events.firstIndex(of: "approved") ?? .max) < at && at < (firstReset ?? .max) } == true,
+                   "Once installed, the profile file is removed, before the models (\(b.events))")
+        assertTrue(bResult.receipt.headline == "Apple Intelligence is off.", "It finishes once the profile is installed")
+        assertEqual(b.waitStarts, 1, "The wait tells the provider it waits")
+
+        // C: the wait is cancelled; nothing is reset, and the receipt says it waits.
+        let c = AIFixture()
+        c.inventory = aiInventory(bytes: [Catalog.foundationModels: 50_000_000])
+        c.onSleep = { count in if count == 2 { c.cancelled = true } }
+        let cResult = MacTweaksIntelligence.apply(featureRows(c), env: c.environment)
+        assertTrue(c.resetCalls.isEmpty && cResult.receipt.headline == "Waiting for the profile." && !cResult.receipt.isSuccess,
+                   "A cancelled approval removes no models, and its receipt is no success")
+        // D: resume once installed, through the finish row.
+        c.cancelled = false; c.onSleep = nil
+        c.approve(.init(ai: [], tweaks: []))
+        let finishRow = MacTweaksIntelligence.scan(c.environment, inventory: c.inventory).first { $0.id == MacTweaksIntelligence.finishRemovalID }
+        assertTrue(finishRow?.isDefault == true, "With the profile installed and models left, a finish row is offered")
+        let dResult = MacTweaksIntelligence.apply([finishRow!], env: c.environment)
+        assertTrue(c.resetCalls.contains(Catalog.foundationModels) && dResult.receipt.headline == "Models removed.",
+                   "Applying it finishes the removal")
+
+        // B3: the finish row after the profile went away resets nothing.
+        let f3 = AIFixture()
+        f3.inventory = aiInventory(bytes: [Catalog.foundationModels: 4_000_000_000, Catalog.codeModels: 2_000_000_000])
+        f3.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["xcode-completion"], features: allIDs)
+        let staleFinish = MacTweaksIntelligence.scan(f3.environment, inventory: f3.inventory).first { $0.id == MacTweaksIntelligence.finishRemovalID }!
+        f3.installed = MacTweaksProfile.Installed()
+        let f3Result = MacTweaksIntelligence.apply([staleFinish], env: f3.environment)
+        assertTrue(f3.resetCalls.isEmpty && f3Result.receipt.headline == "Nothing changed." && !f3Result.receipt.isSuccess,
+                   "Finishing with the marker gone resets nothing")
+        f3.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs.subtracting(["siri"]))
+        _ = MacTweaksIntelligence.apply([staleFinish], env: f3.environment)
+        assertTrue(f3.resetCalls.isEmpty, "...and so is finishing under a stale profile")
+        // m11: every reset locked says so.
+        f3.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["xcode-completion"], features: allIDs)
+        f3.resetQueues = Dictionary(uniqueKeysWithValues: Catalog.modelSets.map { ($0.name, [AssetResetOutcome.locked, .locked, .locked]) })
+        let lockedResult = MacTweaksIntelligence.apply([staleFinish], env: f3.environment)
+        assertTrue(lockedResult.receipt.headline == "macOS is still using the models." && lockedResult.receipt.notes.first == MacTweaksIntelligence.lockedReason,
+                   "Every reset locked: the headline and the restart note say so")
+
+        // B4: 26.7.2's report, every set at 0 bytes. No reset, accurate copy, no finish row afterwards.
+        let mac = AIFixture()
+        mac.inventory = spatialRetiredInventory
+        mac.onSleep = { count in if count == 1 { mac.approve(mac.presented[0]) } }
+        let macRows = featureRows(mac)
+        let macResult = MacTweaksIntelligence.apply(macRows, shown: macRows, env: mac.environment)
+        assertTrue(mac.resetCalls.isEmpty, "With every set at 0 bytes, turning off sends no reset")
+        assertEqual(macResult.receipt.notes, ["Apple Intelligence's models aren't on this Mac."], "...the receipt says the models aren't here, no Storage note")
+        assertTrue(macResult.receipt.lines.isEmpty && macResult.receipt.problems.isEmpty && macResult.receipt.isSuccess, "...and claims nothing deleted")
+        assertTrue(!(macResult.context.map { MacTweaksIntelligence.scan(mac.environment, context: $0) } ?? []).contains { $0.id == MacTweaksIntelligence.finishRemovalID },
+                   "...and the next scan offers no finish row")
+        // B2: the hidden Spatial Photos is kept, never forced off or blocked.
+        let presentedMac = mac.presented[0]
+        assertTrue(presentedMac.ai?.contains("spatial-photos") == true, "Hidden Spatial Photos is kept")
+        let macDomains = profileDomains(presentedMac)
+        assertTrue(macDomains["com.apple.spatialphotosrelive"] == nil
+                   && macDomains[MacTweaksProfile.downloadDomain]?[MacTweaksProfile.downloadKey(Catalog.modelSet(Catalog.spatialModels)!)] == nil,
+                   "...so the profile neither forces it off nor blocks its download")
+        // B2: a feature kept at scan time stays kept when its set reads unknown at apply time.
+        let kept = AIFixture()
+        kept.inventory = spatialRetiredInventory
+        let keptRows = featureRows(kept).filter { $0.id != "xcode-completion" }
+        kept.inventory = aiInventory(retired: [Catalog.spatialModels, Catalog.codeModels])
+        kept.onSleep = { count in if count == 1 { kept.approve(kept.presented[0]) } }
+        _ = MacTweaksIntelligence.apply(keptRows, env: kept.environment)
+        assertTrue(kept.presented[0].ai?.contains("xcode-completion") == true
+                   && profileDomains(kept.presented[0])[MacTweaksProfile.downloadDomain]?[MacTweaksProfile.downloadKey(Catalog.modelSet(Catalog.codeModels)!)] == nil,
+                   "A kept feature whose set reads unknown at apply stays kept, its download not blocked")
+
+        // E: a locked set is asked again after 5 s and 15 s, then goes.
+        let e = AIFixture()
+        e.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        e.inventory = aiInventory(bytes: [Catalog.foundationModels: 100])
+        e.resetQueues[Catalog.foundationModels] = [.locked, .locked, .done]
+        _ = MacTweaksIntelligence.apply(ticked, env: e.environment)
+        assertEqual(e.resetCalls.filter { $0 == Catalog.foundationModels }.count, 3, "A locked set is retried until it goes")
+        assertTrue(e.sleepLog.contains(5) && e.sleepLog.contains(15), "...waiting 5 s then 15 s")
+
+        // F: the models clear only after macOS catches up; verification polls every 3 s.
+        let f = AIFixture()
+        f.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        f.inventory = aiInventory(bytes: [Catalog.foundationModels: 200])
+        f.autoZeroOnReset = false
+        f.onSleep = { count in if count == 2 { f.zero(Catalog.foundationModels) } }
+        let fResult = MacTweaksIntelligence.apply(ticked, env: f.environment)
+        assertTrue(f.sleepLog == [3, 3], "Verification polls the inventory every 3 s")
+        assertTrue(fResult.receipt.lines.contains { $0.contains("Deleted") }, "...and confirms the deletion once it clears")
+
+        // m: a set that never clears stops after ten 3 s polls (30 s).
+        let m = AIFixture()
+        m.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        m.inventory = aiInventory(bytes: [Catalog.foundationModels: 200])
+        m.autoZeroOnReset = false
+        let mResult = MacTweaksIntelligence.apply(ticked, env: m.environment)
+        assertEqual(m.sleepLog, Array(repeating: 3, count: 10), "A set that never clears is polled ten times, every 3 s")
+        assertTrue(mResult.receipt.headline.hasSuffix("Model removal is incomplete.") && !mResult.receipt.isSuccess,
+                   "...and the receipt says the removal is incomplete")
+
+        // g: a set the service doesn't know is never reset, even with bytes.
+        let g = AIFixture()
+        g.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        g.inventory = AssetInventory(available: true, sets: aiInventory(bytes: [Catalog.foundationModels: 100]).sets.map {
+            $0.name == Catalog.codeModels ? AssetSetInfo(name: $0.name, known: false, assetType: nil, bytes: 2_000_000_000) : $0
+        })
+        let gResult = MacTweaksIntelligence.apply(ticked, env: g.environment)
+        assertTrue(!g.resetCalls.contains(Catalog.codeModels), "An unknown set with bytes is never reset")
+        assertTrue(gResult.receipt.problems.contains { $0.contains("Xcode code completion models stays") }, "...and the receipt says it stays")
+
+        // M3: a failed check after the reset never reads as deleted.
+        let m3 = AIFixture()
+        m3.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        m3.inventory = aiInventory(bytes: [Catalog.foundationModels: 4_000_000_000])
+        m3.autoZeroOnReset = false
+        m3.afterReset = { _ in m3.inventory = aiInventory(unknownSizes: true) }
+        let m3Result = MacTweaksIntelligence.apply(ticked, env: m3.environment)
+        assertTrue(!m3Result.receipt.lines.contains { $0.contains("Deleted") }
+                   && m3Result.receipt.problems.contains("Lightspot couldn't confirm the models were removed."),
+                   "A failed check after the reset claims nothing deleted")
+        // m6: the rescan's own availability reaches the provider.
+        let m6 = AIFixture()
+        m6.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        m6.inventory = aiInventory(bytes: [Catalog.foundationModels: 4_000_000_000])
+        m6.afterReset = { _ in m6.inventory = aiInventory(available: false) }
+        let m6Result = MacTweaksIntelligence.apply(ticked, env: m6.environment)
+        assertTrue(m6Result.context?.inventory?.available == false && MacTweaksIntelligence.modelBytes(m6Result.context?.inventory) == nil,
+                   "After an apply the model total is unknown when the rescan couldn't say")
+
+        // G: RemoveMacAI coexistence changes nothing.
+        let gx = AIFixture()
+        gx.removeMacAI = true
+        gx.inventory = aiInventory(bytes: [Catalog.foundationModels: 100])
+        let gxResult = MacTweaksIntelligence.apply(ticked, env: gx.environment)
+        assertTrue(gx.presented.isEmpty && gx.resetCalls.isEmpty && gxResult.receipt.headline == "Nothing changed." && !gxResult.receipt.isSuccess,
+                   "Under RemoveMacAI, Lightspot changes nothing")
+        // m11: a profile that can't be written is no success.
+        let w = AIFixture()
+        w.inventory = spatialRetiredInventory
+        w.presentError = CocoaError(.fileWriteNoPermission)
+        let wResult = MacTweaksIntelligence.apply(featureRows(w), env: w.environment)
+        assertTrue(wResult.receipt.headline == "Couldn't start." && !wResult.receipt.isSuccess, "A profile that can't be written is no success")
+
+        // H: turn back on through the shared batch form, judged by the marker (m4).
+        let turnOnRow = MacTweaksRow(id: MacTweaksIntelligence.turnOnID, symbol: "x", title: "on", detail: "")
+        let h = AIFixture()
+        h.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        h.removeMacAI = true
+        let hResult = MacTweaksIntelligence.apply([turnOnRow], env: h.environment)
+        let script = h.adminScripts.first ?? ""
+        assertTrue(script.hasPrefix("exec </dev/null; ( '/usr/bin/profiles' remove -identifier 'com.lightspot.app.tweaks' -forced ) 2>&1; printf")
+                   && script.hasSuffix("exit 0"), "Turn-on removes the profile in the batch form, with a report per command")
+        assertTrue(hResult.receipt.headline == "Apple Intelligence is back on." && hResult.receipt.isSuccess && h.deviceManagementOpened == 0,
+                   "...back on once the marker is gone, RemoveMacAI's profile installed or not")
+        // m3: a cancelled or refused prompt stops there.
+        for answer in [QuickActionsProvider.PrivilegedRun.cancelled, .refused("no")] {
+            let x = AIFixture()
+            x.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+            x.adminAnswer = answer
+            let xResult = MacTweaksIntelligence.apply([turnOnRow], env: x.environment)
+            assertTrue(xResult.receipt.headline == "The profile is still installed." && x.deviceManagementOpened == 0 && x.waitStarts == 0 && x.sleepCount == 0,
+                       "A \(answer) prompt stops there: no System Settings, no wait")
+        }
+        // The batch ran and the profile stayed: Device Management, a wait, the Remove instruction.
+        let y = AIFixture()
+        y.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: allIDs)
+        y.adminRemovesProfile = false
+        y.onSleep = { count in if count == 2 { y.installed = MacTweaksProfile.Installed() } }
+        final class Lines: @unchecked Sendable { var all: [String] = [] }
+        let lines = Lines()
+        let yResult = MacTweaksIntelligence.apply([turnOnRow], env: y.environment) { lines.all.append($0) }
+        assertTrue(y.deviceManagementOpened == 1 && lines.all.contains(MacTweaksIntelligence.removalInstruction) && yResult.receipt.headline == "Apple Intelligence is back on.",
+                   "A profile that stays is removed in System Settings: select it, then click Remove")
+        print("✅ Apple Intelligence apply flow passed!\n")
+    }
+
+    // MARK: Waits (the surviving mutants f and f2)
+
+    static func testIntelligenceWaits() {
+        print("Testing Apple Intelligence waits...")
+        // f: a profile that never installs and is never cancelled ends after 600 one-second sleeps.
+        let f = AIFixture()
+        f.inventory = spatialRetiredInventory
+        let fResult = MacTweaksIntelligence.apply(featureRows(f), env: f.environment)
+        assertEqual(f.sleepCount, 600, "The approval wait stops after 600 sleeps (10 minutes)")
+        // f2: every one of them is a second.
+        assertTrue(f.sleepLog.allSatisfy { $0 == 1 }, "...each of 1 s")
+        assertEqual(fResult.receipt.headline, "Waiting for the profile.", "...and ends waiting")
+        assertTrue(f.resetCalls.isEmpty, "...with nothing reset")
+        // The removal wait has the same cap.
+        let r = AIFixture()
+        r.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: [], features: AIFixture.allIDs)
+        assertTrue(!MacTweaksIntelligence.waitForRemoval(env: r.environment) && r.sleepCount == 600 && r.sleepLog.allSatisfy { $0 == 1 },
+                   "A removal wait stops after 600 one-second sleeps too")
+        print("✅ Apple Intelligence waits passed!\n")
+    }
+
+    // MARK: Provider: the section's own wait, the search row, the overlay copy
+
+    static func testIntelligenceProvider() {
+        print("Testing Apple Intelligence in the provider...")
+        // M1 and m1, against the real provider: the wait is the section's own, armed only while
+        // it waits. A frozen clock and real sleeps keep the wait going until Esc.
+        let fx = AIFixture()
+        fx.inventory = spatialRetiredInventory
+        var env = fx.environment
+        env.intelligence.sleep = { _ in _ = usleep(2_000) }
+        let provider = MacTweaksProvider(environment: env)
+        func waitFor(_ what: String, _ done: (MacTweaksProvider.SectionState) -> Bool) -> MacTweaksProvider.SectionState {
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline {
+                let state = provider.snapshot[.appleIntelligence]
+                if done(state) { return state }
+                usleep(5_000)
+            }
+            print("❌ FAIL: never got to \(what); at \(provider.snapshot[.appleIntelligence].phase)")
+            exit(1)
+        }
+        provider.open(.appleIntelligence)
+        let ready = waitFor("the scan") { $0.phase == .ready }
+        assertTrue(provider.snapshot.appleIntelligenceScan?.inventory == spatialRetiredInventory, "The scan's context is kept for the plan")
+        fx.inventoryCalls = 0
+        let featureIDs = Set(ready.rows.filter { !$0.readOnly && !MacTweaksIntelligence.isActionRow($0.id) }.map(\.id))
+        _ = provider.planNotes(.appleIntelligence, rows: ready.rows.filter { featureIDs.contains($0.id) })
+        assertEqual(fx.inventoryCalls, 0, "The provider builds the plan without reading the inventory (B1)")
+        provider.cancelWait(.appleIntelligence)
+        provider.apply(.appleIntelligence, ids: featureIDs)
+        let waiting = waitFor("the approval wait") { $0.waiting }
+        assertEqual(MacTweaksProvider.escapeLabel(waiting), "Stop waiting", "While it waits, Esc stops waiting (M1)")
+        assertEqual(MacTweaksProvider.escapeLabel(ready), "Close", "...and closes otherwise")
+        provider.cancelWait(.freeUpSpace)
+        usleep(150_000)
+        assertTrue(provider.snapshot[.appleIntelligence].waiting, "An Esc for another section, or one before the wait, doesn't stop it")
+        provider.cancelWait(.appleIntelligence)
+        let done = waitFor("the receipt") { $0.phase == .finished }
+        assertTrue(done.receipt?.headline == "Waiting for the profile." && !done.waiting && fx.resetCalls.isEmpty,
+                   "Esc on the section stops its wait: the receipt says it waits, nothing was reset")
+
+        // The copy the overlay shows for the wait and the close button (M1, m2).
+        assertTrue(MacTweaksProvider.waitNote.contains("Esc stops waiting") && MacTweaksProvider.waitNote.contains("every second for 10 minutes"),
+                   "The wait says what Esc does and how long Lightspot checks")
+        assertTrue(MacTweaksProvider.closeHelp.contains("keeps going") && !MacTweaksProvider.closeHelp.contains("(Esc)"),
+                   "The close button says the wait goes on, and isn't Esc")
+        // m5: one Device Management link.
+        assertEqual(SettingsProvider.shared.items.first { $0.name == "Device Management" }?.deepLink, SettingsProvider.deviceManagementLink,
+                    "Settings' Device Management row uses the shared link")
+        assertEqual(MacTweaksIntelligence.deviceManagementURL.absoluteString, SettingsProvider.deviceManagementLink, "...and so does the approval")
+        // RemoveMacAI's order: the file, a second, then the pane.
+        let home = NSTemporaryDirectory() + "lightspot-ai-present-\(getpid())"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        final class Steps: @unchecked Sendable { var all: [String] = [] }
+        let steps = Steps()
+        do {
+            try MacTweaksIntelligence.presentProfile(.init(ai: [], tweaks: []), home: home,
+                open: { steps.all.append("open " + ($0.isFileURL ? $0.lastPathComponent : $0.absoluteString)) },
+                pause: { steps.all.append("pause \($0)") })
+        } catch { assertTrue(false, "the profile is written: \(error)") }
+        assertEqual(steps.all, ["open LightspotMacTweaks.mobileconfig", "pause 1.0", "open " + SettingsProvider.deviceManagementLink],
+                    "The profile file opens, then a second later Device Management")
+        let written = FileManager.default.contents(atPath: MacTweaksProfile.fileURL(home: home).path)
+        assertTrue(written.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) } != nil,
+                   "...the file in Application Support is a valid profile")
+
+        // The search phrases open the section; System Settings keeps "apple intelligence".
+        if MacTweaksSection.built.contains(.appleIntelligence) {
+            for phrase in ["turn off apple intelligence", "remove apple intelligence", "delete apple intelligence models"] {
+                let top = SearchEngine.shared.searchImmediate(SearchQuery(phrase))[.topHit]?.first
+                assertEqual(top?.id, "top-" + MacTweaksProvider.intelligenceResultID, "'\(phrase)' opens Mac Tweaks' Apple Intelligence")
+                if case .runQuickAction(let script, _) = top?.action {
+                    assertEqual(MacTweaksProvider.section(forScript: script), .appleIntelligence, "...on its section")
+                }
+            }
+            let bare = SearchEngine.shared.searchImmediate(SearchQuery("apple intelligence"))
+            assertTrue(bare[.topHit]?.first?.promotedFrom == .systemSettings, "'apple intelligence' leaves System Settings' own row first")
+            assertTrue((bare[.quickActions] ?? []).contains { $0.id == MacTweaksProvider.intelligenceResultID }, "...with Mac Tweaks' row below it")
+        }
+        assertTrue(MacTweaksProvider.isOpenScript(MacTweaksProvider.openScript) && MacTweaksProvider.section(forScript: MacTweaksProvider.openScript) == nil,
+                   "The Mac Tweaks row opens the overlay as it was left")
+        print("✅ Apple Intelligence in the provider passed!\n")
+    }
+}
+
+extension MacTweaksRow {
+    /// A copy with the flags the tests set.
+    func with(exclusive: Bool? = nil, isDefault: Bool? = nil, readOnly: Bool? = nil) -> MacTweaksRow {
+        var row = self
+        if let exclusive { row.exclusive = exclusive }
+        if let isDefault { row.isDefault = isDefault }
+        if let readOnly { row.readOnly = readOnly }
+        return row
     }
 }

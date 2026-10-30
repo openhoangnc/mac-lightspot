@@ -39,8 +39,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 49 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows), the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's), and Mac Tweaks' Free Up Space against a fake system root and home with fake `xcode-select`, `simctl` and `tmutil` scripts: the gate (each refusal, the never-touched folders), every row of the table, Clean Dev Mac's caches left out, the clean (the Trash, protected items, the administrator batch with batch-unique names, simctl, tmutil, a cancelled or refused prompt, a step that fails, an item gone or its folder swapped for a symlink during the prompt or after the guard's checks, verification, the capped receipts log), the batch exact for hostile file names under `/bin/sh -c` and `do shell script`, the Touch ID verdict on synthetic pty transcripts, no xcrun and no simulator row with the Command Line Tools alone, and the sections, the search row and the scan → apply state machine.
-- `deep_verify.swift`: 12 sections of live system checks (153 on a Mac without VS Code or Xcode; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git, Mac Tweaks' two no-simctl checks when Xcode's simctl is there, and its folder checks for folders the Mac lacks) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac, and Mac Tweaks' Free Up Space scanning this Mac: every offered path through the gate again, macOS's and Clean Dev Mac's caches left out, the programs it runs, no xcrun, no simulator row without Xcode's simctl, its SF Symbols (measures only; it never deletes, moves or asks for a password).
+- `test_engine.swift`: 59 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows), the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's), and Mac Tweaks' Free Up Space against a fake system root and home with fake `xcode-select`, `simctl` and `tmutil` scripts: the gate (each refusal, the never-touched folders), every row of the table, Clean Dev Mac's caches left out, the clean (the Trash, protected items, the administrator batch with batch-unique names, simctl, tmutil, a cancelled or refused prompt, a step that fails, an item gone or its folder swapped for a symlink during the prompt or after the guard's checks, verification, the capped receipts log), the batch exact for hostile file names under `/bin/sh -c` and `do shell script`, the Touch ID verdict on synthetic pty transcripts, no xcrun and no simulator row with the Command Line Tools alone, and the sections, the search row and the scan → apply state machine, and Mac Tweaks' Apple Intelligence (the feature and model-set catalog, and no section without a feature; feature state: Siri off from its deciding `Assistant Enabled` alone and never from a secondary preference, Managed for any key another profile forces, on or off or partly, Mail's unreadable domain judged by its forced value only; the profile as data — structure, stable UUIDs, kept keys absent (Siri's preferences too), a hidden Spatial Photos never forced or blocked, download overrides only for removed sets, tweaks preserved, the marker read back, stale detection, the removal as one step of the administrator batch with its own status; the `--asset-service` helper's inventory JSON, unknown sizes when the inventory call fails, a mismatched type not known, its reset refusals for an unknown, empty or mismatched set, nothing sent for a set with no bytes and no files, the request in an NSArray; the client failing closed on a crash, timeout, non-zero exit or undecodable output, and its live runner against a real child; the scan hiding Spatial Photos while its set is retired (26.7.2's report) and showing it, with the models sized and their deletion planned, once known again (27.2's), its turn-on, finish, stale and RemoveMacAI-coexistence modes, and removing the profile file once installed; the plan built from memory without reading the inventory, saying exactly what apply does; and the apply flow against a fake clock, bridge and profile: the order present → approved → reset, cancel and resume, a kept feature kept whatever apply reads, no reset when the sets total 0 bytes, the finish row sending nothing without the marker, the 5 s/15 s lock retries, the 3 s polling stopping after ten, the 600 one-second approval polls, an unknown set never reset, a failed check never read as deleted, coexistence changing nothing, turn-on through the batch and stopping at a cancelled prompt; and, against the real provider, each section's own wait, stopped only by its own Esc, the action rows applied alone, and the search phrases with System Settings' row first).
+- `deep_verify.swift`: 13 sections of live system checks (164 on a Mac without VS Code or Xcode, 163 on macOS 27.2; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git, Mac Tweaks' two no-simctl checks when Xcode's simctl is there, its folder checks for folders the Mac lacks, and a System Settings search-term check whose pane no longer ships that term: 27.2's Wi-Fi pane ships no `.searchTerms` file, so "known networks" is skipped) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac, and Mac Tweaks' Free Up Space scanning this Mac: every offered path through the gate again, macOS's and Clean Dev Mac's caches left out, the programs it runs, no xcrun, no simulator row without Xcode's simctl, its SF Symbols (measures only; it never deletes, moves or asks for a password), and Mac Tweaks' Apple Intelligence read through the in-process asset-service bridge: the features with the states this Mac reports (Spatial Photos shown exactly while the service knows its set, Siri from `Assistant Enabled` unless a profile forces its keys), the summary and the plan, three checks on the models whatever their state (at 0 bytes no reset, no folder mention and no finish row; with bytes on disk a removal, the plan's size and a finish row; with the service silent no reset), the turn-on row exactly while Lightspot's profile turns Apple Intelligence off, nothing reset or presented, the profile well-formed (`plutil -lint`) with its marker read back, and its SF Symbols.
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
@@ -74,13 +74,14 @@ mac-lightspot/
 │   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (49 test blocks)
-│   └── deep_verify.swift         # Live-system verification (12 sections, 153 checks)
+│   ├── test_engine.swift         # Automated test runner (59 test blocks)
+│   └── deep_verify.swift         # Live-system verification (13 sections; checks vary with the system)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
         ├── Core/
         │   ├── AppIconCache.swift       # In-memory async app icon caching
+        │   ├── AppleAssetService.swift  # UnifiedAssetFramework bridge, the --asset-service helper child & its client
         │   ├── AppScanner.swift         # Fast async app scanner & memory icon cache
         │   ├── BrowserIntegrationProvider.swift # Default browser bookmarks, tabs & history
         │   ├── CalculatorEngine.swift   # Math parser & conversion dispatcher
@@ -94,6 +95,8 @@ mac-lightspot/
         │   ├── CustomIconCache.swift    # Base64 custom command icon decoding/cache
         │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
         │   ├── MacTweaks.swift          # `defaults` tweaks (Dock, Finder, keyboard…) as quick actions
+        │   ├── MacTweaksIntelligence.swift # Apple Intelligence: feature/model catalog, state, scan, profile+model-removal flow
+        │   ├── MacTweaksProfile.swift   # The Mac Tweaks configuration profile: builder, marker, removal batch
         │   ├── MacTweaksProvider.swift  # "Mac Tweaks" row, sections, per-section scan/apply state machine, receipts
         │   ├── MacTweaksStorage.swift   # Free Up Space: catalog, gate, scan, Trash / admin batch / simctl / tmutil, verify
         │   ├── Models.swift             # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
@@ -348,10 +351,11 @@ cleans and prints a receipt.
 
 The "Mac Tweaks" row (`mac tweaks`, `tweaks`, `debloat`, `free up space`, `remove garageband`, …)
 and the menu bar's **Mac Tweaks...** open an overlay drawn like Clean Dev Mac's, in sections:
-**Free Up Space** now; Apple Intelligence, Settings and Background Items are modelled in
+**Free Up Space** and **Apple Intelligence** now; Settings and Background Items are modelled in
 `MacTweaksSection` and appear once a release builds them (`MacTweaksSection.built`). Free Up
-Space ports RemoveMacAI's Storage (MIT, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md));
-the gate, the batch and the copy are Lightspot's.
+Space and Apple Intelligence port RemoveMacAI's Storage and asset-service work (MIT, see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md); the asset-service calls and the profile follow
+pared, MIT); the gate, the batch, the helper process and the copy are Lightspot's.
 
 - **Sections share everything but their engine.** `MacTweaksProvider` keeps one `SectionState`
   per section (phase, rows, receipt, generation) on its own serial queue and publishes a
@@ -453,6 +457,96 @@ the gate, the batch and the copy are Lightspot's.
   the compiler copy each function once per call site). Measure each phase with `./build.sh`
   and `stat`, against `./build.sh` at the previous release.
 
+#### Apple Intelligence
+
+Turns Apple Intelligence off for every account on this Mac — a System-scope configuration profile
+switches the features off and blocks the model downloads, then the downloaded models are removed —
+and turns it back on by removing the profile. `MacTweaksIntelligence` is the engine (catalog, state,
+scan, apply), `MacTweaksProfile` the profile, `AppleAssetService` the asset-service bridge, helper
+and client. All three port RemoveMacAI (MIT); the asset-service calls and the download block are
+pared's.
+
+- **The asset service runs in a short-lived child, never in Lightspot's own process.** AppKit
+  already loads `UnifiedAssetFramework` at launch, but *calling* it costs 9–11 MB of resident
+  memory that never comes back (platform report A7), which would break the "RSS returns after
+  close" rule. So every asset-service read, and the reset, runs in the Lightspot binary started as
+  `Lightspot --asset-service <verb> [set]`, handled in `main()` before `SingleInstanceGuard` and
+  any `NSApplication` setup (next to the uninstall flags), printing one JSON object and exiting;
+  the cost dies with the child. `AppleAssetService.AssetServiceBridge` (the framework calls) is
+  reached only from that flag and, read-only, from deep_verify. The app talks to the child through
+  `AssetServiceClient` (Clean Dev Mac's runner: stdin from /dev/null, the pipe read as it comes,
+  30 s for the inventory and 150 s for a reset; a crash, a timeout, a non-zero exit or output that
+  doesn't decode fails closed). `latestStatusForClients:` is never called (it takes locks and
+  reports 0 here); sizes come from the inventory only, and a failed inventory call reports them
+  unknown (`AssetSetInfo.bytes` nil), never 0, which would read as "deleted". The `inventory` verb
+  reads no folders; `reset <set>` checks RemoveMacAI's `present` first (tracked bytes, else files
+  in the set's `/System/Library/AssetsV2` folder) and sends nothing for an empty set (`.notPresent`).
+  The request is UAF.m's: one set, in an NSArray.
+- **The catalog is data** (`Catalog`): the features with their `since` versions, the model sets,
+  which sets to remove given the kept features. The section exists only on Apple silicon with a
+  macOS that has a feature (15.1 on; `MacTweaksSection.built`). A feature is hidden when the
+  running macOS lacks its version *or* the service has retired every model set it needs (Spatial
+  Photos on 26.7.2, where `getAssetSet:` returns nil; 27.2 knows its set again). Feature state
+  (`FeatureState`: locked off, off, on, unknown, managed): any key a profile forces makes the
+  feature **managed** — unless it is Lightspot's profile, which covers the feature and forces
+  every key to its off value (**locked off**); with nothing forced, a model-only feature follows
+  its models and another reads **off** from its deciding preference (Siri's `Assistant Enabled`;
+  else its only readable one), so a secondary preference alone can't make it read off.
+  Preferences in domains a non-sandboxed app can't read (Mail's, notifications', Safari's) are
+  judged by their forced value only.
+- **The profile** (`MacTweaksProfile`, identifier `com.lightspot.app.tweaks`, display name
+  "Lightspot Mac Tweaks", System scope, removable): a `com.apple.applicationaccess` restrictions
+  payload (only when an `allow…` key is set), one `com.apple.ManagedClient.preferences` payload per
+  forced domain including the download block (`DownloadServerBaseURLOverride-<asset type>` =
+  `https://127.0.0.1:9/lightspot-blocked/` for each removed set), and a marker domain holding
+  `installed`, `ai`, `kept`, `tweaks` (phase 3's) and `features`. Payload UUIDs are stable (SHA-1
+  of the identifier, CryptoKit). Everything left unticked is kept, a hidden feature included, so
+  the profile never touches a feature the user didn't choose. The file is written to
+  `~/Library/Application Support/Lightspot/`, opened, and a second later Device Management is
+  opened (RemoveMacAI's order; `SettingsProvider.deviceManagementLink`); the marker is polled once
+  a second for up to 10 minutes, and the file is removed once the profile is installed (after the
+  wait, and by any scan that finds it installed). It is removed by `profiles remove -identifier …
+  -forced` as one step of the administrator batch in Free Up Space's form, judged by the marker.
+  The profile is tested as data (structure, stable UUIDs, the marker read back, stale detection,
+  `plutil -lint` on a temp copy); it is never installed, opened or removed in tests or deep_verify,
+  and the real `profiles` only ever runs with read-only verbs.
+- **Apply** (on the provider's queue): the profile first (so the models can't download again), then
+  the models under RemoveMacAI's rule (`RemovalPlan`, which the plan uses too, so the plan says
+  exactly what apply does): a removal is requested only when the sets to remove total more than 0
+  bytes or their size is unknown, and then each known set gets the helper's `reset` — retried
+  after 5 s then 15 s while locked — followed by the inventory polled every 3 s for up to 30 s
+  until the sizes reach 0. When the inventory knows the sets total 0 nothing is sent and the
+  section says "Apple Intelligence's models aren't on this Mac" (26.7.2 had none on disk; 27.2
+  downloaded about 8 GB, so a turn-off there sends resets). A set the service doesn't know stays,
+  and the receipt says so. "Finish removing the models" (offered only while Lightspot's profile is
+  in force, not stale, and the sets it blocks hold bytes or an unknown size) reads the marker
+  again first and sends nothing without it. The approval and removal waits survive the panel hiding (System Settings
+  takes the focus); Esc stops them, the section's own wait only and only while it waits
+  (`MacTweaksProvider.cancelWait`, `SectionState.waiting`, which makes the footer say "Esc Stop
+  waiting"), and the pending profile stays in System Settings so the next apply continues once it
+  is installed. Turning back on removes the profile through the administrator prompt; a cancelled
+  or refused prompt stops there. When RemoveMacAI's marker is installed the section is read-only
+  and says RemoveMacAI manages it, though Lightspot's own profile can still be removed. Receipts
+  show the green check only for a success.
+- **The plan and the summary read nothing.** The provider keeps what the scan read
+  (`Snapshot.appleIntelligenceScan`: the inventory and both markers) and hands it, with the rows
+  on show, to the engine it builds for the plan (`MacTweaksProvider.makeEngine`), so the plan view
+  never starts a child on the main thread (invariant 0). Both say the change is for every account.
+- **The rows** are the shared `MacTweaksRow`: one per shown feature (ticked means *turn off*; every
+  changeable feature starts ticked, and the plan says one already off "stays off, now locked off";
+  a managed or locked-off feature is `readOnly`, drawn with a lock, and Space does nothing; a
+  stale profile's features are changeable again, ticked as its marker had them, the new ones
+  named), plus two action rows while Lightspot's profile turns it off: "Finish removing the
+  models" (ticked) when its sets still hold models, and "Turn Apple Intelligence back on"
+  (unticked, so reopening never defaults to undoing the user's choice). Action rows are
+  `exclusive`: applied alone (`MacTweaksTicks`). Free Up Space gains an "Apple Intelligence models"
+  link row (to this section) when the models are on disk — their size is the last Apple
+  Intelligence scan's total, so it shows nothing until that section has been scanned and nothing
+  when the models are 0 bytes. The search phrases "turn off apple intelligence", "remove apple
+  intelligence" and "delete apple intelligence models" open the section directly
+  (`internal:mac-tweaks:apple-intelligence`); a bare "apple intelligence" weighs less than System
+  Settings' own row, which stays first.
+
 ### Keyboard Shortcuts & Action Modifiers
 
 - **Return (`↵`)**:
@@ -484,11 +578,18 @@ the gate, the batch and the copy are Lightspot's.
   - `⇥`: Scan code repos too, when the overlay offers it (`nextCategory` routes it there)
   - `⌥↵`: Show the selected category's first path in Finder
   - `⌘↵` (also on the row itself): Run cdm in the preferred terminal
-- **Mac Tweaks overlay** (`↵` on its row, or the menu bar's **Mac Tweaks...**):
+- **Mac Tweaks overlay** (`↵` on its row, or the menu bar's **Mac Tweaks...**; the Apple
+  Intelligence search row opens it on that section):
   - `↑↓`: Select a row; `Space`: Tick / untick it (`SpotlightFieldEditor.keyDown`, as for the
-    cleaner; nothing on a link row)
+    cleaner; nothing on a link row, or a read-only row the lock marks — a feature another
+    profile sets, or one Lightspot's own profile already locks off). An action row ("Finish
+    removing the models", "Turn Apple Intelligence back on") is applied alone: ticking it
+    unticks the rest. The Space hint and the Defaults/None buttons go when nothing can be ticked
   - `↵`: Review the itemized plan, or open a link row; `↵` again applies, `Escape` goes back,
     then closes
+  - `Escape` while Apple Intelligence waits for System Settings (the footer says "Stop waiting"):
+    stops that wait; the profile stays in System Settings. The close button closes the panel and
+    leaves the wait going
   - `⇥` / `⇧⇥`: Next / previous section, once there is more than one
   - `⌥↵`: Show the selected row's first item in Finder; on a receipt, the app macOS kept
   - `⌥↵` and `⌘↵` on the Mac Tweaks row itself open the overlay, as `↵` does
@@ -588,6 +689,15 @@ the gate, the batch and the copy are Lightspot's.
      each fixed folder (`realpath`, the gate's physical half); an apply puts each item through
      the gate again, looks up names in `~/.Trash` one at a time (`lstat` of a name; the Trash
      itself is never listed), and measures again the items still there.
+   - For Mac Tweaks' Apple Intelligence, and only when the user opens that section: the asset
+     service's inventory, which reads no folders. Only within a removal (an apply whose sets to
+     remove hold bytes or an unknown size), and only for a set the inventory gives no bytes, the
+     `reset` child reads the attribute counts of that set's `/System/Library/AssetsV2/<asset
+     type>` folder and its `purpose_auto` (`getattrlist`, `lstat`, `stat` — never a listing,
+     which macOS refuses). Both run in the short-lived `--asset-service` child, never in
+     Lightspot's own process (platform report finding 1); deep_verify runs the inventory
+     in-process. Feature state and the profile marker are read through cfprefsd (invariant 8),
+     not the file system.
 4. **Clipboard History Privacy**:
    `ClipboardHistoryManager` is 100% ephemeral in-memory (max 50 items). It is never written to disk and strictly filters out concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 5. **AppleScript & Automation Entitlements**:
@@ -608,7 +718,11 @@ the gate, the batch and the copy are Lightspot's.
 
    Files, besides the instance lock: `~/Library/Application Support/Lightspot/mac-tweaks.log`,
    Mac Tweaks' receipts, written only when the user applies something and capped like cdm's
-   clean.log (over 1 MiB it keeps the newest 256 KiB).
+   clean.log (over 1 MiB it keeps the newest 256 KiB); and, only while turning Apple Intelligence
+   off (or back on with profile tweaks kept), `~/Library/Application Support/Lightspot/LightspotMacTweaks.mobileconfig`,
+   the profile written for approval and removed once it is installed: after the approval wait, and
+   by any Apple Intelligence scan that finds the profile installed (never in `~/Downloads`, which
+   is TCC-protected).
 7. **Privileged Commands & Headless Touch ID Execution**:
    Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.
 

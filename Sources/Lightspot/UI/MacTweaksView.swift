@@ -81,7 +81,7 @@ struct MacTweaksHeader: View {
                     .foregroundColor(.white.opacity(0.55))
             }
             .buttonStyle(.plain)
-            .help("Close (Esc)")
+            .help(MacTweaksProvider.closeHelp)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -114,7 +114,7 @@ struct MacTweaksContent: View {
     var body: some View {
         switch model.state.phase {
         case .idle:
-            MacTweaksMessage(title: "Looking for space to free…")
+            MacTweaksMessage(title: model.section.scanningTitle)
         case .scanning(let line):
             MacTweaksMessage(title: line)
         case .ready:
@@ -124,7 +124,7 @@ struct MacTweaksContent: View {
                 MacTweaksList(model: model)
             }
         case .applying(let steps):
-            MacTweaksSteps(steps: steps)
+            MacTweaksSteps(steps: steps, waiting: model.state.waiting)
         case .finished:
             MacTweaksReceiptView(receipt: model.state.receipt, logPath: model.logPath)
         }
@@ -169,7 +169,7 @@ struct MacTweaksList: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(1)
                 Spacer(minLength: 4)
-                if !model.offeredRows.isEmpty {
+                if model.hasTickable {
                     Button(action: model.tickDefaults) { MacTweaksPill(title: "Defaults") }.buttonStyle(.plain)
                     Button(action: model.tickNone) { MacTweaksPill(title: "None") }.buttonStyle(.plain)
                     Button(action: model.reviewPlan) {
@@ -212,16 +212,22 @@ struct MacTweaksRowView: View {
     /// Items listed under the selected row before "and N more".
     private static let shownItems = 4
 
+    /// The box: an arrow for a link, a lock for a read-only row, else a tick box.
+    private func boxSymbol(_ row: MacTweaksRow) -> String {
+        if row.isLink { return "arrow.up.forward.square" }
+        if row.readOnly { return "lock.fill" }
+        return model.checkedIDs.contains(row.id) ? "checkmark.square.fill" : "square"
+    }
+
     var body: some View {
         let row = model.rows[index]
         let selected = index == model.cursor
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 Button(action: { if let link = row.link { model.open(link) } else { model.toggle(row.id) } }) {
-                    Image(systemName: row.isLink ? "arrow.up.forward.square"
-                          : (model.checkedIDs.contains(row.id) ? "checkmark.square.fill" : "square"))
+                    Image(systemName: boxSymbol(row))
                         .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(row.isLink || model.checkedIDs.contains(row.id) ? 0.9 : 0.45))
+                        .foregroundColor(.white.opacity(row.isLink || (!row.readOnly && model.checkedIDs.contains(row.id)) ? 0.9 : 0.45))
                 }
                 .buttonStyle(.plain)
                 Image(systemName: row.symbol)
@@ -371,6 +377,8 @@ struct MacTweaksPlanRow: View {
 
 struct MacTweaksSteps: View {
     let steps: [String]
+    /// Waiting for System Settings: Esc stops the wait, and the line below says so.
+    var waiting = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -382,7 +390,7 @@ struct MacTweaksSteps: View {
                 .font(.system(size: 12.5))
                 .foregroundColor(.white.opacity(0.75))
                 .lineSpacing(5)
-            Text("This keeps running if you close the panel. Reopen Mac Tweaks to see the result.")
+            Text(waiting ? MacTweaksProvider.waitNote : MacTweaksProvider.workingNote)
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.35))
             Spacer(minLength: 0)
@@ -400,8 +408,9 @@ struct MacTweaksReceiptView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green.opacity(0.85))
+                // The green check only when it did what was asked.
+                Image(systemName: receipt?.isSuccess == false ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                    .foregroundColor(receipt?.isSuccess == false ? .yellow.opacity(0.85) : .green.opacity(0.85))
                 Text(receipt?.headline ?? "Done.")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.white)

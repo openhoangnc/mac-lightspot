@@ -559,6 +559,18 @@ enum MacTweaksStorage {
             }
             rows.append(row)
         }
+
+        // A link to the Apple Intelligence section when its models are on disk (their size is
+        // the last Apple Intelligence scan's total; nil, so no row, until that section is
+        // scanned). On a full scan only.
+        if only == nil, let bytes = environment.appleIntelligenceModelBytes(), bytes > 0 {
+            var row = MacTweaksRow(id: "apple-intelligence-models", symbol: "sparkles",
+                                   title: "Apple Intelligence models",
+                                   detail: "The downloaded Apple Intelligence models. Opens the Apple Intelligence section to remove them.")
+            row.bytes = bytes
+            row.link = .section(.appleIntelligence)
+            rows.insert(row, at: rows.firstIndex { $0.isLink } ?? rows.endIndex)
+        }
         return rows
     }
 

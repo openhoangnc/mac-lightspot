@@ -47,12 +47,17 @@ final class MacTweaksModel: ObservableObject {
     var checkedRows: [Row] { rows.filter { !$0.isLink && checkedIDs.contains($0.id) } }
     var offeredRows: [Row] { rows.filter { !$0.isLink } }
     var selectedRow: Row? { cursor >= 0 && cursor < rows.count ? rows[cursor] : nil }
-    /// The plan's closing sentences.
+    /// Any row Space can tick: without one (every row read-only) the tick buttons and hints go.
+    var hasTickable: Bool { MacTweaksTicks.hasTickable(rows) }
+    /// The plan's closing sentences, built from memory (the scan on show).
     var planNotes: [String] { provider.planNotes(section, rows: checkedRows) }
     var logPath: String { CleanDevMacEngine.displayPath(provider.environment.logURL.path, home: home) }
 
-    /// What was found and what is ticked.
+    /// What was found and what is ticked. Each section phrases its own.
     var summaryLine: String {
+        if section == .appleIntelligence {
+            return MacTweaksIntelligence.summary(rows: rows, context: snapshot.appleIntelligenceScan)
+        }
         let offered = offeredRows
         guard !offered.isEmpty else { return "Nothing to free right now." }
         let found = "Found \(Self.amount(offered)) in \(offered.count) \(offered.count == 1 ? "place" : "places")"
@@ -60,8 +65,11 @@ final class MacTweaksModel: ObservableObject {
         return ticked.isEmpty ? found : found + " · " + Self.amount(ticked) + " ticked"
     }
 
-    /// The plan's title and button: "Free up 16.3 GB", "Free up 2.1 GB and 4 snapshots".
-    var applyTitle: String { "Free up " + Self.amount(checkedRows) }
+    /// The plan's title and button: "Free up 16.3 GB", or "Turn off 3 features".
+    var applyTitle: String {
+        if section == .appleIntelligence { return MacTweaksIntelligence.applyTitle(ticked: checkedRows) }
+        return "Free up " + Self.amount(checkedRows)
+    }
 
     /// A size, plus what has none ("4 snapshots").
     static func amount(_ rows: [Row]) -> String {
@@ -79,18 +87,26 @@ final class MacTweaksModel: ObservableObject {
             return [("⏎", "Apply"), ("Esc", "Back")]
         case .ready:
             var hints: [(key: String, label: String)] = [("↑↓", "Select")]
-            hints += selectedRow?.isLink == true ? [("⏎", "Open")] : [("Space", "Tick"), ("⏎", "Review")]
+            if selectedRow?.isLink == true {
+                hints.append(("⏎", "Open"))
+            } else {
+                if MacTweaksTicks.isTickable(selectedRow) { hints.append(("Space", "Tick")) }
+                if hasTickable { hints.append(("⏎", "Review")) }
+            }
             if revealPath != nil { hints.append(("⌥⏎", "Finder")) }
             return hints + tab + [("Esc", "Close")]
         case .finished:
             return [("⏎", "Rescan")] + (revealPath != nil ? [("⌥⏎", "Finder")] : []) + tab + [("Esc", "Close")]
-        case .idle, .scanning, .applying:
+        case .applying:
+            // Esc stops a wait for System Settings; otherwise it closes and the apply goes on.
+            return tab + [("Esc", MacTweaksProvider.escapeLabel(state))]
+        case .idle, .scanning:
             return tab + [("Esc", "Close")]
         }
     }
 
     private static func defaultTicks(_ rows: [Row]) -> Set<String> {
-        Set(rows.filter { $0.isDefault && !$0.isLink }.map(\.id))
+        MacTweaksTicks.defaults(rows)
     }
 
     private func refresh() {
@@ -135,6 +151,12 @@ final class MacTweaksModel: ObservableObject {
         open()
     }
 
+    /// Opens straight on a section (the Apple Intelligence search row), as opening does.
+    func show(_ section: MacTweaksSection) {
+        if sections.contains(section) { self.section = section }
+        open()
+    }
+
     private func switchSection(by offset: Int) {
         guard sections.count > 1, let index = sections.firstIndex(of: section) else { return }
         select(sections[(index + offset + sections.count) % sections.count])
@@ -157,14 +179,11 @@ final class MacTweaksModel: ObservableObject {
         cursors[section.index] = index
     }
 
-    /// Space, or a click on the box: ticks or unticks a row. Nothing on a link row.
+    /// Space, or a click on the box: ticks or unticks a row. Nothing on a link or read-only row;
+    /// an exclusive row is applied alone (`MacTweaksTicks.toggled`).
     func toggle(_ id: String) {
-        guard !isConfirming, state.phase == .ready, let row = rows.first(where: { $0.id == id }), !row.isLink else { return }
-        if checked[section.index].contains(id) {
-            checked[section.index].remove(id)
-        } else {
-            checked[section.index].insert(id)
-        }
+        guard !isConfirming, state.phase == .ready else { return }
+        checked[section.index] = MacTweaksTicks.toggled(checked[section.index], id, in: rows)
     }
 
     func toggleCursor() {
@@ -213,6 +232,13 @@ final class MacTweaksModel: ObservableObject {
         guard isConfirming else { return false }
         isConfirming = false
         return true
+    }
+
+    /// Esc while this section waits for System Settings: stop that wait, this section's only.
+    /// Panel hiding (System Settings taking the focus) does not reach here, so the wait survives
+    /// that.
+    func requestCancel() {
+        provider.cancelWait(section)
     }
 
     /// A click on a link row's arrow.

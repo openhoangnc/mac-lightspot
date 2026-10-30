@@ -3,6 +3,10 @@ import AppKit
 final class SettingsProvider: @unchecked Sendable {
     static let shared = SettingsProvider()
 
+    /// System Settings › General › Device Management (the configuration profiles pane), shared
+    /// with Mac Tweaks' Apple Intelligence section, which opens it for the profile's approval.
+    static let deviceManagementLink = "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
+
     let items: [SettingsItem]
 
     private let lock = NSLock()
@@ -142,7 +146,7 @@ final class SettingsProvider: @unchecked Sendable {
                 name: "Device Management",
                 keywords: ["device management", "profiles", "configuration profiles", "mdm", "enrollment", "supervision"],
                 sfSymbol: "checkmark.seal",
-                deepLink: "x-apple.systempreferences:com.apple.Profiles-Settings.extension",
+                deepLink: SettingsProvider.deviceManagementLink,
                 subtitle: "System Settings → Device Management"
             ),
             SettingsItem(
