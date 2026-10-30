@@ -458,7 +458,7 @@ final class SearchViewModel: ObservableObject {
                     AppScanner.launchApp(at: path)
                 case .openSettings(let deepLink):
                     if let url = URL(string: deepLink) {
-                        NSWorkspace.shared.open(url)
+                        SystemSettingsOpener.open(url)
                     }
                 case .runQuickAction(let script, let usesOsascript):
                     QuickActionsProvider.execute(script: script, usesOsascript: usesOsascript)
@@ -470,7 +470,7 @@ final class SearchViewModel: ObservableObject {
                 case .runInTerminal(let command):
                     TerminalLauncher.run(command)
                 case .openURL(let url):
-                    NSWorkspace.shared.open(url)
+                    SystemSettingsOpener.openAny(url)
                 case .openFolder(let path):
                     Self.openFolderInVSCode(at: path)
                 case .openProject(let path, let appBundleID):
@@ -834,7 +834,7 @@ final class SearchViewModel: ObservableObject {
                 AppScanner.launchApp(at: path)
             case .openSettings(let deepLink):
                 if let url = URL(string: deepLink) {
-                    NSWorkspace.shared.open(url)
+                    SystemSettingsOpener.open(url)
                 }
             case .runQuickAction(let script, let usesOsascript):
                 QuickActionsProvider.execute(script: script, usesOsascript: usesOsascript)
@@ -846,7 +846,7 @@ final class SearchViewModel: ObservableObject {
             case .runInTerminal(let command):
                 TerminalLauncher.run(command)
             case .openURL(let url):
-                NSWorkspace.shared.open(url)
+                SystemSettingsOpener.openAny(url)
             case .openFolder(let path):
                 Self.openFolderInVSCode(at: path)
             case .openProject(let path, let appBundleID):
@@ -895,7 +895,7 @@ final class SearchViewModel: ObservableObject {
             switch command.type {
             case .url:
                 if case .openURL(let url) = command.searchAction(with: nil) {
-                    NSWorkspace.shared.open(url)
+                    SystemSettingsOpener.openAny(url)
                 }
             case .terminal:
                 TerminalLauncher.run(target)
@@ -1014,7 +1014,7 @@ final class SearchViewModel: ObservableObject {
             onHide?()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 if let url = URL(string: deepLink) {
-                    NSWorkspace.shared.open(url)
+                    SystemSettingsOpener.open(url)
                 }
             }
         case .section(let section):

@@ -937,9 +937,10 @@ enum MacTweaksIntelligence {
         open(deviceManagementURL)
     }
 
-    /// `NSWorkspace.open` must run on the main thread; the apply runs on the provider's queue.
+    /// The profile file and Device Management both open in System Settings, so both go
+    /// through `SystemSettingsOpener`, whose one queue keeps them in this order.
     static func openInWorkspace(_ url: URL) {
-        DispatchQueue.main.async { _ = NSWorkspace.shared.open(url) }
+        SystemSettingsOpener.open(url)
     }
 
     /// Apple Intelligence as a Mac Tweaks section. A class so the provider can read what the last

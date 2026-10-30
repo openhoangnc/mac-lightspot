@@ -260,6 +260,11 @@ final class AppScanner: @unchecked Sendable {
     }
 
     static func launchApp(at path: String) {
+        // System Settings may still be recorded after it has quit; its opener copes with that.
+        if SystemSettingsOpener.isSystemSettingsApp(path: path) {
+            SystemSettingsOpener.open(SystemSettingsOpener.appURL)
+            return
+        }
         let url = URL(fileURLWithPath: path)
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in

@@ -714,7 +714,7 @@ final class QuickActionsProvider: Sendable {
                     path = NSString(string: path).expandingTildeInPath
                 }
                 let url = URL(fileURLWithPath: path)
-                NSWorkspace.shared.open(url)
+                SystemSettingsOpener.openAny(url)
             } else {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/bin/sh")

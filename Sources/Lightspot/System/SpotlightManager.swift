@@ -457,7 +457,7 @@ enum SpotlightManager {
     /// Opens macOS System Settings -> Keyboard Shortcuts
     static func openKeyboardSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
-            NSWorkspace.shared.open(url)
+            SystemSettingsOpener.open(url)
         }
     }
 }
