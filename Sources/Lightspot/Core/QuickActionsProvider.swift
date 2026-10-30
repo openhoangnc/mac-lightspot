@@ -210,6 +210,10 @@ final class QuickActionsProvider: Sendable {
                 } else if action.name == "Toggle Touch ID for Sudo" {
                     let enabled = Self.isTouchIdForSudoEnabled
                     subtitle = enabled ? "Touch ID for sudo is ENABLED · Press ↵ to disable" : "Touch ID for sudo is DISABLED · Press ↵ to enable (Touch ID / Admin)"
+                } else if let dock = MacTweaksDock.action(forScript: action.script),
+                          let status = MacTweaksDock.Status.shared.subtitle(for: dock) {
+                    // No backup to restore, or what the last run ran into: a snapshot, never a read.
+                    subtitle = status
                 }
 
                 let result = SearchResult(
@@ -688,6 +692,10 @@ final class QuickActionsProvider: Sendable {
                 _ = toggleTouchIdForSudo()
             } else if let installer = ToolInstallersProvider.installer(forScript: script) {
                 ToolInstallersProvider.shared.run(installer)
+            } else if let dock = MacTweaksDock.action(forScript: script) {
+                // Clear Dock Icons saves the icons first, the 1.3.x one-liner search history may
+                // replay included. When either changes nothing, its row's subtitle says why.
+                MacTweaksDock.run(dock)
             } else if requiresAdministratorPrivileges(script: script, requiresAdmin: requiresAdmin) {
                 executePrivilegedWithTouchID(command: script)
             } else if usesOsascript {

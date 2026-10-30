@@ -170,7 +170,9 @@ struct MacTweaksList: View {
                     .layoutPriority(1)
                 Spacer(minLength: 4)
                 if model.hasTickable {
-                    Button(action: model.tickDefaults) { MacTweaksPill(title: "Defaults") }.buttonStyle(.plain)
+                    if model.hasDefaults {
+                        Button(action: model.tickDefaults) { MacTweaksPill(title: "Defaults") }.buttonStyle(.plain)
+                    }
                     Button(action: model.tickNone) { MacTweaksPill(title: "None") }.buttonStyle(.plain)
                     Button(action: model.reviewPlan) {
                         MacTweaksPill(title: model.checkedRows.isEmpty ? "Nothing ticked" : model.applyTitle + "…",
@@ -188,8 +190,13 @@ struct MacTweaksList: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
                         ForEach(model.rows.indices, id: \.self) { index in
-                            MacTweaksRowView(model: model, index: index)
-                                .id(index)
+                            VStack(alignment: .leading, spacing: 3) {
+                                if let group = model.rows[index].group, index == 0 || model.rows[index - 1].group != group {
+                                    MacTweaksGroupHeader(title: group)
+                                }
+                                MacTweaksRowView(model: model, index: index)
+                            }
+                            .id(index)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -203,6 +210,21 @@ struct MacTweaksList: View {
     }
 }
 
+/// The header above the first row of a group (Settings' Privacy, Finder…).
+struct MacTweaksGroupHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundColor(.white.opacity(0.45))
+            .textCase(.uppercase)
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 1)
+    }
+}
+
 // MARK: - Row
 
 struct MacTweaksRowView: View {
@@ -212,22 +234,29 @@ struct MacTweaksRowView: View {
     /// Items listed under the selected row before "and N more".
     private static let shownItems = 4
 
-    /// The box: an arrow for a link, a lock for a read-only row, else a tick box.
-    private func boxSymbol(_ row: MacTweaksRow) -> String {
-        if row.isLink { return "arrow.up.forward.square" }
-        if row.readOnly { return "lock.fill" }
-        return model.checkedIDs.contains(row.id) ? "checkmark.square.fill" : "square"
+    /// The box: an arrow for a link, a lock for a read-only row, an undo arrow for a tick that
+    /// undoes, a dash for a preset partly ticked, else a tick box.
+    static func boxSymbol(_ box: MacTweaksTicks.Box) -> String {
+        switch box {
+        case .link: return "arrow.up.forward.square"
+        case .locked: return "lock.fill"
+        case .unticked: return "square"
+        case .ticked: return "checkmark.square.fill"
+        case .undo: return "arrow.uturn.backward.square.fill"
+        case .mixed: return "minus.square.fill"
+        }
     }
 
     var body: some View {
         let row = model.rows[index]
         let selected = index == model.cursor
+        let box = model.box(row)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 Button(action: { if let link = row.link { model.open(link) } else { model.toggle(row.id) } }) {
-                    Image(systemName: boxSymbol(row))
+                    Image(systemName: Self.boxSymbol(box))
                         .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(row.isLink || (!row.readOnly && model.checkedIDs.contains(row.id)) ? 0.9 : 0.45))
+                        .foregroundColor(.white.opacity(box == .link || box == .ticked || box == .undo || box == .mixed ? 0.9 : 0.45))
                 }
                 .buttonStyle(.plain)
                 Image(systemName: row.symbol)
@@ -245,7 +274,8 @@ struct MacTweaksRowView: View {
                 }
                 Spacer(minLength: 8)
                 ForEach(row.tags, id: \.self) { tag in
-                    OverlayTag(label: tag, color: tag == "Deleted right away" ? .red : .white)
+                    OverlayTag(label: tag, color: tag == "Deleted right away" ? .red : .white,
+                               symbol: tag == MacTweaksSettings.profileTag ? "lock" : nil)
                 }
                 Text(row.value)
                     .font(.system(size: 12.5, weight: .medium).monospacedDigit())
@@ -361,7 +391,8 @@ struct MacTweaksPlanRow: View {
                 Text(row.countLabel != nil ? row.outcome : "\(row.items.count) \(row.items.count == 1 ? "item" : "items") · \(row.outcome)")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.55))
-                MacTweaksItems(items: row.items, home: home, limit: Self.planPaths, sizes: false)
+                // Undo everything lists all it puts back.
+                MacTweaksItems(items: row.items, home: home, limit: row.exclusive ? max(row.items.count, 1) : Self.planPaths, sizes: false)
                 if let caveat = row.caveat {
                     Text(caveat)
                         .font(.system(size: 11))
@@ -415,27 +446,51 @@ struct MacTweaksReceiptView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.white)
             }
-            Text(verbatim: (receipt?.lines ?? []).joined(separator: "\n"))
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.75))
-                .lineSpacing(3)
-            ScrollView(.vertical, showsIndicators: false) {
-                Text(verbatim: (receipt?.problems ?? []).joined(separator: "\n"))
-                    .font(.system(size: 11.5))
-                    .foregroundColor(.yellow.opacity(0.75))
-                    .lineSpacing(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // Lines, problems and notes scroll as one, so a long receipt never loses its end, and
+            // the problems take room only when there are some.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 9) {
+                    MacTweaksReceiptText(lines: receipt?.lines ?? [], size: 12, opacity: 0.75)
+                    MacTweaksReceiptText(lines: receipt?.problems ?? [], size: 11.5, opacity: 0.75, color: .yellow)
+                    MacTweaksReceiptText(lines: (receipt?.notes ?? []) + ["Logged to \(logPath)"], size: 12, opacity: 0.6)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 140)
-            Text(verbatim: ((receipt?.notes ?? []) + ["Logged to \(logPath)"]).joined(separator: "\n"))
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.6))
-                .lineSpacing(3)
-            Spacer(minLength: 0)
+            .flashingIndicators()
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+extension View {
+    /// A receipt longer than the overlay flashes its scroller once, so it shows there is more
+    /// (macOS 14 and later; macOS 13 shows the cut-off line only).
+    @ViewBuilder func flashingIndicators() -> some View {
+        if #available(macOS 14.0, *) {
+            scrollIndicatorsFlash(onAppear: true)
+        } else {
+            self
+        }
+    }
+}
+
+/// One block of the receipt, wrapped to the width; nothing for no lines.
+struct MacTweaksReceiptText: View {
+    let lines: [String]
+    let size: CGFloat
+    let opacity: Double
+    var color: Color = .white
+
+    var body: some View {
+        if !lines.isEmpty {
+            Text(verbatim: lines.joined(separator: "\n"))
+                .font(.system(size: size))
+                .foregroundColor(color.opacity(opacity))
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

@@ -659,6 +659,8 @@ struct DeepVerifier {
         let missingAISymbols = aiSymbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
         check("Every Apple Intelligence SF Symbol exists\(missingAISymbols.isEmpty ? "" : ": missing " + missingAISymbols.joined(separator: ", "))", missingAISymbols.isEmpty)
 
+        verifySettings(check)
+
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")
         print("======================================================")
@@ -698,4 +700,161 @@ func residentBytes() -> UInt64 {
         $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
     }
     return result == KERN_SUCCESS ? info.phys_footprint : 0
+}
+
+// ----------------------------------------------------
+// SECTION 14: Mac Tweaks' Settings on this Mac — reads only, never writes a setting
+// ----------------------------------------------------
+extension DeepVerifier {
+    static func verifySettings(_ check: (String, Bool) -> Void) {
+        print("\n--- 14. Testing Mac Tweaks' Settings on this Mac (reads only) ---")
+        let record = TweaksRecorder()
+        var env = MacTweaksProvider.Environment.live
+        // Every writer refuses and is recorded: deep_verify reads this Mac, it never changes it.
+        let liveLaunchctl = env.settings.launchctl
+        env.settings.launchctl = { args in
+            let line = "launchctl " + args.joined(separator: " ")
+            record.ran(line)
+            guard args.first == "print-disabled" || args.first == "print" else {
+                record.forbidden(line)
+                return (1, "deep_verify never changes launchd")
+            }
+            return liveLaunchctl(args)
+        }
+        var store = env.settings.preferences
+        store.write = { domain, key, _ in record.forbidden("write \(domain) \(key)"); return false }
+        env.settings.preferences = store
+        env.settings.setHidden = { path, _ in record.forbidden("chflags \(path)"); return false }
+        env.settings.restart = { name in record.forbidden("killall \(name)"); return false }
+        var files = env.settings.fileSystem
+        files.write = { url, _ in record.forbidden("write \(url.path)"); throw CocoaError(.featureUnsupported) }
+        files.remove = { url in record.forbidden("remove \(url.path)"); throw CocoaError(.featureUnsupported) }
+        files.move = { url, _ in record.forbidden("move \(url.path)"); throw CocoaError(.featureUnsupported) }
+        env.settings.fileSystem = files
+        env.intelligence.presentProfile = { _ in record.forbidden("presentProfile") }
+        env.intelligence.removeProfileFile = {}
+        env.intelligence.openDeviceManagement = { record.forbidden("openDeviceManagement") }
+        env.runAdmin = { _ in record.forbidden("runAdmin"); return .refused("deep_verify never asks for a password") }
+        let journalURL = MacTweaksJournal.url(home: env.home)
+        let backupURL = MacTweaksDock.backupURL(home: env.home)
+        let fm = FileManager.default
+        let journalExisted = fm.fileExists(atPath: journalURL.path)
+        let backupExisted = fm.fileExists(atPath: backupURL.path)
+
+        let started = Date()
+        let reading = MacTweaksSettings.read(env)
+        let rows = MacTweaksSettings.rows(reading)
+        let seconds = Date().timeIntervalSince(started)
+        for row in rows {
+            let flags = (row.readOnly ? " [read-only]" : "") + (row.tags.isEmpty ? "" : " [" + row.tags.joined(separator: ", ") + "]")
+            print("     \(row.title): \(row.countLabel ?? "")\(flags)\(row.caveat.map { " — " + $0 } ?? "")")
+        }
+        print("     Summary: \(MacTweaksSettings.summary(rows: rows, ticked: [], context: reading))")
+        check("Settings reads this Mac within 10 s (\(String(format: "%.2f", seconds)) s)", seconds < 10)
+        check("The scan writes no setting, changes no job, restarts nothing and asks for nothing", record.forbiddenCalls.isEmpty)
+        check("It runs launchctl's print-disabled and print only", record.programs.allSatisfy { $0.hasPrefix("launchctl print") })
+        check("No journal or Dock backup appears", fm.fileExists(atPath: journalURL.path) == journalExisted
+              && fm.fileExists(atPath: backupURL.path) == backupExisted)
+
+        // Each tweak's state against an independent read: direct CFPreferences calls, launchctl's
+        // own output, stat and resource values. Follows what this Mac reports, never one macOS's state.
+        func app(_ domain: String) -> CFString { domain == "NSGlobalDomain" ? kCFPreferencesAnyApplication : domain as CFString }
+        func value(_ domain: String, _ key: String) -> PreferenceValue? {
+            CFPreferencesAppSynchronize(app(domain))
+            return PreferenceValue(CFPreferencesCopyAppValue(key as CFString, app(domain)))
+        }
+        func forced(_ domain: String, _ key: String) -> Bool { CFPreferencesAppValueIsForced(key as CFString, app(domain)) }
+        let uid = getuid()
+        let disabledText = CleanDevMacEngine.run("/bin/launchctl", ["print-disabled", "gui/\(uid)"], timeout: 10).output
+        func isDisabled(_ label: String) -> Bool { disabledText.contains("\"\(label)\" => disabled") || disabledText.contains("\"\(label)\" => true") }
+        func isLoaded(_ label: String) -> Bool { CleanDevMacEngine.run("/bin/launchctl", ["print", "gui/\(uid)/\(label)"], timeout: 10).status == 0 }
+        let musicApp = "/System/Applications/Music.app"
+        let musicInode = (try? fm.attributesOfItem(atPath: musicApp))?[.systemFileNumber] as? NSNumber
+        let execInode = (try? fm.attributesOfItem(atPath: musicApp + "/Contents/MacOS/Music"))?[.systemFileNumber] as? NSNumber
+        let musicLabel = musicInode.flatMap { a in execInode.map { "application.com.apple.Music.\(a.stringValue).\($0.stringValue)" } }
+        let dockIDs = ((CFPreferencesCopyAppValue("persistent-apps" as CFString, "com.apple.dock" as CFString) as? [[String: Any]]) ?? [])
+            .compactMap { ($0["tile-data"] as? [String: Any])?["bundle-identifier"] as? String }
+        var libraryStat = stat()
+        let libraryHidden = stat(NSHomeDirectory() + "/Library", &libraryStat) == 0 ? (libraryStat.st_flags & UInt32(UF_HIDDEN)) != 0 : nil
+        let ours = MacTweaksProfile.installed()
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        func expected(_ tweak: MacTweaksSettings.Tweak) -> MacTweaksSettings.State {
+            guard (os.majorVersion, os.minorVersion) >= tweak.since else { return .notOnThisMacOS }
+            let mine = ours.on && ours.tweaks.contains(tweak.id)
+            var done = 0
+            for change in tweak.changes {
+                switch change {
+                case .restriction(let key):
+                    if forced("com.apple.applicationaccess", key) && !mine { return .managed }
+                    if forced("com.apple.applicationaccess", key) && PreferenceValue.bool(false).matches(value("com.apple.applicationaccess", key)) { done += 1 }
+                case .forced(let domain, let key, let wanted):
+                    if forced(domain, key) && !mine { return .managed }
+                    if forced(domain, key) && wanted.matches(value(domain, key)) { done += 1 }
+                case .pref(let domain, let key, let wanted):
+                    if forced(domain, key) { return .managed }
+                    if wanted.matches(value(domain, key)) { done += 1 }
+                case .service(let label):
+                    if isDisabled(label) { done += isLoaded(label) ? 0 : 1 }
+                case .musicLaunches:
+                    if let label = musicLabel, isDisabled(label) { return isLoaded(label) ? .partly : .on }
+                    return disabledText.contains("application.com.apple.Music.") ? .partly : .off
+                case .dockRemove(let ids):
+                    if !dockIDs.contains(where: ids.contains) { done += 1 }
+                case .showLibrary:
+                    if libraryHidden == false { done += 1 }
+                }
+            }
+            if done == tweak.changes.count { return .on }
+            if tweak.changes == [.service(MacTweaksSettings.rcdLabel)] && isDisabled(MacTweaksSettings.rcdLabel) { return .partly }
+            return done == 0 ? .off : .partly
+        }
+        let mismatched = MacTweaksSettings.catalog.filter { expected($0) != MacTweaksSettings.state($0, reading) }
+        for tweak in mismatched { print("     ⚠️ \(tweak.id): Lightspot says \(MacTweaksSettings.state(tweak, reading).label), the direct read says \(expected(tweak).label)") }
+        check("Every one of the \(MacTweaksSettings.catalog.count) tweaks shows the state a direct read of this Mac gives", mismatched.isEmpty)
+        func row(_ id: String) -> MacTweaksRow? { rows.first { $0.id == id } }
+        // Report C's facts, each checked only while its inputs still hold on this Mac.
+        let quotes = value("NSGlobalDomain", "NSAutomaticQuoteSubstitutionEnabled"), dashes = value("NSGlobalDomain", "NSAutomaticDashSubstitutionEnabled")
+        if quotes == .bool(false) && dashes == nil {
+            check("Smart quotes and dashes shows Partly (quotes false, dashes unset), and its tick finishes it",
+                  row("smart-punctuation")?.countLabel == "Partly" && row("smart-punctuation")?.undoes == false)
+        }
+        if value("com.apple.assistant.support", "Search Queries Data Sharing Status") == .int(2) && !forced("com.apple.assistant.support", "Search Queries Data Sharing Status") {
+            check("Improve Search shows Off with \"already off, but not locked\" (its value is 2, unforced)",
+                  row("improve-search")?.countLabel == "Off" && row("improve-search")?.caveat?.contains(MacTweaksSettings.alreadyOffCaveat) == true)
+        }
+        check("Safari's suggestions never claim to be off from Safari's unreadable stub", row("safari-suggestions")?.caveat?.contains("Already off") != true)
+        if value("com.apple.WindowManager", "StandardHideWidgets") == .bool(true) && value("com.apple.WindowManager", "StageManagerHideWidgets") == .bool(true) {
+            check("Hide desktop widgets shows On (both keys true)", row("desktop-widgets")?.countLabel == "On")
+        }
+        if !dockIDs.contains(where: MacTweaksSettings.unusedDockApps.contains)
+            && reading.journal.json("dock:" + MacTweaksSettings.unusedDockApps.joined(separator: ",")) == nil {
+            check("With none of the 10 apps in the Dock and nothing journaled, the Dock tweak is On and read-only",
+                  row("dock-apple-apps")?.countLabel == "On" && row("dock-apple-apps")?.readOnly == true)
+        }
+        print("     Music's launch label: \(musicLabel ?? "Music not found"); rcd \(isDisabled(MacTweaksSettings.rcdLabel) ? "disabled" : "enabled"), \(isLoaded(MacTweaksSettings.rcdLabel) ? "loaded" : "not loaded")")
+        check("Music's launch label is computed from its two inodes, in launchd's form", reading.musicLabel != nil && reading.musicLabel == musicLabel
+              && musicLabel?.range(of: #"^application\.com\.apple\.Music\.\d+\.\d+$"#, options: .regularExpression) != nil)
+        check("launchctl print-disabled parses (\(reading.disabled.count) disabled jobs)", disabledText.contains("=>") && !reading.disabled.isEmpty)
+        check("rcd's plist is where Restore bootstraps it from", reading.rcdPlistExists)
+        // The profile with every profile tweak and Apple Intelligence off: well-formed, its marker read back.
+        let all = Set(MacTweaksSettings.catalog.filter(\.inProfile).map(\.id))
+        if let data = try? MacTweaksProfile.data(.init(ai: [], tweaks: all)) {
+            let temp = NSTemporaryDirectory() + "lightspot-settings-profile-verify-\(getpid()).mobileconfig"
+            try? data.write(to: URL(fileURLWithPath: temp))
+            check("The profile with every Settings tweak is well-formed (plutil -lint)", CleanDevMacEngine.run("/usr/bin/plutil", ["-lint", temp], timeout: 10).status == 0)
+            try? fm.removeItem(atPath: temp)
+            let payloads = ((try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any])?["PayloadContent"] as? [[String: Any]] ?? []
+            let marker = payloads.first { ($0["PayloadIdentifier"] as? String)?.hasSuffix(".preferences.com.lightspot.app.tweaks") == true }
+            let settings = ((marker?["PayloadContent"] as? [String: Any])?["com.lightspot.app.tweaks"] as? [String: Any])
+                .flatMap { ($0["Forced"] as? [[String: Any]])?.first?["mcx_preference_settings"] as? [String: Any] }
+            check("...and its marker reads back with all \(all.count) tweaks", MacTweaksProfile.read(forced: true) { settings?[$0] }.tweaks == all)
+        }
+        let recommended = rows.filter { MacTweaksSettings.tweaks(in: .recommended).map(\.id).contains($0.id) && !$0.readOnly && $0.countLabel != "On" }
+        print("     Recommended would change: \(recommended.map(\.id).joined(separator: ", "))")
+        print("     Its plan: \(MacTweaksSettings.planNotes(ticked: recommended, context: reading).joined(separator: " "))")
+        let symbols = MacTweaksSettings.catalog.map(\.symbol) + MacTweaksSettings.Preset.allCases.map(\.symbol)
+            + ["arrow.uturn.backward.circle", "arrow.uturn.backward.square.fill", "minus.square.fill", "lock", "dock.arrow.up.rectangle", MacTweaksSection.settings.symbol]
+        let missing = symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        check("Every Settings SF Symbol exists\(missing.isEmpty ? "" : ": missing " + missing.joined(separator: ", "))", missing.isEmpty)
+    }
 }

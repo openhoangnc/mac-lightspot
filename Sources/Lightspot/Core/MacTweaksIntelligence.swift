@@ -459,7 +459,7 @@ enum MacTweaksIntelligence {
         // Unticked, so reopening after Esc or a timeout never defaults to undoing the user's choice.
         if ours.on && ours.ai {
             var row = MacTweaksRow(id: turnOnID, symbol: symbol(turnOnID), title: turnOnTitle,
-                                   detail: ours.tweaks.isEmpty
+                                   detail: MacTweaksSettings.heldTweaks(ours).isEmpty
                                        ? "Removes Lightspot's profile so macOS can use Apple Intelligence again. It downloads the models when you next turn a feature on."
                                        : "Updates Lightspot's profile to stop turning Apple Intelligence off, keeping your other Mac Tweaks settings.")
             row.exclusive = true
@@ -537,13 +537,15 @@ enum MacTweaksIntelligence {
     static func planNotes(ticked: [MacTweaksRow], shown: [MacTweaksRow], context: ScanContext?) -> [String] {
         let context = context ?? ScanContext()
         let ours = context.installed
+        // Settings tweaks this version doesn't know can't go in a new profile.
+        let dropped = [MacTweaksSettings.droppedNote(MacTweaksSettings.unknownTweaks(ours))].compactMap { $0 }
         if ticked.contains(where: { $0.id == turnOnID }) {
-            if ours.tweaks.isEmpty {
+            if MacTweaksSettings.heldTweaks(ours).isEmpty {
                 return ["Removes Lightspot's profile, so macOS can use Apple Intelligence again on every account on this Mac.",
-                        "Lightspot asks for your administrator password to remove its profile."]
+                        "Lightspot asks for your administrator password to remove its profile."] + dropped
             }
             return ["Updates Lightspot's profile to stop turning Apple Intelligence off on every account on this Mac. Your other Mac Tweaks settings stay.",
-                    "System Settings asks you to approve the updated profile."]
+                    "System Settings asks you to approve the updated profile."] + dropped
         }
         if ticked.contains(where: { $0.id == finishRemovalID }) {
             return ["Apple Intelligence stays off.",
@@ -556,9 +558,13 @@ enum MacTweaksIntelligence {
         if !keptShown.isEmpty { notes.append("Kept on: \(keptShown.joined(separator: ", ")).") }
         let models = removalSentence(removalPlan(keeping: kept, inventory: context.inventory), inventory: context.inventory)
         if !models.isEmpty { notes.append(models) }
-        let target = MacTweaksProfile.Contents(ai: kept, tweaks: ours.tweaks)
-        notes.append(MacTweaksProfile.matches(target, installed: ours)
-                     ? "The profile is already installed." : "System Settings asks you to approve one profile.")
+        let target = MacTweaksProfile.Contents(ai: kept, tweaks: MacTweaksSettings.heldTweaks(ours))
+        if MacTweaksProfile.matches(target, installed: ours) {
+            notes.append("The profile is already installed.")
+        } else {
+            notes.append("System Settings asks you to approve one profile.")
+            notes += dropped
+        }
         return notes
     }
 
@@ -595,30 +601,23 @@ enum MacTweaksIntelligence {
         let tickedIDs = Set(rows.map(\.id))
         let kept = Set(Catalog.availableFeatures.map(\.id)).subtracting(tickedIDs)
         let ours = ai.profileInstalled()
-        let target = MacTweaksProfile.Contents(ai: kept, tweaks: ours.tweaks)
+        // The Settings tweaks the profile holds stay in it.
+        let target = MacTweaksProfile.Contents(ai: kept, tweaks: MacTweaksSettings.heldTweaks(ours))
         var log: [String] = []
 
-        // 1. The profile.
-        if !MacTweaksProfile.matches(target, installed: ours) {
-            progress?("Preparing the profile…")
-            do { try ai.presentProfile(target) } catch {
-                return finish(MacTweaksReceipt(headline: "Couldn't start.",
-                    problems: ["Lightspot couldn't write the profile: \(error.localizedDescription)"], isSuccess: false),
-                    env: env, started: started, log: ["profile write failed: \(error.localizedDescription)"])
-            }
-            progress?(approvalMessage)
-            log.append("presented the profile for approval")
-            guard waitForProfile(target, env: env) else {
-                log.append("the profile was not installed within the wait")
-                return finish(MacTweaksReceipt(headline: "Waiting for the profile.",
-                    notes: ["The profile isn't installed yet. Approve it in System Settings › General › Device Management, then open Mac Tweaks again to finish."],
-                    isSuccess: false),
-                    env: env, started: started, log: log)
-            }
-            ai.removeProfileFile()
-            log.append("profile installed")
-        } else {
-            log.append("the profile already matches")
+        // 1. The profile, through the routine Settings shares.
+        switch MacTweaksProfile.change(to: target, env: env, progress: progress, log: &log) {
+        case .writeFailed(let message):
+            return finish(MacTweaksReceipt(headline: "Couldn't start.",
+                problems: ["Lightspot couldn't write the profile: \(message)"], isSuccess: false),
+                env: env, started: started, log: log)
+        case .installed, .alreadyMatches, .removed:
+            break
+        case .notApproved, .notRemoved, .promptCancelled, .promptRefused:
+            return finish(MacTweaksReceipt(headline: "Waiting for the profile.",
+                notes: ["The profile isn't installed yet. Approve it in System Settings › General › Device Management, then open Mac Tweaks again to finish."],
+                isSuccess: false),
+                env: env, started: started, log: log)
         }
 
         // 2. The models, now that they can't download again.
@@ -801,7 +800,8 @@ enum MacTweaksIntelligence {
     }
 
     /// Removes Lightspot's profile through the administrator batch (or reinstalls it without
-    /// Apple Intelligence when it holds profile tweaks), so macOS can use Apple Intelligence again.
+    /// Apple Intelligence when it holds Settings tweaks), so macOS can use Apple Intelligence
+    /// again. Through the routine Settings shares (`MacTweaksProfile.change`).
     private static func turnBackOn(env: ProviderEnvironment, started: Date,
                                    progress: (@Sendable (String) -> Void)?) -> ApplyResult {
         let ai = env.intelligence
@@ -813,59 +813,44 @@ enum MacTweaksIntelligence {
                 notes: ["Lightspot isn't turning Apple Intelligence off on this Mac."], isSuccess: false),
                 env: env, started: started, log: ["turn-on: the profile doesn't turn Apple Intelligence off"], rescan: true)
         }
-        if !ours.tweaks.isEmpty {
-            // Keep the Settings tweaks: reinstall without Apple Intelligence.
-            let target = MacTweaksProfile.Contents(ai: nil, tweaks: ours.tweaks)
-            progress?("Preparing the profile…")
-            do { try ai.presentProfile(target) } catch {
+        let tweaks = MacTweaksSettings.heldTweaks(ours)
+        var log: [String] = []
+        let change = MacTweaksProfile.change(to: MacTweaksProfile.Contents(ai: nil, tweaks: tweaks), env: env,
+                                             progress: progress, log: &log)
+        if !tweaks.isEmpty {
+            // Keep the Settings tweaks: reinstalled without Apple Intelligence.
+            switch change {
+            case .writeFailed(let message):
                 return finish(MacTweaksReceipt(headline: "Couldn't start.",
-                    problems: ["Lightspot couldn't write the profile: \(error.localizedDescription)"], isSuccess: false),
-                    env: env, started: started, log: ["profile write failed"])
-            }
-            progress?(approvalMessage)
-            guard waitForProfile(target, env: env) else {
+                    problems: ["Lightspot couldn't write the profile: \(message)"], isSuccess: false),
+                    env: env, started: started, log: log)
+            case .installed, .alreadyMatches, .removed:
+                var receipt = backOn
+                receipt.notes.insert("Your other Mac Tweaks settings are still in the profile.", at: 0)
+                return finish(receipt, env: env, started: started, log: log + ["reinstalled without Apple Intelligence"], rescan: true)
+            case .notApproved, .notRemoved, .promptCancelled, .promptRefused:
                 return finish(MacTweaksReceipt(headline: "Waiting for the profile.",
                     notes: ["Approve the updated profile in System Settings › General › Device Management, then open Mac Tweaks again."],
                     isSuccess: false),
-                    env: env, started: started, log: ["reinstall not approved within the wait"])
+                    env: env, started: started, log: log + ["reinstall not approved within the wait"])
             }
-            ai.removeProfileFile()
-            var receipt = backOn
-            receipt.notes.insert("Your other Mac Tweaks settings are still in the profile.", at: 0)
-            return finish(receipt, env: env, started: started, log: ["reinstalled without Apple Intelligence"], rescan: true)
         }
-
-        // Remove the whole profile, as root, in Free Up Space's batch form.
-        progress?("Removing the profile…")
-        let tag = "__LS_" + String(UUID().uuidString.prefix(8))
-        var log: [String] = []
-        switch env.runAdmin(MacTweaksStorage.adminScript([MacTweaksProfile.removeCommand()], tag: tag)) {
-        case .cancelled:
+        switch change {
+        case .removed, .alreadyMatches:
+            return finish(backOn, env: env, started: started, log: log, rescan: true)
+        case .promptCancelled:
             return finish(MacTweaksReceipt(headline: "The profile is still installed.",
                 notes: ["The administrator prompt was cancelled, so Lightspot didn't remove its profile."], isSuccess: false),
-                env: env, started: started, log: ["profiles remove: the prompt was cancelled"])
-        case .refused(let message):
+                env: env, started: started, log: log)
+        case .promptRefused:
             return finish(MacTweaksReceipt(headline: "The profile is still installed.",
                 notes: ["macOS didn't accept the administrator password, so Lightspot didn't remove its profile."], isSuccess: false),
-                env: env, started: started, log: ["profiles remove: not authorized (\(message))"])
-        case .ran(_, let output):
-            let step = MacTweaksStorage.batchResults(output, tag: tag)[1]
-            log.append("profiles remove: " + (step.map {
-                "status \($0.status)" + ($0.status == 0 ? "" : " (\(MacTweaksStorage.reason($0.output)))")
-            } ?? "no report"))
+                env: env, started: started, log: log)
+        case .notRemoved, .installed, .notApproved, .writeFailed:
+            return finish(MacTweaksReceipt(headline: "The profile is still installed.",
+                notes: [removalInstruction + " Then open Mac Tweaks again."], isSuccess: false),
+                env: env, started: started, log: log)
         }
-        if !ai.profileInstalled().on {
-            return finish(backOn, env: env, started: started, log: log, rescan: true)
-        }
-        // The batch ran and the profile stayed: the owner removes it in System Settings.
-        progress?(removalInstruction)
-        ai.openDeviceManagement()
-        if waitForRemoval(env: env) {
-            return finish(backOn, env: env, started: started, log: log + ["profile removed in System Settings"], rescan: true)
-        }
-        return finish(MacTweaksReceipt(headline: "The profile is still installed.",
-            notes: [removalInstruction + " Then open Mac Tweaks again."], isSuccess: false),
-            env: env, started: started, log: log + ["profile not removed within the wait"])
     }
 
     /// Writes the receipt to the log and, when something changed, scans again.

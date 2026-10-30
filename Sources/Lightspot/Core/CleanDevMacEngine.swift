@@ -623,14 +623,16 @@ enum CleanDevMacEngine {
     }
 
     /// `output(of:)` with the exit status: -1 when the program could not start or was
-    /// stopped at `timeout`.
-    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) -> (status: Int32, output: String) {
+    /// stopped at `timeout`. `mergeErrors` reads stderr into the same output (launchctl says why
+    /// it failed there).
+    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval,
+                    mergeErrors: Bool = false) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = mergeErrors ? pipe : FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         do {
             try process.run()

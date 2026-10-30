@@ -3,8 +3,8 @@ import AppKit
 // MARK: - Mac Tweaks Provider
 //
 // The "Mac Tweaks" search row and the state behind its overlay: one section per job
-// (Free Up Space and Apple Intelligence now; Settings and Background Items in later
-// releases), each with an engine that scans and applies. Scans and applies run on the
+// (Free Up Space, Apple Intelligence and Settings now; Background Items in a later release),
+// each with an engine that scans and applies. Scans and applies run on the
 // provider's own queue and publish snapshots, so `search()` and the overlay only ever
 // read memory (invariant 0). Nothing runs until the user opens Mac Tweaks: at launch
 // and on every keystroke the row is static text plus the last scan's total.
@@ -51,12 +51,13 @@ enum MacTweaksSection: String, CaseIterable, Sendable {
 
     /// The sections this build has, in tab order. Only these are shown, scanned or reachable
     /// with ⇥. Apple Intelligence only where it exists: Apple silicon, and a macOS with at least
-    /// one of its features (none before 15.1).
+    /// one of its features (none before 15.1). Settings everywhere: macOS 13 has most of its
+    /// tweaks.
     static let built: [MacTweaksSection] =
         sections(appleIntelligence: Catalog.hasAppleSilicon && !Catalog.availableFeatures.isEmpty)
 
     static func sections(appleIntelligence: Bool) -> [MacTweaksSection] {
-        appleIntelligence ? [.freeUpSpace, .appleIntelligence] : [.freeUpSpace]
+        (appleIntelligence ? [.freeUpSpace, .appleIntelligence] : [.freeUpSpace]) + [.settings]
     }
 
     /// Its position in `allCases`: per-section state is kept in arrays, not in dictionaries
@@ -119,10 +120,18 @@ struct MacTweaksRow: Sendable, Equatable, Identifiable {
     /// sets, or one Lightspot's own profile already locks off).
     var readOnly = false
     /// Applied on its own: ticking it unticks every other row, and ticking another unticks it
-    /// (Apple Intelligence's turn-on and finish rows).
+    /// (Apple Intelligence's turn-on and finish rows, Settings' Undo everything).
     var exclusive = false
+    /// The header of the group it belongs to (Settings): the list draws it above the first row of
+    /// each group.
+    var group: String?
+    /// Ticking it undoes something (Settings' On rows): the box shows an undo arrow.
+    var undoes = false
+    /// A preset: Space ticks these rows, or unticks them when they all are. Never applied itself.
+    var ticks: [String]?
 
     var isLink: Bool { link != nil }
+    var isPreset: Bool { ticks != nil }
 
     /// The right-hand column.
     var value: String {
@@ -163,12 +172,49 @@ enum MacTweaksTicks {
     }
 
     /// Space on `id`: ticks or unticks it. An exclusive row is applied alone, so ticking it
-    /// unticks the rest, and ticking any other row unticks the exclusive ones.
+    /// unticks the rest, and ticking any other row unticks the exclusive ones. A preset ticks the
+    /// rows it names that Space can tick (unticking them when they all are already), and is never
+    /// ticked itself.
     static func toggled(_ ticks: Set<String>, _ id: String, in rows: [MacTweaksRow]) -> Set<String> {
         guard let row = rows.first(where: { $0.id == id }), isTickable(row) else { return ticks }
+        if let named = row.ticks {
+            let targets = presetTargets(named, in: rows)
+            guard !targets.isEmpty else { return ticks }
+            if targets.allSatisfy(ticks.contains) { return ticks.subtracting(targets) }
+            return ticks.subtracting(rows.filter(\.exclusive).map(\.id)).union(targets)
+        }
         if ticks.contains(id) { return ticks.subtracting([id]) }
         if row.exclusive { return [id] }
         return ticks.subtracting(rows.filter(\.exclusive).map(\.id)).union([id])
+    }
+
+    /// The rows a preset can tick: those it names that are tickable, neither presets nor exclusive.
+    static func presetTargets(_ named: [String], in rows: [MacTweaksRow]) -> [String] {
+        named.filter { id in rows.first { $0.id == id }.map { isTickable($0) && !$0.isPreset && !$0.exclusive } ?? false }
+    }
+
+    /// The rows an apply gets: ticked, and neither links nor presets.
+    static func ticked(_ rows: [MacTweaksRow], _ ticks: Set<String>) -> [MacTweaksRow] {
+        rows.filter { !$0.isLink && !$0.isPreset && ticks.contains($0.id) }
+    }
+
+    /// How a row's box is drawn.
+    enum Box: Sendable, Equatable {
+        case link, locked, unticked, ticked, undo
+        /// A preset with some, not all, of its rows ticked.
+        case mixed
+    }
+
+    static func box(_ row: MacTweaksRow, _ ticks: Set<String>, in rows: [MacTweaksRow]) -> Box {
+        if row.isLink { return .link }
+        if row.readOnly { return .locked }
+        if let named = row.ticks {
+            let targets = presetTargets(named, in: rows)
+            let on = targets.filter(ticks.contains).count
+            return targets.isEmpty || on == 0 ? .unticked : (on == targets.count ? .ticked : .mixed)
+        }
+        guard ticks.contains(row.id) else { return .unticked }
+        return row.undoes ? .undo : .ticked
     }
 }
 
@@ -208,6 +254,19 @@ final class MacTweaksProvider: @unchecked Sendable {
     ]
     private static let lowercaseTitle = title.lowercased()
 
+    /// The row that opens Mac Tweaks on its Settings section, for a few high-intent phrases.
+    static let settingsResultID = "action-mac-tweaks-settings"
+    static let openSettingsScript = "internal:mac-tweaks:settings"
+    static let settingsTitle = "Mac Tweaks: Settings"
+    static let settingsSubtitle = "Turn off analytics and ads, stop Music opening, tidy Finder and the Dock, with undo"
+    /// Phrases only, matched exactly or by prefix: a word from inside one ("analytics", "music",
+    /// "library") never brings the row up, so it stays with the row that answers to it.
+    /// "restore dock icons" is the quick action's own name.
+    static let settingsKeywords = [
+        "stop music from opening", "turn off apple music", "turn off mac analytics", "turn off personalized ads",
+        "show the library folder", "show library folder",
+    ]
+
     /// The row that opens Mac Tweaks on its Apple Intelligence section.
     static let intelligenceResultID = "action-mac-tweaks-apple-intelligence"
     static let openIntelligenceScript = "internal:mac-tweaks:apple-intelligence"
@@ -223,9 +282,15 @@ final class MacTweaksProvider: @unchecked Sendable {
     ]
 
     /// Whether a quick action's script opens Mac Tweaks, and on which section (nil: as left).
-    static func isOpenScript(_ script: String) -> Bool { script == openScript || script == openIntelligenceScript }
+    static func isOpenScript(_ script: String) -> Bool {
+        script == openScript || script == openIntelligenceScript || script == openSettingsScript
+    }
     static func section(forScript script: String) -> MacTweaksSection? {
-        script == openIntelligenceScript ? .appleIntelligence : nil
+        switch script {
+        case openIntelligenceScript: return .appleIntelligence
+        case openSettingsScript: return .settings
+        default: return nil
+        }
     }
 
     /// Pure in-memory: static keywords and the last scan's total.
@@ -251,6 +316,25 @@ final class MacTweaksProvider: @unchecked Sendable {
                 score: score,
                 action: .runQuickAction(script: Self.openScript, usesOsascript: false)
             ))
+        }
+        if MacTweaksSection.built.contains(.settings) {
+            var settings: Double?
+            for keyword in Self.settingsKeywords {
+                if let score = FuzzyMatcher.score(query: query, targetLower: keyword, targetTokens: [], targetInitials: nil), score >= 95 {
+                    settings = max(settings ?? 0, score * 0.95)
+                }
+            }
+            if let score = settings {
+                results.append(SearchResult(
+                    id: Self.settingsResultID,
+                    title: Self.settingsTitle,
+                    subtitle: Self.settingsSubtitle,
+                    iconType: .systemSymbol(name: MacTweaksSection.settings.symbol),
+                    category: .quickActions,
+                    score: score,
+                    action: .runQuickAction(script: Self.openSettingsScript, usesOsascript: false)
+                ))
+            }
         }
         if MacTweaksSection.built.contains(.appleIntelligence) {
             var intelligence: Double?
@@ -346,6 +430,8 @@ final class MacTweaksProvider: @unchecked Sendable {
         /// markers. The summary, the plan and Free Up Space's link row are built from it, so none
         /// of them reads anything. Kept like `freeableBytes`: it is small and outlives the rows.
         var appleIntelligenceScan: MacTweaksIntelligence.ScanContext?
+        /// What Settings' last scan (or an apply's rescan) read, for its summary and plan.
+        var settingsScan: MacTweaksSettings.Reading?
 
         subscript(section: MacTweaksSection) -> SectionState {
             get { sections[section.index] }
@@ -384,10 +470,14 @@ final class MacTweaksProvider: @unchecked Sendable {
         /// Apple Intelligence's models on disk, for Free Up Space's link row. The provider sets
         /// it to the last Apple Intelligence scan's total; nil (no row) everywhere else.
         var appleIntelligenceModelBytes: @Sendable () -> Int64? = { nil }
+        /// Everything the Settings section reads or changes besides the profile (which it shares
+        /// with Apple Intelligence through `intelligence`). `.inert` here, as for Apple Intelligence.
+        var settings = MacTweaksSettings.Environment.inert
 
         static var live: Environment {
             var environment = Environment(home: NSHomeDirectory())
             environment.intelligence = .live(home: environment.home)
+            environment.settings = .live
             return environment
         }
 
@@ -418,13 +508,15 @@ final class MacTweaksProvider: @unchecked Sendable {
         switch section {
         case .freeUpSpace: return MacTweaksStorage.Engine(environment: environment)
         case .appleIntelligence: return MacTweaksIntelligence.Engine(environment: environment)
-        case .settings, .backgroundItems: return nil
+        case .settings: return MacTweaksSettings.Engine(environment: environment)
+        case .backgroundItems: return nil
         }
     }
 
     /// The engine for a section, with what the provider knows: Free Up Space gets the last Apple
-    /// Intelligence scan's model total (its link row); Apple Intelligence gets the scan on show
-    /// (so its plan reads nothing) and this section's own wait and cancel flag.
+    /// Intelligence scan's model total (its link row); Apple Intelligence and Settings get the scan
+    /// on show (so their plans read nothing) and their own wait and cancel flag, for the profile's
+    /// approval.
     func makeEngine(for section: MacTweaksSection) -> MacTweaksSectionEngine? {
         var env = environment
         let current = snapshot
@@ -438,7 +530,11 @@ final class MacTweaksProvider: @unchecked Sendable {
             env.intelligence.isCancelled = { [weak self] in self?.isWaitCancelled(section) ?? false }
             return MacTweaksIntelligence.Engine(environment: env, shown: current[section].rows,
                                                 scanned: current.appleIntelligenceScan)
-        case .settings, .backgroundItems:
+        case .settings:
+            env.intelligence.waiting = { [weak self] on in self?.setWaiting(section, on) }
+            env.intelligence.isCancelled = { [weak self] in self?.isWaitCancelled(section) ?? false }
+            return MacTweaksSettings.Engine(environment: env, scanned: current.settingsScan)
+        case .backgroundItems:
             return Self.engine(for: section, environment: env)
         }
     }
@@ -563,6 +659,9 @@ final class MacTweaksProvider: @unchecked Sendable {
                 continue
             }
             state[section] = current
+            // What Settings' scan read goes with its rows (Apple Intelligence's stays: Free Up
+            // Space's link row reads it).
+            if section == .settings { state.settingsScan = nil }
             changed = true
         }
         if changed { state.revision += 1 }
@@ -595,6 +694,7 @@ final class MacTweaksProvider: @unchecked Sendable {
             // What the Apple Intelligence scan read, for the summary, the plan and Free Up
             // Space's link row.
             let context = (engine as? MacTweaksIntelligence.Engine)?.lastContext
+            let reading = (engine as? MacTweaksSettings.Engine)?.lastContext
             update { state in
                 state[section].phase = .ready
                 state[section].rows = rows
@@ -602,6 +702,7 @@ final class MacTweaksProvider: @unchecked Sendable {
                 state[section].generation += 1
                 if section == .freeUpSpace { state.freeableBytes = Self.freeableBytes(rows) }
                 if let context { state.appleIntelligenceScan = context }
+                if let reading { state.settingsScan = reading }
             }
         }
     }
@@ -613,7 +714,7 @@ final class MacTweaksProvider: @unchecked Sendable {
     func apply(_ section: MacTweaksSection, ids: Set<String>) {
         guard let engine = makeEngine(for: section) else { return }
         lock.lock()
-        let selected = state[section].rows.filter { ids.contains($0.id) && !$0.isLink }
+        let selected = MacTweaksTicks.ticked(state[section].rows, ids)
         guard state[section].phase == .ready, !selected.isEmpty else {
             lock.unlock()
             return
@@ -635,11 +736,16 @@ final class MacTweaksProvider: @unchecked Sendable {
             let now = environment.now()
             update { state in
                 var rows: [MacTweaksRow] = []
-                for row in state[section].rows {
-                    if !applied.contains(row.id) {
-                        rows.append(row)
-                    } else if let again = result.rescanned.first(where: { $0.id == row.id }) {
-                        rows.append(again)
+                if result.rescanned.contains(where: { !applied.contains($0.id) }) {
+                    // A full rescan (Apple Intelligence, Settings): every row as it is now.
+                    rows = result.rescanned
+                } else {
+                    for row in state[section].rows {
+                        if !applied.contains(row.id) {
+                            rows.append(row)
+                        } else if let again = result.rescanned.first(where: { $0.id == row.id }) {
+                            rows.append(again)
+                        }
                     }
                 }
                 state[section].rows = rows
@@ -650,7 +756,20 @@ final class MacTweaksProvider: @unchecked Sendable {
                 if section == .freeUpSpace { state.freeableBytes = Self.freeableBytes(rows) }
                 // An apply's rescan, with its own inventory's availability.
                 if let context = (engine as? MacTweaksIntelligence.Engine)?.lastContext { state.appleIntelligenceScan = context }
+                if let reading = (engine as? MacTweaksSettings.Engine)?.lastContext { state.settingsScan = reading }
+                // Apple Intelligence and Settings share one profile: the other one's scan no
+                // longer stands, so opening it scans again.
+                if let sibling = Self.profileSibling(section), state[sibling].phase == .ready { state[sibling].scannedAt = nil }
             }
+        }
+    }
+
+    /// The section that shares the profile with this one.
+    static func profileSibling(_ section: MacTweaksSection) -> MacTweaksSection? {
+        switch section {
+        case .appleIntelligence: return .settings
+        case .settings: return .appleIntelligence
+        case .freeUpSpace, .backgroundItems: return nil
         }
     }
 

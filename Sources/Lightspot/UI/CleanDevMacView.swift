@@ -588,16 +588,24 @@ struct OverlayKeyHint: View {
 struct OverlayTag: View {
     let label: String
     let color: Color
+    /// An SF Symbol before the label (Mac Tweaks' lock on profile rows).
+    var symbol: String? = nil
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 9.5, weight: .bold))
-            .foregroundColor(color.opacity(0.95))
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.18)))
+        HStack(spacing: 3) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 8.5, weight: .bold))
+            }
+            Text(label)
+                .font(.system(size: 9.5, weight: .bold))
+        }
+        .foregroundColor(color.opacity(0.95))
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(color.opacity(0.18)))
     }
 }
 

@@ -681,8 +681,9 @@ final class SearchViewModel: ObservableObject {
 
     func handleCancel() {
         if isTweaksPresented {
-            // Esc backs out of the plan first, then closes Mac Tweaks. On the Apple Intelligence
-            // approval wait, Esc also stops the wait (panel hiding does not).
+            // Esc backs out of the plan first, then closes Mac Tweaks. While a section waits for
+            // System Settings (Apple Intelligence's or Settings' profile), Esc also stops the wait
+            // (panel hiding does not).
             if !tweaks.cancelConfirmation() {
                 tweaks.requestCancel()
                 hideTweaks()

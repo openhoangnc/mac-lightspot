@@ -44,7 +44,8 @@ final class MacTweaksModel: ObservableObject {
     var rows: [Row] { state.rows }
     var cursor: Int { cursors[section.index] }
     var checkedIDs: Set<String> { checked[section.index] }
-    var checkedRows: [Row] { rows.filter { !$0.isLink && checkedIDs.contains($0.id) } }
+    /// The ticked rows an apply gets: never a link or a preset.
+    var checkedRows: [Row] { MacTweaksTicks.ticked(rows, checkedIDs) }
     var offeredRows: [Row] { rows.filter { !$0.isLink } }
     var selectedRow: Row? { cursor >= 0 && cursor < rows.count ? rows[cursor] : nil }
     /// Any row Space can tick: without one (every row read-only) the tick buttons and hints go.
@@ -58,6 +59,9 @@ final class MacTweaksModel: ObservableObject {
         if section == .appleIntelligence {
             return MacTweaksIntelligence.summary(rows: rows, context: snapshot.appleIntelligenceScan)
         }
+        if section == .settings {
+            return MacTweaksSettings.summary(rows: rows, ticked: checkedRows, context: snapshot.settingsScan)
+        }
         let offered = offeredRows
         guard !offered.isEmpty else { return "Nothing to free right now." }
         let found = "Found \(Self.amount(offered)) in \(offered.count) \(offered.count == 1 ? "place" : "places")"
@@ -68,6 +72,7 @@ final class MacTweaksModel: ObservableObject {
     /// The plan's title and button: "Free up 16.3 GB", or "Turn off 3 features".
     var applyTitle: String {
         if section == .appleIntelligence { return MacTweaksIntelligence.applyTitle(ticked: checkedRows) }
+        if section == .settings { return MacTweaksSettings.applyTitle(ticked: checkedRows) }
         return "Free up " + Self.amount(checkedRows)
     }
 
@@ -185,6 +190,12 @@ final class MacTweaksModel: ObservableObject {
         guard !isConfirming, state.phase == .ready else { return }
         checked[section.index] = MacTweaksTicks.toggled(checked[section.index], id, in: rows)
     }
+
+    /// How a row's box is drawn: ticked, an undo arrow, a preset partly ticked, a lock or a link.
+    func box(_ row: Row) -> MacTweaksTicks.Box { MacTweaksTicks.box(row, checkedIDs, in: rows) }
+
+    /// Whether any row starts ticked, so "Defaults" means something.
+    var hasDefaults: Bool { rows.contains { $0.isDefault } }
 
     func toggleCursor() {
         guard let row = selectedRow else { return }

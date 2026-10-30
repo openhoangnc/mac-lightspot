@@ -4,8 +4,8 @@ import Foundation
 // MARK: - The Mac Tweaks configuration profile
 //
 // One System-scope profile holds every locked setting: Apple Intelligence off (except the
-// kept features), a download block so removed models can't come back, and — from phase 3 —
-// the profile-backed Settings tweaks. Removing the profile undoes all of it. Ported from
+// kept features), a download block so removed models can't come back, and the Settings
+// section's profile-backed tweaks. Removing the profile undoes all of it. Ported from
 // RemoveMacAI's Profile.swift (MIT); the asset-service technique is pared's. The models are
 // shared by every account and the profile is System scope, so it changes Apple Intelligence
 // for everyone on this Mac.
@@ -34,7 +34,7 @@ enum MacTweaksProfile {
     }
 
     /// What the profile contains: Apple Intelligence off except the kept features (nil leaves
-    /// Apple Intelligence alone), and the profile tweaks (phase 3). Changing `ai` keeps `tweaks`.
+    /// Apple Intelligence alone), and the Settings tweaks it locks. Changing `ai` keeps `tweaks`.
     struct Contents: Equatable, Sendable {
         var ai: Set<String>?
         var tweaks: Set<String>
@@ -62,13 +62,24 @@ enum MacTweaksProfile {
                 forced[downloadDomain, default: [:]][downloadKey(set)] = blockedURL
             }
         }
-        // Phase 3 adds the profile-backed Settings tweaks here; their keys are recorded in the
-        // marker now so changing `ai` keeps them.
+        // The profile-backed Settings tweaks this version knows: their restrictions and forced
+        // keys. The marker records exactly those, so changing `ai` keeps them.
+        let tweaks = MacTweaksSettings.profileTweaks(contents.tweaks)
+        for tweak in tweaks {
+            for change in tweak.changes {
+                switch change {
+                case .restriction(let key): restrictions[key] = false
+                case .forced(let domain, let key, let value):
+                    if let object = value.object { forced[domain, default: [:]][key] = object }
+                default: break
+                }
+            }
+        }
 
         let marker: [String: Any] = [
             "installed": true,
             "ai": contents.ai != nil,
-            "tweaks": contents.tweaks.sorted().joined(separator: ","),
+            "tweaks": tweaks.map(\.id).sorted().joined(separator: ","),
             "kept": (contents.ai ?? []).sorted().joined(separator: ","),
             "features": Catalog.availableFeatures.map(\.id).sorted().joined(separator: ","),
         ]
@@ -87,8 +98,7 @@ enum MacTweaksProfile {
             "PayloadIdentifier": identifier,
             "PayloadUUID": uuid(identifier),
             "PayloadDisplayName": displayName,
-            "PayloadDescription":
-                "Turns off Apple Intelligence and the settings chosen in Lightspot's Mac Tweaks, and stops removed models downloading again. Remove this profile to undo everything it changed.",
+            "PayloadDescription": description(contents, tweaks: tweaks),
             "PayloadOrganization": organization,
             "PayloadScope": "System",
             "PayloadRemovalDisallowed": false,
@@ -97,6 +107,19 @@ enum MacTweaksProfile {
         let hasRestrictions = restrictions.keys.contains { $0.hasPrefix("allow") }
         profile["PayloadContent"] = (hasRestrictions ? [restrictions] : []) + preferences
         return try PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0)
+    }
+
+    /// What the profile does, as System Settings shows it before the owner approves it.
+    static func description(_ contents: Contents, tweaks: [MacTweaksSettings.Tweak]) -> String {
+        var text: String
+        if contents.ai != nil {
+            text = tweaks.isEmpty
+                ? "Turns off Apple Intelligence as chosen in Lightspot's Mac Tweaks, and stops removed models downloading again."
+                : "Turns off Apple Intelligence and the settings chosen in Lightspot's Mac Tweaks, and stops removed models downloading again."
+        } else {
+            text = "Locks the settings chosen in Lightspot's Mac Tweaks: " + tweaks.map(\.title).joined(separator: "; ") + "."
+        }
+        return text + " Remove this profile to undo everything it changed."
     }
 
     private static func payload(type: String, suffix: String, name: String) -> [String: Any] {
@@ -171,7 +194,12 @@ enum MacTweaksProfile {
         return CFPreferencesAppValueIsForced("installed" as CFString, domain)
     }
 
-    static func matches(_ contents: Contents, installed: Installed) -> Bool { installed.contents == contents }
+    /// Whether the installed profile is `contents`. A target without Apple Intelligence never
+    /// matches a profile that turns it off, a stale one included (whose `contents` reads as
+    /// leaving it alone): otherwise turning it back on would end at once with the profile still in.
+    static func matches(_ contents: Contents, installed: Installed) -> Bool {
+        installed.contents == contents && !(contents.ai == nil && installed.on && installed.ai)
+    }
 
     // MARK: The removal
 
@@ -181,5 +209,97 @@ enum MacTweaksProfile {
     /// status reported, `exit 0`); the result is judged by the marker.
     static func removeCommand(profiles: String = "/usr/bin/profiles") -> String {
         "\(MacTweaksStorage.shellQuote(profiles)) remove -identifier \(MacTweaksStorage.shellQuote(identifier)) -forced"
+    }
+
+    // MARK: Changing it
+
+    /// How a change of the profile ended, judged by the marker.
+    enum ChangeOutcome: Sendable, Equatable {
+        /// The installed profile is already the target: nothing to do.
+        case alreadyMatches
+        /// The marker now matches the target.
+        case installed
+        /// The profile is gone.
+        case removed
+        /// The approval wait ran out, or Esc stopped it; the profile stays pending in System Settings.
+        case notApproved
+        /// The batch ran but the profile stayed, and the owner's Remove didn't come within the wait.
+        case notRemoved
+        /// The administrator prompt was dismissed: nothing ran.
+        case promptCancelled
+        /// Not authorized: nothing ran.
+        case promptRefused(String)
+        /// The profile file couldn't be written.
+        case writeFailed(String)
+    }
+
+    /// The one routine Apple Intelligence and Settings change the profile with. A target with
+    /// something in it is installed: written, opened, Device Management opened, then the marker
+    /// polled once a second for up to 10 minutes (Esc stops it), and the file removed once it is in.
+    /// An empty target removes the profile: one administrator batch in Free Up Space's form, with
+    /// `alsoAsAdministrator` after the removal so an apply asks once (Undo everything's background
+    /// daemons); with no profile to remove, that batch holds `alsoAsAdministrator` alone. A
+    /// cancelled or refused prompt stops there; a batch that ran and left the profile opens Device
+    /// Management and waits for the owner's Remove. Progress lines and log lines go through
+    /// `progress` and `log`.
+    static func change(to target: Contents, env: MacTweaksProvider.Environment, alsoAsAdministrator extra: [String] = [],
+                       progress: (@Sendable (String) -> Void)?, log: inout [String]) -> ChangeOutcome {
+        let ai = env.intelligence
+        let ours = ai.profileInstalled()
+        if target.isEmpty {
+            let removing = ours.on
+            guard removing || !extra.isEmpty else { return .alreadyMatches }
+            let what = removing ? "profiles remove" : "administrator steps"
+            progress?(removing ? "Removing the profile…" : "Asking for your password…")
+            let tag = "__LS_" + String(UUID().uuidString.prefix(8))
+            switch env.runAdmin(MacTweaksStorage.adminScript((removing ? [removeCommand()] : []) + extra, tag: tag)) {
+            case .cancelled:
+                log.append("\(what): the prompt was cancelled")
+                return .promptCancelled
+            case .refused(let message):
+                log.append("\(what): not authorized (\(message))")
+                return .promptRefused(message)
+            case .ran(_, let output):
+                let steps = MacTweaksStorage.batchResults(output, tag: tag)
+                if removing {
+                    log.append("profiles remove: " + (steps[1].map {
+                        "status \($0.status)" + ($0.status == 0 ? "" : " (\(MacTweaksStorage.reason($0.output)))")
+                    } ?? "no report"))
+                }
+                let first = removing ? 2 : 1
+                for index in extra.indices {
+                    if let step = steps[index + first] { log.append("administrator step \(index + first): status \(step.status)") }
+                }
+            }
+            guard removing else { return .alreadyMatches }
+            if !ai.profileInstalled().on { return .removed }
+            // The batch ran and the profile stayed: the owner removes it in System Settings.
+            progress?(MacTweaksIntelligence.removalInstruction)
+            ai.openDeviceManagement()
+            if MacTweaksIntelligence.waitForRemoval(env: env) {
+                log.append("profile removed in System Settings")
+                return .removed
+            }
+            log.append("profile not removed within the wait")
+            return .notRemoved
+        }
+        if matches(target, installed: ours) {
+            log.append("the profile already matches")
+            return .alreadyMatches
+        }
+        progress?("Preparing the profile…")
+        do { try ai.presentProfile(target) } catch {
+            log.append("profile write failed: \(error.localizedDescription)")
+            return .writeFailed(error.localizedDescription)
+        }
+        progress?(MacTweaksIntelligence.approvalMessage)
+        log.append("presented the profile for approval")
+        guard MacTweaksIntelligence.waitForProfile(target, env: env) else {
+            log.append("the profile was not installed within the wait")
+            return .notApproved
+        }
+        ai.removeProfileFile()
+        log.append("profile installed")
+        return .installed
     }
 }

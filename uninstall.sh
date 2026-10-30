@@ -112,10 +112,32 @@ fi
 # 4. Remove Preferences, the single-instance lock directory, and the HTTP cache,
 #    HTTP storage and cookie jar that versions up to 1.2.0 left behind (their update
 #    check used URLSession.shared, which writes all three; see LegacyNetworkStores).
+#    Mac Tweaks' undo journal and Dock backup stay: they are the only record of what
+#    Lightspot changed, and reinstalling Lightspot can still undo it from them. So do
+#    the journals it couldn't read and kept aside, which a person can still read.
 echo "--> Clearing application preferences..."
 run_quiet defaults delete com.lightspot.app
 run rm -f "${HOME}/Library/Preferences/com.lightspot.app.plist"
-run rm -rf "${HOME}/Library/Application Support/${APP_NAME}"
+SUPPORT_DIR="${HOME}/Library/Application Support/${APP_NAME}"
+TWEAKS_JOURNAL="${SUPPORT_DIR}/tweaks-journal.json"
+DOCK_BACKUP="${SUPPORT_DIR}/dock-backup.plist"
+UNREADABLE_JOURNALS=0
+for ITEM in "${SUPPORT_DIR}"/tweaks-journal-unreadable-*.json; do
+    if [ -f "${ITEM}" ]; then
+        UNREADABLE_JOURNALS=1
+    fi
+done
+if [ -f "${TWEAKS_JOURNAL}" ] || [ -f "${DOCK_BACKUP}" ] || [ "${UNREADABLE_JOURNALS}" -eq 1 ]; then
+    for ITEM in "${SUPPORT_DIR}"/* "${SUPPORT_DIR}"/.[!.]*; do
+        [ -e "${ITEM}" ] || continue
+        case "$(basename "${ITEM}")" in
+            tweaks-journal.json|tweaks-journal-unreadable-*.json|dock-backup.plist) continue ;;
+        esac
+        run rm -rf "${ITEM}"
+    done
+else
+    run rm -rf "${SUPPORT_DIR}"
+fi
 for LEFTOVER in "${HOME}/Library/Caches/com.lightspot.app" "${HOME}/Library/HTTPStorages/com.lightspot.app" \
                 "${HOME}/Library/HTTPStorages/com.lightspot.app.binarycookies"; do
     if [ -e "${LEFTOVER}" ]; then
@@ -238,6 +260,56 @@ restore_spotlight_indexing() {
     echo "      ${command}"
 }
 
+# 6. Say what Mac Tweaks changed and leaves as it is. Nothing is reverted here: undoing
+#    a setting means knowing its earlier value, which only Lightspot reads.
+TWEAKS_PROFILE=0
+for MANAGED in "/Library/Managed Preferences/com.lightspot.app.tweaks.plist" \
+               "/Library/Managed Preferences/$(id -un)/com.lightspot.app.tweaks.plist"; do
+    if [ -f "${MANAGED}" ]; then
+        TWEAKS_PROFILE=1
+    fi
+done
+TWEAKS_LEFT=0
+if [ -f "${TWEAKS_JOURNAL}" ] || [ -f "${DOCK_BACKUP}" ] || [ "${UNREADABLE_JOURNALS}" -eq 1 ] || [ "${TWEAKS_PROFILE}" -eq 1 ]; then
+    TWEAKS_LEFT=1
+fi
+mac_tweaks_notice() {
+    if [ "${TWEAKS_LEFT}" -eq 0 ]; then
+        return 0
+    fi
+    echo "--> Mac Tweaks' changes stay on this Mac:"
+    if [ -f "${TWEAKS_JOURNAL}" ]; then
+        echo "    - settings Lightspot changed; their earlier values are kept in"
+        echo "      ~/Library/Application Support/${APP_NAME}/tweaks-journal.json"
+    fi
+    if [ "${UNREADABLE_JOURNALS}" -eq 1 ]; then
+        echo "    - undo journals Lightspot couldn't read, kept aside as"
+        echo "      ~/Library/Application Support/${APP_NAME}/tweaks-journal-unreadable-*.json"
+    fi
+    if [ "${TWEAKS_PROFILE}" -eq 1 ]; then
+        echo "    - the configuration profile \"Lightspot Mac Tweaks\", for every account on this Mac"
+    fi
+    if [ -f "${DOCK_BACKUP}" ]; then
+        echo "    - the Dock icons Clear Dock Icons removed, kept in"
+        echo "      ~/Library/Application Support/${APP_NAME}/dock-backup.plist"
+    fi
+    if [ -f "${TWEAKS_JOURNAL}" ] && [ "${TWEAKS_PROFILE}" -eq 1 ]; then
+        echo "    To undo the settings, reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\" in"
+        echo "    Mac Tweaks > Settings, or remove \"Lightspot Mac Tweaks\" in System Settings > General >"
+        echo "    Device Management for the locked ones."
+    elif [ -f "${TWEAKS_JOURNAL}" ]; then
+        echo "    To undo the settings, reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\" in"
+        echo "    Mac Tweaks > Settings."
+    elif [ "${TWEAKS_PROFILE}" -eq 1 ]; then
+        echo "    To undo the settings, remove \"Lightspot Mac Tweaks\" in System Settings > General >"
+        echo "    Device Management, or reinstall ${APP_NAME} and choose \"Undo everything Lightspot changed\"."
+    fi
+    if [ -f "${DOCK_BACKUP}" ]; then
+        echo "    To put the Dock icons back, reinstall ${APP_NAME} and choose Restore Dock Icons."
+    fi
+}
+mac_tweaks_notice
+
 if [ "$RESTORE_SPOTLIGHT" -eq 1 ]; then
     restore_spotlight_shortcut
     restore_spotlight_agent
@@ -249,5 +321,9 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "=== Dry run complete. Nothing was changed. ==="
 else
-    echo "=== Uninstallation Complete! ${APP_NAME} has been completely removed. ==="
+    if [ "${TWEAKS_LEFT}" -eq 1 ]; then
+        echo "=== Uninstallation Complete! ${APP_NAME} is removed; what Mac Tweaks changed stays (see above). ==="
+    else
+        echo "=== Uninstallation Complete! ${APP_NAME} has been completely removed. ==="
+    fi
 fi

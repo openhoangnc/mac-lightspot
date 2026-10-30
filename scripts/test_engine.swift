@@ -215,6 +215,7 @@ struct TestRunner {
         testCleanDevMacRepoScan()
         runMacTweaksTests()
         runIntelligenceTests()
+        runSettingsTests()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -4464,13 +4465,16 @@ struct TestRunner {
             assertTrue(all.contains { $0.id == tweak.id }, "\(tweak.name) is a quick action")
             assertTrue(!tweak.requiresAdmin && !QuickActionsProvider.requiresAdministratorPrivileges(script: tweak.script),
                        "\(tweak.name) needs no administrator password")
-            if !tweak.usesOsascript {
+            if !tweak.usesOsascript && !tweak.script.hasPrefix("internal:") {
                 assertTrue(parses(tweak.script), "\(tweak.name) parses: \(tweak.script)")
             }
         }
         assertEqual(Set(all.map(\.id)).count, all.count, "Quick action IDs are unique")
-        assertEqual(MacTweaks.actions.first { $0.name == "Clear Dock Icons" }?.script,
-                    "defaults write com.apple.dock persistent-apps -array && killall Dock", "Clear Dock Icons is the requested one-liner")
+        // Clear Dock Icons saves the icons first, and Restore Dock Icons puts them back (phase 3).
+        assertEqual(MacTweaks.actions.first { $0.name == "Clear Dock Icons" }?.script, MacTweaksDock.clearScript,
+                    "Clear Dock Icons is an internal action that backs up first")
+        assertEqual(MacTweaks.actions.first { $0.name == "Restore Dock Icons" }?.script, MacTweaksDock.restoreScript,
+                    "...and Restore Dock Icons puts the icons back")
 
         // The toggles, run for real against a scratch domain: never the user's settings.
         let domain = "com.lightspot.test.tweaks"
@@ -5845,7 +5849,7 @@ extension TestRunner {
         print("Testing MacTweaksProvider...")
         // Apple Intelligence where this Mac has it: Apple silicon and a macOS with one of its features.
         assertEqual(MacTweaksSection.built, MacTweaksSection.sections(appleIntelligence: Catalog.hasAppleSilicon && !Catalog.availableFeatures.isEmpty),
-                    "Phases 1–2 build Free Up Space, and Apple Intelligence where this Mac has it")
+                    "Phases 1–3 build Free Up Space and Settings, and Apple Intelligence where this Mac has it")
         assertEqual(MacTweaksSection.allCases.map(\.title), ["Free Up Space", "Apple Intelligence", "Settings", "Background Items"],
                     "All four sections are modelled, in tab order")
         assertTrue(MacTweaksSection.allCases.allSatisfy { !$0.symbol.isEmpty }, "...each with an SF Symbol")
@@ -6165,8 +6169,8 @@ extension TestRunner {
         assertTrue(Catalog.availableFeatures(os: (14, 6)).isEmpty && Catalog.availableFeatures(os: (15, 0)).isEmpty,
                    "macOS 14 and 15.0 have no Apple Intelligence feature")
         assertTrue(!Catalog.availableFeatures(os: (15, 1)).isEmpty, "...15.1 has some")
-        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace], "Without a feature the section is hidden")
-        assertEqual(MacTweaksSection.sections(appleIntelligence: true), [.freeUpSpace, .appleIntelligence], "...and shown with one")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace, .settings], "Without a feature the section is hidden")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: true), [.freeUpSpace, .appleIntelligence, .settings], "...and shown with one")
         // Nits: the copy is accurate.
         assertTrue(!(Catalog.feature("image-playground")?.detail ?? "").contains("removes it"), "Image Playground is disabled, not removed")
         assertTrue(!(Catalog.feature("siri")?.detail ?? "").contains("model is removed"), "Siri's detail promises no model removal")
@@ -6276,10 +6280,11 @@ extension TestRunner {
                        "...and its download isn't blocked")
 
             // Tweaks are preserved, and the marker reads back.
-            let marker = profileDomains(.init(ai: ["siri"], tweaks: ["analytics", "lookup"]))[MacTweaksProfile.identifier] ?? [:]
-            assertEqual(marker["tweaks"] as? String, "analytics,lookup", "The profile records the tweaks it holds")
+            // (Settings' tweak IDs: the marker records only tweaks the profile can build.)
+            let marker = profileDomains(.init(ai: ["siri"], tweaks: ["analytics", "lookup-suggestions"]))[MacTweaksProfile.identifier] ?? [:]
+            assertEqual(marker["tweaks"] as? String, "analytics,lookup-suggestions", "The profile records the tweaks it holds")
             let read = MacTweaksProfile.read(forced: true) { marker[$0] }
-            assertTrue(read.on && read.ai && read.kept == ["siri"] && read.tweaks == ["analytics", "lookup"], "The marker reads back to the contents that built it")
+            assertTrue(read.on && read.ai && read.kept == ["siri"] && read.tweaks == ["analytics", "lookup-suggestions"], "The marker reads back to the contents that built it")
             assertEqual(read.features, Set(Catalog.availableFeatures.map(\.id)), "...with the features it was made for")
 
             // Stale detection: made before this macOS gained a feature.
@@ -6902,5 +6907,1350 @@ extension MacTweaksRow {
         if let isDefault { row.isDefault = isDefault }
         if let readOnly { row.readOnly = readOnly }
         return row
+    }
+}
+
+// MARK: - Settings (Mac Tweaks phase 3)
+
+/// A fake Mac for the Settings section: preferences in memory (the user's own values and the
+/// forced ones), launchd's disabled and loaded jobs, a temp home (the journal, the Dock backup and
+/// a real `Library` folder whose hidden flag the live chflags call sets), a temp system root with a
+/// fake Music.app and rcd plist, recorded restarts, and the profile's marker, approval and
+/// administrator batch. Nothing here touches the real system.
+final class SettingsFixture: @unchecked Sendable {
+    let base: String
+    let home: String
+    let root: String
+    var user: [String: PreferenceValue] = [:]
+    var forcedValues: [String: PreferenceValue] = [:]
+    var failingWrites: Set<String> = []
+    /// "domain|key" → what a write there stores instead: it changed the user's value, not to
+    /// what was asked.
+    var writeReplacements: [String: PreferenceValue] = [:]
+    var writes: [String] = []
+    var profileFileRemovals = 0
+    var disabled: Set<String> = []
+    var loaded: Set<String> = []
+    /// "verb label" → the status launchctl returns, e.g. "bootout com.apple.rcd" → 150.
+    var failing: [String: Int32] = [:]
+    var launchctlCalls: [[String]] = []
+    var killed: [String] = []
+    var events: [String] = []
+    var installed = MacTweaksProfile.Installed()
+    /// The keys the installed profile forces, as macOS applies them.
+    var profileForced: Set<String> = []
+    var presented: [MacTweaksProfile.Contents] = []
+    var approveOnPresent = true
+    var adminScripts: [String] = []
+    var adminAnswer = QuickActionsProvider.PrivilegedRun.ran(status: 0, output: "")
+    var adminRemovesProfile = true
+    var deviceManagementOpened = 0
+    var clock = Date(timeIntervalSince1970: 1_800_000_000)
+    var sleepCount = 0
+    var cancelled = false
+    var os = (27, 2)
+    /// Replaces the journal's file system (a failing write, a forbidden move).
+    var fileSystem = MacTweaksJournal.FileSystem.live
+    var inode: (@Sendable (String) -> UInt64?)?
+    var background: (@Sendable ([(key: String, json: Data)]) -> MacTweaksSettings.BackgroundUndo)?
+
+    init(_ name: String = "settings") {
+        base = NSTemporaryDirectory() + "lightspot-settings-\(name)-\(getpid())-\(UUID().uuidString.prefix(6))"
+        home = base + "/home"
+        root = base + "/root"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: home + "/Library/Application Support/Lightspot", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: root + "/System/Applications/Music.app/Contents/MacOS", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: root + "/System/Library/LaunchAgents", withIntermediateDirectories: true)
+        fm.createFile(atPath: root + "/System/Applications/Music.app/Contents/MacOS/Music", contents: Data("music".utf8))
+        fm.createFile(atPath: root + "/System/Library/LaunchAgents/com.apple.rcd.plist", contents: Data("<plist/>".utf8))
+        // ~/Library starts hidden, as macOS ships it.
+        _ = MacTweaksSettings.Environment.live.setHidden(home + "/Library", true)
+    }
+
+    deinit { try? FileManager.default.removeItem(atPath: base) }
+
+    static func slot(_ domain: String, _ key: String) -> String { domain + "|" + key }
+    func set(_ domain: String, _ key: String, _ value: PreferenceValue?) { user[Self.slot(domain, key)] = value }
+    func value(_ domain: String, _ key: String) -> PreferenceValue? { user[Self.slot(domain, key)] }
+    func force(_ domain: String, _ key: String, _ value: PreferenceValue) { forcedValues[Self.slot(domain, key)] = value }
+
+    /// macOS installs a profile: its marker, and every key it forces.
+    func installProfile(_ contents: MacTweaksProfile.Contents) {
+        removeProfile()
+        for tweak in MacTweaksSettings.profileTweaks(contents.tweaks) {
+            for change in tweak.changes {
+                switch change {
+                case .restriction(let key):
+                    forcedValues[Self.slot("com.apple.applicationaccess", key)] = .bool(false)
+                    profileForced.insert(Self.slot("com.apple.applicationaccess", key))
+                case .forced(let domain, let key, let value):
+                    forcedValues[Self.slot(domain, key)] = value
+                    profileForced.insert(Self.slot(domain, key))
+                default: break
+                }
+            }
+        }
+        installed = MacTweaksProfile.Installed(on: true, ai: contents.ai != nil, kept: contents.ai ?? [],
+                                               tweaks: MacTweaksSettings.profileTweakIDs(contents.tweaks),
+                                               features: Set(Catalog.availableFeatures(os: os).map(\.id)))
+    }
+
+    func removeProfile() {
+        for slot in profileForced { forcedValues[slot] = nil }
+        profileForced = []
+        installed = MacTweaksProfile.Installed()
+    }
+
+    /// Dock tiles for these apps, in order.
+    static func tile(_ id: String?, _ label: String) -> [String: Any] {
+        var data: [String: Any] = ["file-label": label, "file-data": ["_CFURLString": "file:///Applications/\(label).app/"]]
+        if let id { data["bundle-identifier"] = id }
+        return ["GUID": Int.random(in: 1...1_000_000), "tile-type": id == nil ? "spacer-tile" : "file-tile", "tile-data": data]
+    }
+
+    func setDock(_ apps: [(String?, String)]) {
+        user[Self.slot("com.apple.dock", "persistent-apps")] = PreferenceValue(apps.map { Self.tile($0.0, $0.1) } as NSArray)
+    }
+
+    var dockIDs: [String?] { MacTweaksDock.tiles(value("com.apple.dock", "persistent-apps")).map(MacTweaksDock.bundleID) }
+
+    var store: PreferenceStore {
+        var store = PreferenceStore()
+        store.read = { [self] domain, key in forcedValues[Self.slot(domain, key)] ?? user[Self.slot(domain, key)] }
+        store.userValue = { [self] domain, key in user[Self.slot(domain, key)] }
+        store.isForced = { [self] domain, key in forcedValues[Self.slot(domain, key)] != nil }
+        store.write = { [self] domain, key, value in
+            let slot = Self.slot(domain, key)
+            guard !failingWrites.contains(slot) else { return false }
+            user[slot] = writeReplacements[slot] ?? value
+            writes.append(slot)
+            events.append("write:" + slot)
+            return true
+        }
+        return store
+    }
+
+    var musicLabel: String? {
+        let app = root + "/System/Applications/Music.app"
+        func ino(_ path: String) -> UInt64? { var info = stat(); return lstat(path, &info) == 0 ? UInt64(info.st_ino) : nil }
+        guard let a = ino(app), let e = ino(app + "/Contents/MacOS/Music") else { return nil }
+        return "application.com.apple.Music.\(a).\(e)"
+    }
+
+    var environment: MacTweaksProvider.Environment {
+        var env = MacTweaksProvider.Environment(home: home)
+        env.systemRoot = root
+        env.userID = 501
+        env.now = { [self] in clock }
+        env.runAdmin = { [self] script in
+            adminScripts.append(script)
+            events.append("admin")
+            if case .ran = adminAnswer, adminRemovesProfile, script.contains("'/usr/bin/profiles' remove") { removeProfile() }
+            return adminAnswer
+        }
+        var ai = MacTweaksIntelligence.Environment.inert
+        ai.profileInstalled = { [self] in installed }
+        ai.presentProfile = { [self] contents in
+            presented.append(contents)
+            events.append("present")
+            if approveOnPresent { installProfile(contents) }
+        }
+        ai.openDeviceManagement = { [self] in deviceManagementOpened += 1 }
+        ai.removeProfileFile = { [self] in profileFileRemovals += 1 }
+        ai.sleep = { [self] seconds in
+            clock = clock.addingTimeInterval(seconds)
+            sleepCount += 1
+            if sleepCount > 2_000 { cancelled = true }
+        }
+        ai.isCancelled = { [self] in cancelled }
+        ai.osVersion = { [self] in os }
+        env.intelligence = ai
+        var settings = MacTweaksSettings.Environment.live
+        settings.preferences = store
+        settings.launchctl = { [self] args in
+            launchctlCalls.append(args)
+            let label = args.count > 1 ? String(args[1].split(separator: "/").last ?? "") : ""
+            switch args.first {
+            case "print-disabled":
+                return (0, "\tdisabled services = {\n" + disabled.sorted().map { "\t\t\"\($0)\" => disabled" }.joined(separator: "\n") + "\n\t}\n")
+            case "print":
+                return (loaded.contains(label) ? 0 : 113, "")
+            case "disable":
+                if let status = failing["disable \(label)"] { return (status, "Could not disable: \(status)") }
+                disabled.insert(label)
+            case "enable":
+                if let status = failing["enable \(label)"] { return (status, "Could not enable: \(status)") }
+                disabled.remove(label)
+            case "bootout":
+                if let status = failing["bootout \(label)"] { return (status, "Boot-out failed: \(status): Operation not permitted") }
+                loaded.remove(label)
+            case "bootstrap":
+                let plistLabel = ((args.last ?? "") as NSString).lastPathComponent.replacingOccurrences(of: ".plist", with: "")
+                if let status = failing["bootstrap \(plistLabel)"] { return (status, "Bootstrap failed: \(status)") }
+                loaded.insert(plistLabel)
+            default:
+                return (1, "unexpected launchctl call")
+            }
+            return (0, "")
+        }
+        if let inode { settings.inode = inode }
+        settings.restart = { [self] name in killed.append(name); events.append("killall " + name); return true }
+        settings.fileSystem = fileSystem
+        settings.osVersion = { [self] in os }
+        settings.background = background
+        env.settings = settings
+        return env
+    }
+
+    var journalURL: URL { MacTweaksJournal.url(home: home) }
+    var journal: MacTweaksJournal { MacTweaksJournal.load(url: journalURL).journal ?? MacTweaksJournal() }
+    var reading: MacTweaksSettings.Reading { MacTweaksSettings.read(environment) }
+    var rows: [MacTweaksRow] { MacTweaksSettings.rows(reading) }
+    func row(_ id: String) -> MacTweaksRow? { rows.first { $0.id == id } }
+    func state(_ id: String) -> MacTweaksSettings.State? { MacTweaksSettings.tweak(id).map { MacTweaksSettings.state($0, reading) } }
+
+    /// Applies the rows with these IDs, as the scan shows them.
+    @discardableResult
+    func apply(_ ids: [String]) -> MacTweaksSettings.ApplyResult {
+        let shown = rows
+        return MacTweaksSettings.apply(shown.filter { ids.contains($0.id) }, env: environment)
+    }
+}
+
+extension TestRunner {
+    static func runSettingsTests() {
+        testSettingsCatalog()
+        testSettingsValues()
+        testSettingsJournal()
+        testSettingsWriteFailures()
+        testSettingsState()
+        testSettingsPlan()
+        testSettingsScratchDomains()
+        testSettingsMusicAndKeys()
+        testSettingsDockAndLibrary()
+        testSettingsProfile()
+        testSettingsUndoEverything()
+        testSettingsTicksAndProvider()
+    }
+
+    // MARK: Catalog
+
+    static func testSettingsCatalog() {
+        print("Testing Settings catalog...")
+        let catalog = MacTweaksSettings.catalog
+        assertEqual(catalog.count, 41, "RemoveMacAI's 41 tweaks")
+        assertEqual(Set(catalog.map(\.id)).count, catalog.count, "Tweak IDs are unique")
+        let keys = catalog.flatMap { $0.changes.map(\.key) }
+        assertEqual(Set(keys).count, keys.count, "No two tweaks change the same setting")
+        assertTrue(catalog.allSatisfy { !$0.changes.isEmpty && ($0.changes.allSatisfy(\.inProfile) || !$0.inProfile) },
+                   "A tweak is all profile or all local")
+        assertEqual(MacTweaksSettings.Group.allCases.map(\.title), ["Privacy", "Annoyances", "Apple apps", "Finder", "Dock and windows", "Typing"],
+                    "RemoveMacAI's groups, in order")
+        assertEqual(catalog.map(\.group), catalog.map(\.group).sorted { MacTweaksSettings.Group.allCases.firstIndex(of: $0)! < MacTweaksSettings.Group.allCases.firstIndex(of: $1)! },
+                    "The catalog runs group by group")
+        let recommended = Set(MacTweaksSettings.tweaks(in: .recommended).map(\.id))
+        let maximum = Set(MacTweaksSettings.tweaks(in: .maximumPrivacy).map(\.id))
+        assertEqual(recommended, ["analytics", "personalized-ads", "improve-siri", "improve-search", "spotlight-web", "lookup-suggestions",
+                                  "click-to-desktop", "file-extensions", "path-bar", "folders-first", "ds-store", "dock-recents"],
+                    "Recommended is RemoveMacAI's")
+        assertEqual(maximum, recommended.union(["safari-suggestions", "game-center"]), "Maximum privacy adds Game Center and Safari's suggestions")
+        assertTrue(Set(catalog.map(\.id)).isDisjoint(with: Set(Catalog.features.map(\.id))), "Tweak IDs don't clash with Apple Intelligence's")
+        // The profile records these IDs: renaming one would orphan an installed profile.
+        assertEqual(catalog.filter(\.inProfile).map(\.id), ["analytics", "personalized-ads", "improve-siri", "improve-search", "spotlight-web",
+                                                             "lookup-suggestions", "safari-suggestions", "game-center", "iphone-mirroring",
+                                                             "music-classic", "book-store"], "The profile tweak IDs are fixed")
+        let mdmOnly: Set<String> = ["allowedExternalIntelligenceWorkspaceIDs", "allowRosettaUsageAwareness", "allowSafariHistoryClearing",
+                                    "allowSafariPrivateBrowsing", "forceBypassScreenCaptureAlert"]
+        let restrictionKeys = catalog.flatMap(\.changes).compactMap { change -> String? in
+            if case .restriction(let key) = change { return key }
+            return nil
+        }
+        assertTrue(mdmOnly.isDisjoint(with: restrictionKeys), "No restriction needs an MDM server")
+        assertTrue(Set(catalog.flatMap(\.restart)).isSubset(of: ["Finder", "Dock", "SystemUIServer"]), "Only Finder, the Dock and SystemUIServer restart")
+        let dsStore = MacTweaksSettings.tweak("ds-store")
+        assertEqual(dsStore?.changes.count, 2, "The .DS_Store tweak covers network and USB drives")
+        assertEqual(dsStore?.restart, ["Finder"], "...and restarts Finder, as the quick action does")
+        assertEqual(MacTweaksSettings.tweak("music-classic")?.changes, [.restriction("allowMusicService")], "Apple Music: the restriction")
+        assertEqual(MacTweaksSettings.tweak("music-launches")?.changes, [.musicLaunches], "Music's launch entry")
+        assertEqual(MacTweaksSettings.tweak("media-keys")?.changes, [.service("com.apple.rcd")], "The media keys: com.apple.rcd")
+        assertTrue(MacTweaksSettings.tweak("media-keys")?.presets.isEmpty == true && MacTweaksSettings.tweak("music-launches")?.presets.isEmpty == true,
+                   "Neither Music level that stops things is in a preset")
+        // Decision 4: macOS 13 for the long-standing keys, RemoveMacAI's floors for the rest.
+        let thirteen: Set<String> = ["file-extensions", "hidden-files", "path-bar", "status-bar", "folders-first", "search-this-folder",
+                                     "extension-warning", "path-in-title", "trash-30-days", "ds-store", "save-locally", "expanded-save",
+                                     "dock-recents", "dock-delay", "dock-bounce", "minimize-to-app", "window-animations", "screenshot-shadow",
+                                     "autocorrect", "smart-punctuation", "double-space-period", "auto-capitalize", "key-repeat"]
+        for tweak in catalog {
+            let expected: (Int, Int) = thirteen.contains(tweak.id) ? (13, 0)
+                : (["iphone-mirroring", "book-store", "tile-margins"].contains(tweak.id) ? (15, 0) : (14, 0))
+            assertTrue(tweak.since == expected, "\(tweak.id) is since \(expected)")
+        }
+        let symbols = catalog.map(\.symbol) + MacTweaksSettings.Preset.allCases.map(\.symbol)
+        assertTrue(symbols.allSatisfy { !$0.isEmpty }, "Every row has a symbol")
+        print("✅ Settings catalog passed!\n")
+    }
+
+    // MARK: Values
+
+    static func testSettingsValues() {
+        print("Testing preference values...")
+        assertEqual(PreferenceValue(NSNumber(value: true)), .bool(true), "A CFBoolean is a bool")
+        assertEqual(PreferenceValue(NSNumber(value: 3)), .int(3), "An integer stays one")
+        assertEqual(PreferenceValue(NSNumber(value: 0.5)), .double(0.5), "A 64-bit real is a double")
+        if case .plist = PreferenceValue(NSNumber(value: Float(0.15))) {} else { assertTrue(false, "A 32-bit real is kept as a property list") }
+        assertEqual(PreferenceValue(NSNumber(value: Float(0.15)))?.realValue.map { Float($0) }, Float(0.15), "...and reads back as itself")
+        assertEqual(PreferenceValue("SCcf" as NSString), .string("SCcf"), "A string")
+        if case .plist = PreferenceValue([1, 2] as NSArray) {} else { assertTrue(false, "An array is a property list") }
+        assertTrue(PreferenceValue(nil) == nil, "Unset is nil")
+        // Matching: booleans and 0/1, the strings macOS reads as booleans, never int 2 for true.
+        let t = PreferenceValue.bool(true), f = PreferenceValue.bool(false)
+        assertTrue(t.matches(.int(1)) && f.matches(.int(0)) && !t.matches(.int(0)), "Booleans match 0/1")
+        assertTrue(t.matches(.string("YES")) && t.matches(.string("true")) && f.matches(.string("no")) && !t.matches(.string("y")),
+                   "...and the strings CFPreferencesGetAppBooleanValue accepts")
+        assertTrue(!PreferenceValue.int(2).matches(.bool(true)) && PreferenceValue.int(1).matches(.bool(true)) && PreferenceValue.int(2).matches(.int(2)),
+                   "An int 2 never matches true")
+        assertTrue(PreferenceValue.double(0).matches(.int(0)) && PreferenceValue.double(0).matches(PreferenceValue(NSNumber(value: Float(0)))),
+                   "Reals match the same number, 32-bit too")
+        assertTrue(!PreferenceValue.string("SCcf").matches(nil) && !t.matches(nil), "Unset matches nothing")
+        // What the plan shows.
+        assertEqual(PreferenceValue.double(0).defaultsArguments, "-float 0.0", "Doubles as defaults takes them")
+        assertEqual(PreferenceValue.string("SC cf").defaultsArguments, "-string 'SC cf'", "Strings quoted when they need it")
+        let dockDelay = MacTweaksSettings.commands(MacTweaksSettings.tweak("dock-delay")!, undoing: false, MacTweaksSettings.Reading())
+        assertEqual(dockDelay, ["defaults write com.apple.dock autohide-delay -float 0.0"], "Commands read as defaults takes them")
+        let siri = MacTweaksSettings.commands(MacTweaksSettings.tweak("improve-siri")!, undoing: false, MacTweaksSettings.Reading())
+        assertEqual(siri, ["profile: com.apple.assistant.support 'Siri Data Sharing Opt-In Status' = 2 (locked)"], "...and profile keys as profile lines")
+        // Codable round trip, every case.
+        for value in [PreferenceValue.bool(false), .int(-4), .double(0.25), .string("x"), PreferenceValue(NSNumber(value: Float(0.15)))!] {
+            let data = try? JSONEncoder().encode(value)
+            assertEqual(data.flatMap { try? JSONDecoder().decode(PreferenceValue.self, from: $0) }, value, "\(value) round-trips through the journal")
+        }
+        print("✅ Preference values passed!\n")
+    }
+
+    // MARK: Journal
+
+    static func testSettingsJournal() {
+        print("Testing the undo journal...")
+        let fx = SettingsFixture("journal")
+        let url = fx.journalURL
+        var journal = MacTweaksJournal()
+        let first = MacTweaksJournal.Entry.pref(tweak: "hidden-files", date: fx.clock, domain: "com.apple.finder", key: "AppleShowAllFiles",
+                                                previous: .int(0), restart: ["Finder"])
+        assertTrue(journal.recordIfAbsent("pref:com.apple.finder:AppleShowAllFiles", first), "The first previous value is recorded")
+        let later = MacTweaksJournal.Entry.pref(tweak: "hidden-files", date: fx.clock, domain: "com.apple.finder", key: "AppleShowAllFiles",
+                                                previous: .bool(true), restart: ["Finder"])
+        assertTrue(!journal.recordIfAbsent("pref:com.apple.finder:AppleShowAllFiles", later), "...and a later one never replaces it")
+        assertEqual(journal.entry("pref:com.apple.finder:AppleShowAllFiles")?.previous, .int(0), "...so undo puts back the first")
+        // Background Items' entries are its own JSON, kept byte for byte; an unknown kind too.
+        let background = #"{"date":"2026-10-30T14:05:00Z","domain":"system","kind":"background","label":"us.zoom.ZoomDaemon","owner":"ZoomDaemon","plist":"/Library/LaunchDaemons/us.zoom.ZoomDaemon.plist","tweak":"background:system/us.zoom.ZoomDaemon","wasDisabled":false,"wasLoaded":false}"#
+        assertTrue(journal.recordIfAbsent("background:system/us.zoom.ZoomDaemon", Data(background.utf8)), "A raw entry is recorded")
+        assertTrue(!journal.recordIfAbsent("not-an-object", Data("[1]".utf8)), "...only a JSON object")
+        let future = #"{"kind":"firmware","tweak":"future","value":{"nested":[1,2,3]}}"#
+        assertTrue(journal.recordIfAbsent("firmware:x", Data(future.utf8)), "A kind this version doesn't know is kept")
+        do { try journal.saveAhead(url: url) } catch { assertTrue(false, "the journal saves: \(error)") }
+        let bytes = FileManager.default.contents(atPath: url.path) ?? Data()
+        let loaded = MacTweaksJournal.load(url: url).journal
+        assertEqual(loaded?.json("background:system/us.zoom.ZoomDaemon"), Data(background.utf8), "Background Items' JSON comes back byte for byte")
+        assertEqual(loaded?.entries(kind: "background").map(\.key), ["background:system/us.zoom.ZoomDaemon"], "...listed by its kind")
+        assertEqual(loaded?.json("firmware:x"), Data(future.utf8), "...and so does an unknown kind")
+        assertEqual(loaded?.entry("pref:com.apple.finder:AppleShowAllFiles"), first, "A typed entry decodes")
+        try? loaded?.saveAhead(url: url)
+        assertEqual(FileManager.default.contents(atPath: url.path), bytes, "Load then save leaves the file byte for byte")
+        let text = String(decoding: bytes, as: UTF8.self)
+        assertTrue(text.contains("\"version\" : 1") && text.contains("\"previous\":{\"int\":0}"), "The file is versioned, the previous value typed")
+
+        // Unreadable: a scan reports it and moves nothing; a write moves it aside, each under its own name.
+        for _ in 0..<2 {
+            try? Data("garbage".utf8).write(to: url)
+            if case .unreadable = MacTweaksJournal.status(url: url, home: fx.home) {} else { assertTrue(false, "A garbled journal reads as unreadable") }
+            assertEqual(FileManager.default.contents(atPath: url.path), Data("garbage".utf8), "...and a scan leaves it where it is")
+            let access = MacTweaksJournal.loadForWriting(url: url, now: fx.clock, home: fx.home)
+            assertTrue(access.journal?.isEmpty == true && access.movedAside != nil, "A write moves it aside and starts empty")
+        }
+        let folder = url.deletingLastPathComponent().path
+        let kept = ((try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []).filter { $0.hasPrefix("tweaks-journal-unreadable-") }
+        assertEqual(kept.count, 2, "Two unreadable journals are both kept, each under its own name")
+        // One that can't be moved: never overwritten, every change refused, the section read-only.
+        // In a 0555 folder a scan says it is blocked.
+        if getuid() != 0 {
+            try? Data("garbage".utf8).write(to: url)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder)
+            let status = MacTweaksJournal.status(url: url, home: fx.home)
+            // Writable again before the check, so a failing run leaves a folder it can remove.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder)
+            if case .blocked = status {} else { assertTrue(false, "An unmovable journal blocks") }
+        }
+        // The apply, with a move that fails in a folder that still takes writes: only the block can
+        // stop it there (a 0555 folder would refuse the journal's own save as well).
+        try? Data("garbage".utf8).write(to: url)
+        var unmovable = MacTweaksJournal.FileSystem.live
+        unmovable.move = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        unmovable.canRename = { _ in false }
+        fx.fileSystem = unmovable
+        let blocked = fx.apply(["file-extensions"])
+        assertTrue(blocked.receipt.headline == "Nothing changed." && !blocked.receipt.isSuccess && fx.value("NSGlobalDomain", "AppleShowAllExtensions") == nil
+                   && blocked.receipt.problems.first?.contains("can't read or move its undo journal") == true,
+                   "...an apply changes nothing, and says the journal stops it: \(blocked.receipt.problems)")
+        assertTrue(fx.writes.isEmpty, "...not one preference written")
+        assertTrue(blocked.rescanned.allSatisfy(\.readOnly), "...every row is read-only")
+        assertEqual(FileManager.default.contents(atPath: url.path), Data("garbage".utf8), "...and the file is never overwritten")
+        fx.fileSystem = .live
+        try? FileManager.default.removeItem(at: url)
+        // Write-ahead: a journal that can't be saved stops the change.
+        let failing = SettingsFixture("journal-fail")
+        var fs = MacTweaksJournal.FileSystem.live
+        fs.write = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        failing.fileSystem = fs
+        let result = failing.apply(["file-extensions"])
+        assertTrue(failing.value("NSGlobalDomain", "AppleShowAllExtensions") == nil && failing.writes.isEmpty,
+                   "A journal that can't be saved first means nothing is written")
+        assertTrue(result.receipt.problems.contains { $0.contains("couldn't save its undo journal") }, "...and the receipt says why")
+        // An empty journal leaves no file.
+        try? MacTweaksJournal().saveAhead(url: failing.journalURL)
+        assertTrue(!FileManager.default.fileExists(atPath: failing.journalURL.path), "An empty journal leaves no file")
+        print("✅ Undo journal passed!\n")
+    }
+
+    // MARK: Writes that fail
+
+    /// What stays true when a journal save, a preference write, the Dock or chflags fails: nothing
+    /// changes before its entry is saved, and the journal holds an entry only for a change made.
+    static func testSettingsWriteFailures() {
+        print("Testing Settings when a write fails...")
+        let dockKey = "dock:" + MacTweaksSettings.unusedDockApps.joined(separator: ",")
+        let extensions = "pref:NSGlobalDomain:AppleShowAllExtensions"
+        let live = MacTweaksJournal.FileSystem.live
+        var noJournal = live
+        noJournal.write = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+
+        // A journal that can't be saved stops a job's disable, the Dock's write and the Library flag.
+        let unsaved = SettingsFixture("unsaved")
+        unsaved.fileSystem = noJournal
+        unsaved.setDock([("com.apple.Music", "Music"), ("com.example.editor", "Editor")])
+        let unsavedResult = unsaved.apply(["media-keys", "dock-apple-apps", "show-library"])
+        assertTrue(!unsaved.disabled.contains("com.apple.rcd") && !unsaved.launchctlCalls.contains { $0.first == "disable" },
+                   "A journal that can't be saved first means no job is disabled")
+        assertEqual(unsaved.dockIDs, ["com.apple.Music", "com.example.editor"], "...the Dock keeps its icons")
+        assertEqual(MacTweaksSettings.Environment.live.isHidden(unsaved.home + "/Library"), true, "...~/Library stays hidden")
+        assertTrue(unsavedResult.receipt.headline == "Nothing changed." && unsavedResult.receipt.problems.count == 3
+                   && unsavedResult.receipt.problems.allSatisfy { $0.contains("couldn't save its undo journal") },
+                   "...and the receipt says why for each: \(unsavedResult.receipt.problems)")
+
+        // chflags refused: no entry stays for a change that didn't happen.
+        let refused = SettingsFixture("library-refused")
+        var refusing = refused.environment
+        refusing.settings.setHidden = { _, _ in false }
+        let refusedResult = MacTweaksSettings.apply(refused.rows.filter { $0.id == "show-library" }, env: refusing)
+        assertTrue(refusedResult.receipt.problems.contains { $0.contains("didn't let Lightspot show ~/Library") }, "A refused chflags is a problem")
+        assertTrue(refused.journal.json("library") == nil && refused.row(MacTweaksSettings.undoEverythingID) == nil,
+                   "...and leaves no entry, nor an Undo everything row")
+        // The first save fails, a later one works: the failed tweak's entry isn't saved with it.
+        final class Count: @unchecked Sendable { var writes = 0 }
+        let count = Count()
+        let firstFails = SettingsFixture("first-save-fails")
+        var once = live
+        once.write = { url, data in
+            count.writes += 1
+            if count.writes == 1 { throw CocoaError(.fileWriteNoPermission) }
+            try live.write(url, data)
+        }
+        firstFails.fileSystem = once
+        let firstResult = firstFails.apply(["show-library", "dock-recents"])
+        assertTrue(firstFails.journal.json("library") == nil && firstFails.journal.json("pref:com.apple.dock:show-recents") != nil,
+                   "A tweak whose save failed leaves no entry in the next tweak's save")
+        assertTrue(MacTweaksSettings.Environment.live.isHidden(firstFails.home + "/Library") == true && firstResult.receipt.headline == "Changed 1 setting.",
+                   "...and only the other changed: \(firstResult.receipt.headline)")
+        let dockCount = Count()
+        let dockFirst = SettingsFixture("dock-first-save-fails")
+        dockFirst.setDock([("com.apple.Music", "Music"), ("com.example.editor", "Editor")])
+        var dockOnce = live
+        dockOnce.write = { url, data in
+            dockCount.writes += 1
+            if dockCount.writes == 1 { throw CocoaError(.fileWriteNoPermission) }
+            try live.write(url, data)
+        }
+        dockFirst.fileSystem = dockOnce
+        dockFirst.apply(["dock-apple-apps", "file-extensions"])
+        assertTrue(dockFirst.journal.json(dockKey) == nil && dockFirst.journal.json(extensions) != nil
+                   && dockFirst.dockIDs == ["com.apple.Music", "com.example.editor"],
+                   "...nor do the Dock's tiles when its save failed and a later one worked")
+
+        // The Dock refuses the write: the entry is back as it was before this apply.
+        let dock = SettingsFixture("dock-refused")
+        dock.setDock([("com.apple.Music", "Music"), ("com.apple.TV", "TV"), ("com.example.editor", "Editor")])
+        dock.apply(["dock-apple-apps"])
+        let firstEntry = dock.journal.json(dockKey)
+        assertTrue(firstEntry != nil, "The first removal is journaled")
+        dock.setDock([("com.apple.news", "News"), ("com.example.editor", "Editor")])
+        dock.failingWrites = ["com.apple.dock|persistent-apps"]
+        let dockResult = dock.apply(["dock-apple-apps"])
+        assertTrue(dockResult.receipt.problems.contains { $0.contains("The Dock didn't take the change.") }, "A refused Dock write is a problem")
+        assertEqual(dock.journal.json(dockKey), firstEntry, "...and the entry is as it was: News, never taken out, isn't in it")
+        let fresh = SettingsFixture("dock-refused-first")
+        fresh.setDock([("com.apple.Music", "Music")])
+        fresh.failingWrites = ["com.apple.dock|persistent-apps"]
+        fresh.apply(["dock-apple-apps"])
+        assertTrue(fresh.journal.json(dockKey) == nil && fresh.row(MacTweaksSettings.undoEverythingID) == nil, "With no entry before, a refused write leaves none")
+
+        // A write that didn't take removes only the entry it made, and only while the user's value
+        // is as it was.
+        let failed = SettingsFixture("pref-failed")
+        failed.failingWrites = ["NSGlobalDomain|AppleShowAllExtensions"]
+        let failedResult = failed.apply(["file-extensions"])
+        assertTrue(failedResult.receipt.problems.contains { $0.contains("didn't change") } && failed.journal.json(extensions) == nil,
+                   "A write that didn't take leaves no entry")
+        let replaced = SettingsFixture("pref-replaced")
+        replaced.set("NSGlobalDomain", "AppleShowAllExtensions", .bool(false))
+        replaced.writeReplacements = ["NSGlobalDomain|AppleShowAllExtensions": .string("maybe")]
+        let replacedResult = replaced.apply(["file-extensions"])
+        assertTrue(replacedResult.receipt.problems.contains { $0.contains("didn't change") }, "A write that stored something else didn't take")
+        assertEqual(replaced.journal.entry(extensions)?.previous, .bool(false), "...but it changed the user's value, so the entry stays to put it back")
+        let earlier = SettingsFixture("pref-earlier")
+        earlier.set("NSGlobalDomain", "AppleShowAllExtensions", .bool(false))
+        earlier.apply(["file-extensions"])
+        earlier.set("NSGlobalDomain", "AppleShowAllExtensions", .int(0))
+        earlier.failingWrites = ["NSGlobalDomain|AppleShowAllExtensions"]
+        earlier.apply(["file-extensions"])
+        assertEqual(earlier.journal.entry(extensions)?.previous, .bool(false), "A failed write never removes an entry an earlier apply made")
+
+        // The first previous value survives a second apply after a change by hand.
+        let twice = SettingsFixture("pref-twice")
+        twice.set("NSGlobalDomain", "AppleShowAllExtensions", .bool(false))
+        twice.apply(["file-extensions"])
+        twice.set("NSGlobalDomain", "AppleShowAllExtensions", .int(0))
+        twice.apply(["file-extensions"])
+        assertEqual(twice.journal.entry(extensions)?.previous, .bool(false), "A second apply after a change by hand keeps the first previous value")
+        _ = MacTweaksSettings.apply(twice.rows.filter { $0.id == "file-extensions" }, env: twice.environment)
+        assertEqual(twice.value("NSGlobalDomain", "AppleShowAllExtensions"), .bool(false), "...and undo puts that one back")
+
+        // A restore that fails keeps its entry, in a row's undo and in Undo everything; a retry
+        // puts the first value back.
+        let restore = SettingsFixture("pref-restore")
+        restore.set("NSGlobalDomain", "AppleShowAllExtensions", .bool(false))
+        restore.apply(["file-extensions"])
+        restore.failingWrites = ["NSGlobalDomain|AppleShowAllExtensions"]
+        var undo = MacTweaksSettings.apply(restore.rows.filter { $0.id == "file-extensions" }, env: restore.environment)
+        assertTrue(undo.receipt.problems.contains { $0.contains("didn't go back") } && restore.journal.entry(extensions)?.previous == .bool(false),
+                   "A row's undo that fails keeps the entry")
+        undo = MacTweaksSettings.apply(restore.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: restore.environment)
+        assertTrue(!undo.receipt.isSuccess && restore.journal.entry(extensions)?.previous == .bool(false), "...and so does Undo everything's")
+        restore.failingWrites = []
+        undo = MacTweaksSettings.apply(restore.rows.filter { $0.id == "file-extensions" }, env: restore.environment)
+        assertTrue(undo.receipt.problems.isEmpty && restore.value("NSGlobalDomain", "AppleShowAllExtensions") == .bool(false) && restore.journal.isEmpty,
+                   "A retry puts the first value back: \(undo.receipt.problems)")
+        assertTrue(!undo.receipt.notes.contains(MacTweaksSettings.undoLaterNote), "...and an undo's receipt doesn't offer to undo it later")
+        print("✅ Settings when a write fails passed!\n")
+    }
+
+    // MARK: State
+
+    static func testSettingsState() {
+        print("Testing Settings state...")
+        let fx = SettingsFixture("state")
+        fx.set("NSGlobalDomain", "NSAutomaticQuoteSubstitutionEnabled", .bool(false))
+        assertEqual(fx.state("smart-punctuation"), .partly, "One key false, the other unset: partly (this Mac)")
+        let smart = fx.row("smart-punctuation")
+        assertTrue(smart?.undoes == false && smart?.items.map(\.target) == ["defaults write NSGlobalDomain NSAutomaticDashSubstitutionEnabled -bool false"],
+                   "A Partly row's tick finishes it, writing only what isn't set yet (decision 2)")
+        fx.set("com.apple.assistant.support", "Search Queries Data Sharing Status", .int(2))
+        assertEqual(fx.state("improve-search"), .off, "A forced-type tweak whose own value matches but isn't locked is off")
+        assertEqual(fx.row("improve-search")?.caveat, MacTweaksSettings.alreadyOffCaveat, "...and says it is already off but not locked")
+        fx.set("com.apple.Safari", "UniversalSearchEnabled", .bool(false))
+        fx.set("com.apple.Safari", "SuppressSearchSuggestions", .bool(true))
+        assertEqual(fx.state("safari-suggestions"), .off, "Safari is judged by its forced value only")
+        assertTrue(fx.row("safari-suggestions")?.caveat?.contains("Already off") == false, "...so its stub never claims it is off")
+        fx.set("com.apple.applicationaccess", "allowDiagnosticSubmission", .bool(false))
+        assertTrue(fx.state("analytics") == .off && fx.row("analytics")?.caveat == nil, "A restriction's own value does nothing")
+        // Managed: another profile forces a key; ours isn't managed.
+        fx.force("com.apple.applicationaccess", "allowDiagnosticSubmission", .bool(false))
+        assertEqual(fx.state("analytics"), .managed, "A restriction another profile forces is Managed")
+        assertTrue(fx.row("analytics")?.readOnly == true && fx.row("analytics")?.caveat == MacTweaksSettings.managedCaveat, "...read-only, and says why")
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: false, tweaks: ["analytics"])
+        assertEqual(fx.state("analytics"), .on, "...and On when Lightspot's profile is the one forcing it")
+        fx.force("com.apple.applicationaccess", "allowGameCenter", .bool(true))
+        assertEqual(fx.state("game-center"), .managed, "A key forced the other way is Managed too")
+        fx.force("com.apple.finder", "ShowPathbar", .bool(true))
+        assertEqual(fx.state("path-bar"), .managed, "A forced user preference is Managed: a user write can't beat it")
+        // Booleans the way apps read them.
+        fx.set("com.apple.finder", "AppleShowAllFiles", .string("YES"))
+        assertEqual(fx.state("hidden-files"), .on, "A YES written as a string counts as on")
+        fx.set("com.apple.WindowManager", "StandardHideWidgets", .bool(true))
+        fx.set("com.apple.WindowManager", "StageManagerHideWidgets", .bool(true))
+        assertTrue(fx.state("desktop-widgets") == .on && fx.row("desktop-widgets")?.undoes == true, "Both widget keys true: On, and its tick undoes")
+        // Versions.
+        fx.os = (14, 6)
+        assertEqual(fx.state("tile-margins"), .notOnThisMacOS, "A 15.0 tweak on macOS 14 is not on this macOS")
+        assertTrue(fx.row("tile-margins")?.readOnly == true && fx.row("tile-margins")?.caveat == "Needs macOS 15 or later.", "...read-only, saying what it needs")
+        fx.os = (13, 0)
+        assertTrue(fx.state("file-extensions") == .off && fx.state("click-to-desktop") == .notOnThisMacOS,
+                   "macOS 13 has the long-standing keys, not the WindowManager ones (decision 4)")
+        fx.os = (27, 2)
+        // The Dock: none of the apps in it and nothing journaled → On, nothing to undo.
+        fx.setDock([("com.apple.finder.app", "Notes"), ("com.example.editor", "Editor")])
+        assertEqual(fx.state("dock-apple-apps"), .on, "None of the apps in the Dock: On")
+        assertTrue(fx.row("dock-apple-apps")?.readOnly == true && fx.row("dock-apple-apps")?.caveat?.contains("None of these apps are in your Dock.") == true,
+                   "...read-only, with nothing to put back")
+        fx.setDock([("com.apple.Music", "Music"), ("com.example.editor", "Editor")])
+        assertTrue(fx.state("dock-apple-apps") == .off && fx.row("dock-apple-apps")?.items.map(\.target) == ["remove from the Dock: Music"],
+                   "With Music in the Dock: Off, and the plan names it")
+        // The Library folder.
+        assertEqual(fx.state("show-library"), .off, "~/Library hidden: off")
+        // The media keys: disabled and still loaded is only partly done.
+        fx.disabled = ["com.apple.rcd"]
+        fx.loaded = ["com.apple.rcd"]
+        assertEqual(fx.state("media-keys"), .partly, "rcd disabled but loaded: partly")
+        assertTrue(fx.row("media-keys")?.caveat?.contains("next login") == true, "...off from the next login, the row says")
+        fx.loaded = []
+        assertEqual(fx.state("media-keys"), .on, "...and On once it isn't loaded")
+        print("✅ Settings state passed!\n")
+    }
+
+    // MARK: Plan
+
+    static func testSettingsPlan() {
+        print("Testing the Settings plan...")
+        let fx = SettingsFixture("plan")
+        fx.set("NSGlobalDomain", "NSAutomaticQuoteSubstitutionEnabled", .bool(false))
+        fx.set("com.apple.finder", "ShowPathbar", .bool(true))
+        fx.force("com.apple.finder", "ShowStatusBar", .bool(false))
+        let rows = fx.rows
+        func plan(_ ids: [String]) -> MacTweaksSettings.Plan { MacTweaksSettings.plan(rows.filter { ids.contains($0.id) }, fx.reading) }
+        let notes = MacTweaksSettings.planNotes(ticked: rows.filter { ["file-extensions", "dock-recents", "analytics"].contains($0.id) }, context: fx.reading)
+        assertTrue(notes.contains(MacTweaksSettings.sharedProfileNote), "The plan says the profile applies to every account (decision 6)")
+        assertTrue(notes.contains { $0.hasPrefix("Finder and the Dock restart once each (killall Finder; killall Dock).") }, "...and which processes restart")
+        assertTrue(notes.contains { $0.hasPrefix("System Settings asks you to approve one profile.") }, "...and that System Settings asks for the approval")
+        assertEqual(plan(["file-extensions"]).apply, ["file-extensions"], "An Off tick applies")
+        assertEqual(plan(["path-bar"]).undo, ["path-bar"], "An On tick undoes")
+        assertTrue(notes.contains(MacTweaksSettings.undoLaterNote)
+                   && !MacTweaksSettings.planNotes(ticked: rows.filter { $0.id == "path-bar" }, context: fx.reading).contains(MacTweaksSettings.undoLaterNote),
+                   "An apply's plan says it can be undone later, an undo's doesn't")
+        assertEqual(plan(["smart-punctuation"]).apply, ["smart-punctuation"], "A Partly tick finishes it")
+        assertTrue(plan([]).apply.isEmpty && plan([]).undo.isEmpty && plan([]).profile == nil, "An unticked Partly tweak stays as it is")
+        let managed = plan(["status-bar"])
+        assertTrue(managed.apply.isEmpty && managed.skipped.first?.contains("another configuration profile") == true, "A managed tweak never changes")
+        // Restarts: deduplicated, in order, only for local tweaks.
+        assertEqual(plan(["file-extensions", "hidden-files", "dock-recents", "autocorrect", "analytics"]).restarts, ["Finder", "Dock"],
+                    "Finder and the Dock once each, nothing for typing or the profile")
+        // The profile: keeps Apple Intelligence as in force.
+        assertEqual(plan(["analytics"]).profile, MacTweaksProfile.Contents(ai: nil, tweaks: ["analytics"]), "A profile tweak needs a profile")
+        let all = Set(Catalog.availableFeatures(os: fx.os).map(\.id))
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: true, kept: ["siri"], tweaks: ["lookup-suggestions"], features: all)
+        let withAI = MacTweaksSettings.plan(fx.rows.filter { $0.id == "analytics" }, fx.reading)
+        assertEqual(withAI.profile, MacTweaksProfile.Contents(ai: ["siri"], tweaks: ["analytics", "lookup-suggestions"]),
+                    "Adding a tweak keeps Apple Intelligence and the tweaks already in the profile")
+        let undoHeld = MacTweaksSettings.plan(fx.rows.filter { $0.id == "lookup-suggestions" }, fx.reading)
+        assertTrue(undoHeld.profile == nil, "A held tweak whose key isn't forced reads off; ticking it changes nothing in the profile")
+        fx.force("com.apple.lookup.shared", "LookupSuggestionsDisabled", .bool(true))
+        let undo = MacTweaksSettings.plan(fx.rows.filter { $0.id == "lookup-suggestions" }, fx.reading)
+        assertEqual(undo.profile, MacTweaksProfile.Contents(ai: ["siri"], tweaks: []), "Undoing it takes it out, Apple Intelligence kept")
+        // A stale profile: the features it didn't know stay on, as they are in force (decision 3).
+        let stale = MacTweaksProfile.Installed(on: true, ai: true, kept: ["siri"], tweaks: [], features: all.subtracting(["writing-tools"]))
+        assertEqual(MacTweaksSettings.aiInForce(stale, os: fx.os), ["siri", "writing-tools"], "A stale profile keeps the new features on")
+        fx.installed = stale
+        assertTrue(MacTweaksSettings.plan(fx.rows.filter { $0.id == "file-extensions" }, fx.reading).profile == nil,
+                   "Staleness alone never reinstalls the profile")
+        // Removal when nothing would be left.
+        fx.forcedValues = [:]
+        fx.installed = MacTweaksProfile.Installed(on: true, ai: false, tweaks: ["analytics", "future-tweak"])
+        fx.force("com.apple.applicationaccess", "allowDiagnosticSubmission", .bool(false))
+        let removal = MacTweaksSettings.plan(fx.rows.filter { $0.id == "analytics" }, fx.reading)
+        assertTrue(removal.profile?.isEmpty == true && removal.dropped == ["future-tweak"],
+                   "Undoing the last tweak removes the profile (an unknown ID can't be rebuilt), and the plan names the unknown one")
+        assertTrue(MacTweaksSettings.planNotes(ticked: fx.rows.filter { $0.id == "analytics" }, context: fx.reading)
+            .contains("Lightspot asks for your administrator password to remove its profile."), "...and the plan says the password removes it")
+        // Commands for both directions, from the journal.
+        var journal = MacTweaksJournal()
+        journal.recordIfAbsent("pref:com.apple.finder:ShowPathbar", .pref(tweak: "path-bar", date: fx.clock, domain: "com.apple.finder",
+                                                                          key: "ShowPathbar", previous: .int(0), restart: ["Finder"]))
+        var r = fx.reading
+        r.journal = journal
+        assertEqual(MacTweaksSettings.commands(MacTweaksSettings.tweak("path-bar")!, undoing: true, r), ["defaults write com.apple.finder ShowPathbar -int 0"],
+                    "Undo writes back the recorded value")
+        r.journal = MacTweaksJournal()
+        assertEqual(MacTweaksSettings.commands(MacTweaksSettings.tweak("path-bar")!, undoing: true, r), ["defaults delete com.apple.finder ShowPathbar"],
+                    "...or deletes the key when Lightspot recorded nothing")
+        assertTrue(MacTweaksSettings.outcome(MacTweaksSettings.tweak("path-bar")!, .on, r).contains("Lightspot didn't make this change"),
+                   "...and the plan says the setting wasn't Lightspot's")
+        print("✅ Settings plan passed!\n")
+    }
+
+    // MARK: Apply and undo on scratch cfprefsd domains (AC 2, AC 4)
+
+    static func testSettingsScratchDomains() {
+        print("Testing Settings on scratch preference domains...")
+        let run = "settings-\(getpid())"
+        let fx = SettingsFixture("scratch")
+        let store = PreferenceStore.scratch(run: run)
+        let ids = ["file-extensions", "hidden-files", "dock-delay", "search-this-folder", "smart-punctuation", "ds-store", "autocorrect"]
+        let domains = Set(ids.compactMap { MacTweaksSettings.tweak($0) }.flatMap(\.changes).compactMap { change -> String? in
+            if case .pref(let domain, _, _) = change { return domain }
+            return nil
+        })
+        let scratch = domains.map { PreferenceStore.scratchDomain($0, run: run) }
+        // Every key removed through cfprefsd, then the domain itself (`defaults delete`, or the
+        // daemon writes an empty file back later), then its file.
+        func cleanup() {
+            for name in scratch {
+                let domain = name as CFString
+                for key in (CFPreferencesCopyKeyList(domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost) as? [String]) ?? [] {
+                    CFPreferencesSetValue(key as CFString, nil, domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+                }
+                CFPreferencesSynchronize(domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+                _ = CleanDevMacEngine.run("/usr/bin/defaults", ["delete", name], timeout: 10)
+                try? FileManager.default.removeItem(atPath: NSHomeDirectory() + "/Library/Preferences/\(name).plist")
+            }
+        }
+        cleanup()
+        defer { cleanup() }
+        assertTrue(scratch.allSatisfy { $0.hasPrefix("com.lightspot.test.") }, "Every domain this test writes is a scratch domain")
+        func raw(_ domain: String, _ key: String) -> CFPropertyList? {
+            let name = PreferenceStore.scratchDomain(domain, run: run) as CFString
+            CFPreferencesSynchronize(name, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+            return CFPreferencesCopyValue(("LightspotTest." + key) as CFString, name, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        }
+        func kind(_ value: CFPropertyList?) -> String {
+            guard let value else { return "unset" }
+            if CFGetTypeID(value) == CFBooleanGetTypeID() { return "bool \((value as! Bool))" }
+            if CFGetTypeID(value) == CFNumberGetTypeID() {
+                let number = value as! CFNumber
+                if !CFNumberIsFloatType(number) { return "int \((value as! NSNumber).int64Value)" }
+                return (CFNumberGetType(number) == .float32Type ? "float32 " : "float64 ") + "\((value as! NSNumber).floatValue)"
+            }
+            if CFGetTypeID(value) == CFStringGetTypeID() { return "string \(value as! String)" }
+            return "other"
+        }
+        // Starting values: unset, an int for a bool key, a 32-bit real, a string, a partly applied pair, a bool.
+        _ = store.write("com.apple.finder", "AppleShowAllFiles", .int(0))
+        _ = store.write("com.apple.dock", "autohide-delay", PreferenceValue(NSNumber(value: Float(0.5))))
+        _ = store.write("com.apple.finder", "FXDefaultSearchScope", .string("SCev"))
+        _ = store.write("NSGlobalDomain", "NSAutomaticQuoteSubstitutionEnabled", .bool(false))
+        _ = store.write("NSGlobalDomain", "NSAutomaticSpellingCorrectionEnabled", .bool(true))
+        assertEqual(kind(raw("NSGlobalDomain", "AppleShowAllExtensions")), "unset", "A key that starts unset")
+        assertTrue(store.read("NSGlobalDomain", "AppleLanguages") == nil && store.read("com.apple.finder", "AppleLanguages") == nil,
+                   "A scratch read never falls back to the real global domain (the keys are prefixed too)")
+        var env = fx.environment
+        env.settings.preferences = store
+        let reading = MacTweaksSettings.read(env)
+        let shown = MacTweaksSettings.rows(reading)
+        assertEqual(MacTweaksSettings.state(MacTweaksSettings.tweak("smart-punctuation")!, reading), .partly, "The scratch pair reads partly")
+        let result = MacTweaksSettings.apply(shown.filter { ids.contains($0.id) }, env: env)
+        assertTrue(result.receipt.problems.isEmpty, "Apply has no problems: \(result.receipt.problems)")
+        assertEqual(kind(raw("NSGlobalDomain", "AppleShowAllExtensions")), "bool true", "Written through cfprefsd and read back")
+        assertEqual(kind(raw("com.apple.finder", "AppleShowAllFiles")), "bool true", "...an int 0 becomes the tweak's bool")
+        assertEqual(kind(raw("com.apple.dock", "autohide-delay")), "float64 0.0", "...the real becomes 0")
+        assertEqual(kind(raw("com.apple.finder", "FXDefaultSearchScope")), "string SCcf", "...the string changes")
+        assertEqual(kind(raw("NSGlobalDomain", "NSAutomaticDashSubstitutionEnabled")), "bool false", "...the partly tweak is finished")
+        assertEqual(fx.killed, ["Finder", "Dock"], "Finder and the Dock restart once each, typing restarts nothing (AC 4)")
+        let journal = fx.journal
+        assertEqual(journal.entry("pref:com.apple.finder:AppleShowAllFiles")?.previous, .int(0), "The journal keeps the int")
+        assertTrue(journal.entry("pref:NSGlobalDomain:AppleShowAllExtensions") != nil && journal.entry("pref:NSGlobalDomain:AppleShowAllExtensions")?.previous == nil,
+                   "...and that the key was unset")
+        assertTrue(journal.entry("pref:NSGlobalDomain:NSAutomaticQuoteSubstitutionEnabled") == nil, "...and nothing for a key Lightspot didn't write")
+
+        // Undo each row: the exact value and type come back, an unset key goes back to unset.
+        fx.killed = []
+        let again = MacTweaksSettings.rows(MacTweaksSettings.read(env))
+        let undone = MacTweaksSettings.apply(again.filter { ["file-extensions", "hidden-files", "dock-delay"].contains($0.id) }, env: env)
+        assertTrue(undone.receipt.problems.isEmpty && again.first { $0.id == "hidden-files" }?.undoes == true, "On rows undo: \(undone.receipt.problems)")
+        assertEqual(kind(raw("NSGlobalDomain", "AppleShowAllExtensions")), "unset", "An unset key is unset again")
+        assertEqual(kind(raw("com.apple.finder", "AppleShowAllFiles")), "int 0", "The int comes back an int")
+        assertEqual(kind(raw("com.apple.dock", "autohide-delay")), "float32 0.5", "The 32-bit real comes back 32-bit")
+        assertEqual(fx.killed, ["Finder", "Dock"], "An undo restarts what it needs too")
+
+        // Undo everything puts back only what Lightspot changed.
+        let undoRow = MacTweaksSettings.rows(MacTweaksSettings.read(env)).filter { $0.id == MacTweaksSettings.undoEverythingID }
+        assertEqual(undoRow.count, 1, "Undo everything is offered while the journal holds entries")
+        let all = MacTweaksSettings.apply(undoRow, env: env)
+        assertTrue(all.receipt.isSuccess && all.receipt.headline == "Everything Lightspot changed is back.", "Undo everything: \(all.receipt.problems)")
+        assertEqual(kind(raw("com.apple.finder", "FXDefaultSearchScope")), "string SCev", "The string is back")
+        assertEqual(kind(raw("com.apple.desktopservices", "DSDontWriteNetworkStores")), "unset", "Both .DS_Store keys are unset again")
+        assertEqual(kind(raw("com.apple.desktopservices", "DSDontWriteUSBStores")), "unset", "...the USB one too")
+        assertEqual(kind(raw("NSGlobalDomain", "NSAutomaticDashSubstitutionEnabled")), "unset", "The key Lightspot finished is unset again")
+        assertEqual(kind(raw("NSGlobalDomain", "NSAutomaticQuoteSubstitutionEnabled")), "bool false", "...and the owner's own one stays")
+        assertEqual(kind(raw("NSGlobalDomain", "NSAutomaticSpellingCorrectionEnabled")), "bool true", "The bool is back")
+        assertTrue(!FileManager.default.fileExists(atPath: fx.journalURL.path), "Nothing left to undo: the journal file is gone")
+        cleanup()
+        // cfprefsd flushes on its own schedule: give it a moment, then look.
+        usleep(1_500_000)
+        cleanup()
+        let left = ((try? FileManager.default.contentsOfDirectory(atPath: NSHomeDirectory() + "/Library/Preferences")) ?? [])
+            .filter { $0.hasPrefix("com.lightspot.test.\(run).") }
+        assertTrue(left.isEmpty, "The scratch domains are gone: \(left)")
+        print("✅ Settings on scratch domains passed!\n")
+    }
+
+    // MARK: Music and the media keys (AC 6)
+
+    static func testSettingsMusicAndKeys() {
+        print("Testing Music's launch entry and the media keys...")
+        let fx = SettingsFixture("music")
+        let env = fx.environment
+        let first = fx.musicLabel
+        assertEqual(MacTweaksSettings.musicLabel(env), first, "The label comes from the inodes of Music.app and its executable")
+        assertTrue(first?.hasPrefix("application.com.apple.Music.") == true, "...in launchd's form")
+        var big = env
+        big.settings.inode = { $0.hasSuffix("/Music") ? 1_152_921_500_311_889_670 : 1_152_921_500_311_889_665 }
+        assertEqual(MacTweaksSettings.musicLabel(big), "application.com.apple.Music.1152921500311889665.1152921500311889670",
+                    "19-digit inodes come out whole (this Mac's on 27.2)")
+        fx.disabled = ["com.example.unrelated"]
+        fx.loaded = [first!]
+        // Apply: journaled, disabled, booted out.
+        var result = fx.apply(["music-launches"])
+        assertTrue(fx.disabled.contains(first!) && !fx.loaded.contains(first!) && result.receipt.problems.isEmpty,
+                   "Applying disables Music's entry and closes the running app")
+        assertEqual(fx.state("music-launches"), .on, "...and it reads On")
+        assertEqual(fx.journal.entry("service:" + first!)?.wasDisabled, false, "...journaled as enabled before")
+        // A macOS update replaces Music: a new label, the old one still disabled → Partly.
+        let executable = fx.root + "/System/Applications/Music.app/Contents/MacOS/Music"
+        try? FileManager.default.moveItem(atPath: executable, toPath: fx.base + "/old-Music")
+        FileManager.default.createFile(atPath: executable, contents: Data("replacement".utf8))
+        let second = fx.musicLabel!
+        assertTrue(second != first && fx.state("music-launches") == .partly, "Replacing Music changes its label and leaves the tweak partly")
+        assertTrue(fx.row("music-launches")?.caveat?.contains("macOS updated Music") == true, "...and the row says why")
+        result = fx.apply(["music-launches"])
+        assertTrue(fx.disabled.contains(second) && fx.journal.json("service:" + first!) != nil && fx.journal.json("service:" + second) != nil,
+                   "Ticking it again stops the new one and keeps the old entry for undo")
+        // Undo everything restores both, and leaves the unrelated job alone.
+        fx.failing["enable \(first!)"] = 5
+        result = MacTweaksSettings.apply(fx.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: fx.environment)
+        assertTrue(fx.disabled.contains(first!) && !fx.disabled.contains(second) && fx.journal.json("service:" + first!) != nil
+                   && fx.journal.json("service:" + second) == nil && !result.receipt.isSuccess,
+                   "A failed undo keeps only the failed entry for a retry")
+        fx.failing = [:]
+        result = MacTweaksSettings.apply(fx.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: fx.environment)
+        assertTrue(fx.disabled == ["com.example.unrelated"] && fx.journal.isEmpty, "The retry restores both and leaves unrelated jobs alone")
+        fx.disabled = ["com.apple.rcd"]
+        assertTrue(fx.state("media-keys") == .on && fx.row("media-keys")?.undoes == true, "rcd already off: On, and its tick would undo")
+        // The media keys: a bootout macOS refuses leaves them off from the next login, a change
+        // made rather than a failure.
+        fx.disabled = []
+        fx.loaded = ["com.apple.rcd"]
+        assertEqual(fx.row("media-keys")?.items.map(\.target), ["launchctl disable gui/501/com.apple.rcd", "launchctl bootout gui/501/com.apple.rcd"],
+                    "The plan lists disable and bootout as two items")
+        fx.failing["bootout com.apple.rcd"] = 150
+        result = fx.apply(["media-keys"])
+        assertTrue(fx.disabled.contains("com.apple.rcd") && fx.loaded.contains("com.apple.rcd"), "A refused bootout still leaves rcd disabled")
+        assertTrue(result.receipt.headline == "Changed 1 setting." && result.receipt.isSuccess && result.receipt.problems.isEmpty
+                   && result.receipt.lines.contains { $0.contains("off from your next login") },
+                   "...counted as changed, the receipt saying it stops from the next login: \(result.receipt.lines) \(result.receipt.problems)")
+        assertEqual(fx.state("media-keys"), .partly, "...so it reads partly until then")
+        assertEqual(fx.journal.entry("service:com.apple.rcd")?.plist, "/System/Library/LaunchAgents/com.apple.rcd.plist", "The journal keeps rcd's plist")
+        // Undo: enable, then bootstrap the plist when it isn't loaded.
+        fx.failing = [:]
+        fx.loaded = []
+        fx.launchctlCalls = []
+        let rcdRows = fx.rows.filter { $0.id == "media-keys" }
+        assertTrue(rcdRows.first?.undoes == true, "rcd off: its tick undoes")
+        result = MacTweaksSettings.apply(rcdRows, env: fx.environment)
+        assertTrue(!fx.disabled.contains("com.apple.rcd") && fx.launchctlCalls.contains(["bootstrap", "gui/501", "/System/Library/LaunchAgents/com.apple.rcd.plist"]),
+                   "Restoring enables rcd and bootstraps its plist")
+        assertTrue(fx.journal.isEmpty, "...and its entry goes")
+        // A bootstrap macOS refuses: enabled, back from the next login, counted as undone.
+        fx.apply(["media-keys"])
+        assertEqual(fx.row("media-keys")?.items.map(\.target), ["launchctl enable gui/501/com.apple.rcd", "launchctl bootstrap gui/501 /System/Library/LaunchAgents/com.apple.rcd.plist"],
+                    "The undo lists enable and bootstrap as two items")
+        fx.failing["bootstrap com.apple.rcd"] = 5
+        result = MacTweaksSettings.apply(fx.rows.filter { $0.id == "media-keys" }, env: fx.environment)
+        assertTrue(!fx.disabled.contains("com.apple.rcd") && result.receipt.headline == "Undid 1 setting." && result.receipt.problems.isEmpty
+                   && result.receipt.lines.contains { $0.contains("back from your next login") } && fx.journal.isEmpty,
+                   "A refused bootstrap still undoes it, back from the next login: \(result.receipt.lines) \(result.receipt.problems)")
+        fx.failing = [:]
+        // A row's undo of a job that was off before Lightspot: the plan and the receipt say it is
+        // left as it was, and the check expects it still off.
+        var offBefore = MacTweaksJournal()
+        offBefore.recordIfAbsent("service:com.apple.rcd", .service(tweak: "media-keys", date: fx.clock, label: "com.apple.rcd", wasDisabled: true, plist: nil))
+        try? offBefore.saveAhead(url: fx.journalURL)
+        fx.disabled = ["com.apple.rcd"]
+        let keptRow = fx.row("media-keys")
+        assertTrue(keptRow?.outcome == "Left as it was: it was off before Lightspot" && keptRow?.items.map(\.target) == ["com.apple.rcd was off before Lightspot: it stays off"],
+                   "The plan says undoing it leaves it as it was: \(String(describing: keptRow?.outcome))")
+        result = MacTweaksSettings.apply([keptRow!], env: fx.environment)
+        assertTrue(result.receipt.headline == "Nothing changed." && result.receipt.isSuccess && result.receipt.problems.isEmpty
+                   && result.receipt.lines.contains { $0.contains("left as it was") } && fx.disabled.contains("com.apple.rcd") && fx.journal.isEmpty,
+                   "...and the receipt says so, never 'still on': \(result.receipt.headline) \(result.receipt.lines) \(result.receipt.problems)")
+        // An entry that says it was off before is left off.
+        var journal = MacTweaksJournal()
+        journal.recordIfAbsent("service:com.apple.rcd", .service(tweak: "media-keys", date: fx.clock, label: "com.apple.rcd", wasDisabled: true, plist: nil))
+        try? journal.saveAhead(url: fx.journalURL)
+        fx.disabled = ["com.apple.rcd"]
+        _ = MacTweaksSettings.apply(fx.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: fx.environment)
+        assertTrue(fx.disabled.contains("com.apple.rcd") && fx.journal.isEmpty, "A job that was off before Lightspot stays off after undo")
+        // No Music: nothing disabled, the row read-only.
+        try? FileManager.default.removeItem(atPath: fx.root + "/System/Applications/Music.app")
+        fx.disabled = []
+        assertTrue(fx.row("music-launches")?.readOnly == true && fx.row("music-launches")?.caveat?.contains("couldn't find Music") == true,
+                   "Without Music.app the row is read-only")
+        print("✅ Music and the media keys passed!\n")
+    }
+
+    // MARK: The Dock and the Library folder (AC 5)
+
+    static func testSettingsDockAndLibrary() {
+        print("Testing the Dock and the Library folder...")
+        let fx = SettingsFixture("dock")
+        let apps: [(String?, String)] = [("com.apple.finder.notes", "Notes"), ("com.apple.Music", "Music"), (nil, "spacer"),
+                                         ("com.apple.TV", "TV"), ("com.example.editor", "Editor")]
+        fx.setDock(apps)
+        let before = fx.value("com.apple.dock", "persistent-apps")
+        // Clear Dock Icons: the backup first, then the empty Dock, then one restart.
+        final class Restarts: @unchecked Sendable { var count = 0 }
+        let restarts = Restarts()
+        var dock = MacTweaksDock.Environment(preferences: fx.store, fileSystem: .live, backupURL: MacTweaksDock.backupURL(home: fx.home),
+                                             restartDock: { restarts.count += 1 })
+        var failing = dock
+        var fs = MacTweaksJournal.FileSystem.live
+        fs.write = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        failing.fileSystem = fs
+        if case .backupFailed = MacTweaksDock.clear(failing) {} else { assertTrue(false, "A backup that can't be written stops the clear") }
+        assertTrue(fx.value("com.apple.dock", "persistent-apps") == before && restarts.count == 0, "...and nothing is cleared")
+        assertEqual(MacTweaksDock.clear(dock), .cleared(5), "Clear Dock Icons saves the icons, then clears them")
+        assertTrue(fx.dockIDs.isEmpty && restarts.count == 1, "...the Dock is empty and restarted once")
+        assertTrue(FileManager.default.fileExists(atPath: dock.backupURL.path), "...and the backup is in Application Support")
+        let backup = FileManager.default.contents(atPath: dock.backupURL.path)
+        assertEqual(MacTweaksDock.clear(dock), .alreadyEmpty, "Clearing an empty Dock does nothing")
+        assertEqual(FileManager.default.contents(atPath: dock.backupURL.path), backup, "...and keeps the backup")
+        // Restore into the empty Dock: exactly as it was.
+        assertEqual(MacTweaksDock.restore(dock), .restored(5), "Restore Dock Icons puts every icon back")
+        assertTrue((fx.value("com.apple.dock", "persistent-apps")?.object as? NSArray) == (before?.object as? NSArray), "...exactly, spacer included")
+        assertTrue(!FileManager.default.fileExists(atPath: dock.backupURL.path), "...and the backup goes")
+        assertEqual(MacTweaksDock.restore(dock), .nothingToRestore, "With no backup, Restore does nothing")
+        // Restore after icons were added: the missing ones at their places, the new one kept.
+        _ = MacTweaksDock.clear(dock)
+        fx.setDock([("com.example.new", "New")])
+        dock.preferences = fx.store
+        assertEqual(MacTweaksDock.restore(dock), .restored(4), "Restoring into a Dock with new icons adds the missing apps")
+        assertEqual(fx.dockIDs, ["com.apple.finder.notes", "com.apple.Music", "com.example.new", "com.apple.TV", "com.example.editor"],
+                    "...each at its old position, the new one kept, no spacer into a Dock that isn't empty")
+        // The quick actions: sentinels resolved by QuickActionsProvider, no password, the legacy one-liner mapped.
+        let clear = MacTweaks.actions.first { $0.name == "Clear Dock Icons" }
+        let restore = MacTweaks.actions.first { $0.name == "Restore Dock Icons" }
+        assertTrue(clear?.script == MacTweaksDock.clearScript && restore?.script == MacTweaksDock.restoreScript, "Both are internal: actions")
+        assertTrue(!QuickActionsProvider.requiresAdministratorPrivileges(script: MacTweaksDock.clearScript)
+                   && !QuickActionsProvider.requiresAdministratorPrivileges(script: MacTweaksDock.restoreScript), "...needing no password")
+        assertEqual(MacTweaksDock.action(forScript: "defaults write com.apple.dock persistent-apps -array && killall Dock"), .clear,
+                    "1.3.x's one-liner, which search history may replay, runs the new Clear with its backup")
+        assertTrue(MacTweaksDock.action(forScript: MacTweaksDock.clearScript) == .clear && MacTweaksDock.action(forScript: MacTweaksDock.restoreScript) == .restore
+                   && MacTweaksDock.action(forScript: "killall Dock") == nil, "...and each sentinel its own action")
+        assertEqual(QuickActionsProvider.shared.search(SearchQuery("restore dock")).first?.title, "Restore Dock Icons", "'restore dock' finds it")
+        // Clear, add an app, clear again, restore: the first backup's icons and the new app come back.
+        fx.setDock([("com.apple.finder.notes", "Notes"), ("com.apple.Music", "Music"), (nil, "spacer")])
+        assertEqual(MacTweaksDock.clear(dock), .cleared(3), "A first clear saves three icons")
+        fx.setDock([("com.apple.Terminal", "Terminal"), ("com.apple.Music", "Music"), (nil, "spacer")])
+        assertEqual(MacTweaksDock.clear(dock), .cleared(3), "A second clear before any restore")
+        assertEqual(MacTweaksDock.restore(dock), .restored(4), "Restore brings back the first clear's icons and the new app")
+        assertEqual(fx.dockIDs, ["com.apple.finder.notes", "com.apple.Music", nil, "com.apple.Terminal"],
+                    "...the first backup as it was, the new app after it, Music and the spacer once each")
+        // A Restore the Dock refuses keeps the backup for the next one.
+        assertEqual(MacTweaksDock.clear(dock), .cleared(4), "Cleared again")
+        fx.failingWrites = ["com.apple.dock|persistent-apps"]
+        assertEqual(MacTweaksDock.restore(dock), .notWritten, "A Restore the Dock refuses says so")
+        assertTrue(FileManager.default.fileExists(atPath: dock.backupURL.path), "...and keeps the backup")
+        fx.failingWrites = []
+        assertEqual(MacTweaksDock.restore(dock), .restored(4), "...so the next Restore puts everything back")
+        // What the two rows say before ↵: a snapshot, read off the keystroke path (invariant 0).
+        final class Flag: @unchecked Sendable { var on = false }
+        let backupFlag = Flag()
+        let status = MacTweaksDock.Status { backupFlag.on }
+        assertTrue(status.subtitle(for: .restore) == nil, "Before its first read, a row keeps its own subtitle")
+        status.refreshNow()
+        assertEqual(status.subtitle(for: .restore), MacTweaksDock.noBackupSubtitle, "With no backup, Restore Dock Icons says so before ↵")
+        assertTrue(status.subtitle(for: .clear) == nil, "...and Clear keeps its own subtitle")
+        backupFlag.on = true
+        status.record(.cleared(2), for: .clear)
+        assertTrue(status.subtitle(for: .restore) == nil && status.subtitle(for: .clear) == nil, "Once a Clear saved a backup, both keep their own")
+        status.record(.notWritten, for: .restore)
+        assertTrue(status.subtitle(for: .restore)?.contains("The backup is kept") == true, "A Restore the Dock refused says so on its row")
+        status.record(.backupFailed("disk full"), for: .clear)
+        assertTrue(status.subtitle(for: .clear)?.contains("cleared nothing (disk full)") == true, "...and so does a Clear that couldn't save the icons")
+        status.record(.cleared(1), for: .clear)
+        assertTrue(status.subtitle(for: .clear) == nil, "...until it works")
+        let backupPath = dock.backupURL.path
+        let runStatus = MacTweaksDock.Status { FileManager.default.fileExists(atPath: backupPath) }
+        MacTweaksDock.run(.restore, env: dock, status: runStatus)
+        assertEqual(runStatus.subtitle(for: .restore), MacTweaksDock.noBackupSubtitle, "Running Restore with no backup leaves its row saying there is none")
+        // The Dock-removal tweak: journaled tiles, put back at their positions.
+        let tweak = SettingsFixture("dock-tweak")
+        tweak.setDock(apps)
+        var result = tweak.apply(["dock-apple-apps"])
+        assertEqual(tweak.dockIDs, ["com.apple.finder.notes", nil, "com.example.editor"], "The tweak takes out Music and TV, keeping the rest in order")
+        assertEqual(tweak.journal.entry("dock:" + MacTweaksSettings.unusedDockApps.joined(separator: ","))?.tiles?.map(\.index), [1, 3],
+                    "...journaling where they were")
+        assertEqual(tweak.killed, ["Dock"], "...and restarts the Dock")
+        assertTrue(result.receipt.lines.first == "Applied: Remove unused Apple apps from the Dock." && result.receipt.notes.contains(MacTweaksSettings.undoLaterNote),
+                   "The receipt names it on one line per kind, and says it can be undone later: \(result.receipt.lines)")
+        let rows = tweak.rows.filter { $0.id == "dock-apple-apps" }
+        assertTrue(rows.first?.undoes == true && rows.first?.readOnly == false, "Lightspot's own removal can be undone")
+        result = MacTweaksSettings.apply(rows, env: tweak.environment)
+        assertEqual(tweak.dockIDs, apps.map(\.0), "Undo puts them back where they were: \(result.receipt.problems)")
+        assertTrue(result.receipt.lines.first == "Undone: Remove unused Apple apps from the Dock." && !result.receipt.notes.contains(MacTweaksSettings.undoLaterNote),
+                   "...and its receipt says undone, with nothing to undo later: \(result.receipt.lines) \(result.receipt.notes)")
+        // Removed, dragged back, removed again: journaled once, so undo puts it back once.
+        let again = SettingsFixture("dock-again")
+        again.setDock([("com.apple.finder.notes", "Notes"), ("com.apple.Music", "Music"), ("com.example.editor", "Editor")])
+        again.apply(["dock-apple-apps"])
+        again.setDock([("com.apple.finder.notes", "Notes"), ("com.example.editor", "Editor"), ("com.apple.Music", "Music")])
+        again.apply(["dock-apple-apps"])
+        assertEqual(again.journal.entry("dock:" + MacTweaksSettings.unusedDockApps.joined(separator: ","))?.tiles?.map(\.index), [1],
+                    "An app taken out twice is journaled once, at its first place")
+        _ = MacTweaksSettings.apply(again.rows.filter { $0.id == "dock-apple-apps" }, env: again.environment)
+        assertEqual(again.dockIDs, ["com.apple.finder.notes", "com.apple.Music", "com.example.editor"], "...so undo puts it back once")
+        let music = MacTweaksDock.encode(SettingsFixture.tile("com.apple.Music", "Music"))!
+        let reinserted = MacTweaksDock.reinserted([.init(index: 0, label: "Music", plist: music), .init(index: 2, label: "Music", plist: music)],
+                                                  into: [SettingsFixture.tile("com.example.editor", "Editor")])
+        assertEqual(reinserted.compactMap(MacTweaksDock.bundleID), ["com.apple.Music", "com.example.editor"], "Two tiles for one app go back once")
+        // The Library folder (a real temp folder's hidden flag).
+        let library = tweak.home + "/Library"
+        let live = MacTweaksSettings.Environment.live
+        assertEqual(live.isHidden(library), true, "The fixture's Library starts hidden")
+        result = tweak.apply(["show-library"])
+        assertTrue(live.isHidden(library) == false && tweak.journal.entry("library")?.wasHidden == true, "Show the Library folder clears the flag, journaled")
+        result = MacTweaksSettings.apply(tweak.rows.filter { $0.id == "show-library" }, env: tweak.environment)
+        assertTrue(live.isHidden(library) == true && tweak.journal.entry("library") == nil, "...and undo hides it again")
+        print("✅ The Dock and the Library folder passed!\n")
+    }
+
+    // MARK: The profile
+
+    static func testSettingsProfile() {
+        print("Testing Settings in the profile...")
+        do {
+            let contents = MacTweaksProfile.Contents(ai: nil, tweaks: ["analytics", "improve-siri", "safari-suggestions", "future-tweak"])
+            let data = try MacTweaksProfile.data(contents)
+            let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as! [String: Any]
+            let payloads = plist["PayloadContent"] as! [[String: Any]]
+            func forced(_ domain: String) -> [String: Any]? {
+                let payload = payloads.first { ($0["PayloadIdentifier"] as? String)?.hasSuffix(".preferences." + domain) == true }
+                return ((payload?["PayloadContent"] as? [String: Any])?[domain] as? [String: Any])
+                    .flatMap { ($0["Forced"] as? [[String: Any]])?.first?["mcx_preference_settings"] as? [String: Any] }
+            }
+            let restrictions = payloads.first { $0["PayloadType"] as? String == "com.apple.applicationaccess" }
+            assertTrue(restrictions?["allowDiagnosticSubmission"] as? Bool == false && restrictions?["allowWritingTools"] == nil,
+                       "A tweak-only profile restricts the tweak and leaves Apple Intelligence alone")
+            assertEqual(forced("com.apple.assistant.support")?["Siri Data Sharing Opt-In Status"] as? Int, 2, "Forced tweak keys are in their domain's payload")
+            assertTrue(forced("com.apple.Safari")?["UniversalSearchEnabled"] as? Bool == false && forced("com.apple.Safari")?["SuppressSearchSuggestions"] as? Bool == true,
+                       "...both of Safari's")
+            assertTrue(forced("com.apple.MobileAsset") == nil, "No model download is blocked")
+            let marker = forced(MacTweaksProfile.identifier)
+            assertTrue(marker?["ai"] as? Bool == false && marker?["tweaks"] as? String == "analytics,improve-siri,safari-suggestions",
+                       "The marker records the tweaks it holds, an unknown one dropped")
+            assertTrue((plist["PayloadDescription"] as? String)?.hasPrefix("Locks the settings chosen") == true, "Its description says what it locks")
+            let merged = try PropertyListSerialization.propertyList(from: MacTweaksProfile.data(.init(ai: [], tweaks: ["improve-siri"])), format: nil) as! [String: Any]
+            let mergedPayloads = merged["PayloadContent"] as! [[String: Any]]
+            let assistant = mergedPayloads.first { ($0["PayloadIdentifier"] as? String)?.hasSuffix(".preferences.com.apple.assistant.support") == true }
+            let assistantKeys = ((assistant?["PayloadContent"] as? [String: Any])?["com.apple.assistant.support"] as? [String: Any])
+                .flatMap { ($0["Forced"] as? [[String: Any]])?.first?["mcx_preference_settings"] as? [String: Any] }
+            assertTrue(assistantKeys?["Assistant Enabled"] as? Bool == false && assistantKeys?["Siri Data Sharing Opt-In Status"] as? Int == 2,
+                       "Apple Intelligence's and a tweak's keys share one payload per domain")
+            let temp = NSTemporaryDirectory() + "lightspot-settings-profile-\(getpid()).mobileconfig"
+            try data.write(to: URL(fileURLWithPath: temp))
+            assertEqual(CleanDevMacEngine.run("/usr/bin/plutil", ["-lint", temp], timeout: 10).status, 0, "The profile is well-formed (plutil -lint)")
+            try? FileManager.default.removeItem(atPath: temp)
+        } catch { assertTrue(false, "the tweak profile builds: \(error)") }
+        // A target without Apple Intelligence never matches a stale profile that still turns it off.
+        let all = Set(Catalog.availableFeatures.map(\.id))
+        let stale = MacTweaksProfile.Installed(on: true, ai: true, kept: [], tweaks: ["analytics"], features: all.subtracting(["siri"]))
+        assertTrue(!MacTweaksProfile.matches(.init(ai: nil, tweaks: ["analytics"]), installed: stale), "A stale profile is no match for a target without Apple Intelligence")
+
+        // The flow: local changes first, then the restarts, then the profile; Apple Intelligence kept.
+        let fx = SettingsFixture("profile")
+        fx.installProfile(.init(ai: ["siri"], tweaks: []))
+        var result = fx.apply(["file-extensions", "analytics"])
+        assertEqual(fx.presented, [MacTweaksProfile.Contents(ai: ["siri"], tweaks: ["analytics"])], "The profile gains the tweak and keeps Apple Intelligence")
+        let firstWrite = fx.events.firstIndex { $0.hasPrefix("write:") } ?? .max
+        let restart = fx.events.firstIndex(of: "killall Finder") ?? .max
+        let present = fx.events.firstIndex(of: "present") ?? .max
+        assertTrue(firstWrite < restart && restart < present, "Local changes, then the restart, then the profile: \(fx.events)")
+        assertTrue(result.receipt.isSuccess && result.receipt.lines.contains("Locked by Lightspot's profile: Turn off Mac Analytics."), "The receipt says what the profile locks")
+        // Only a change of its tweaks touches the profile.
+        fx.presented = []
+        result = fx.apply(["hidden-files"])
+        assertTrue(fx.presented.isEmpty && fx.adminScripts.isEmpty, "A local tweak alone leaves the profile")
+        // The wait cancelled: local changes stay, the receipt says the profile waits.
+        let wait = SettingsFixture("profile-wait")
+        wait.approveOnPresent = false
+        var env = wait.environment
+        env.intelligence.sleep = { [wait] _ in wait.sleepCount += 1; wait.clock = wait.clock.addingTimeInterval(1); if wait.sleepCount == 3 { wait.cancelled = true } }
+        result = MacTweaksSettings.apply(wait.rows.filter { ["status-bar", "game-center"].contains($0.id) }, env: env)
+        assertTrue(result.receipt.headline.hasSuffix("The profile is waiting for you.") && !result.receipt.isSuccess
+                   && wait.value("com.apple.finder", "ShowStatusBar") == .bool(true), "A stopped wait keeps the local change and says the profile waits")
+        // Removal: the last tweak out, the administrator batch, judged by the marker.
+        let removal = SettingsFixture("profile-removal")
+        removal.installProfile(.init(ai: nil, tweaks: ["analytics"]))
+        result = removal.apply(["analytics"])
+        assertTrue(removal.adminScripts.count == 1 && removal.adminScripts[0].contains("'/usr/bin/profiles' remove -identifier 'com.lightspot.app.tweaks' -forced")
+                   && !removal.installed.on && result.receipt.isSuccess, "Taking out the last tweak removes the profile in one batch")
+        let cancelled = SettingsFixture("profile-cancel")
+        cancelled.installProfile(.init(ai: nil, tweaks: ["analytics"]))
+        cancelled.adminAnswer = .cancelled
+        result = cancelled.apply(["analytics"])
+        assertTrue(cancelled.installed.on && cancelled.deviceManagementOpened == 0 && !result.receipt.isSuccess
+                   && result.receipt.problems.contains { $0.contains("prompt was cancelled") }, "A cancelled prompt stops there and says so")
+        // A tweak another profile took over since the scan is left alone at apply time.
+        let managed = SettingsFixture("profile-managed")
+        let shown = managed.rows.filter { $0.id == "path-bar" }
+        managed.force("com.apple.finder", "ShowPathbar", .bool(false))
+        result = MacTweaksSettings.apply(shown, env: managed.environment)
+        assertTrue(managed.writes.isEmpty && result.receipt.notes.contains { $0.contains("another configuration profile") },
+                   "A tweak managed since the scan is never written")
+        // The Recommended preset's receipt: one line per kind, so the overlay shows all of it.
+        let preset = SettingsFixture("profile-preset")
+        let presetRows = preset.rows
+        let presetTicks = Set(presetRows.first { $0.id == "preset-recommended" }?.ticks ?? [])
+        result = MacTweaksSettings.apply(presetRows.filter { presetTicks.contains($0.id) }, env: preset.environment)
+        assertTrue(result.receipt.headline == "Changed 12 settings." && result.receipt.lines.count == 3 && result.receipt.lines[0].hasPrefix("Applied: Stop clicks")
+                   && result.receipt.lines[2].hasPrefix("Locked by Lightspot's profile: Turn off Mac Analytics, "),
+                   "Applied, the restarts, then what the profile locks: \(result.receipt.headline) \(result.receipt.lines)")
+        // Settings' scan removes the profile file once the profile is installed, on a Mac without
+        // the Apple Intelligence section too.
+        let file = SettingsFixture("profile-file")
+        _ = MacTweaksSettings.Engine(environment: file.environment).scan(only: nil, progress: nil)
+        assertEqual(file.profileFileRemovals, 0, "Without the profile, a scan leaves its file")
+        file.installProfile(.init(ai: nil, tweaks: ["analytics"]))
+        _ = MacTweaksSettings.Engine(environment: file.environment).scan(only: nil, progress: nil)
+        assertEqual(file.profileFileRemovals, 1, "Once it is installed, Settings' scan removes it")
+        // A marker ID this version doesn't know (after a downgrade): a plan that changes the
+        // profile says it drops it, one that leaves the profile says nothing.
+        let downgrade = SettingsFixture("profile-downgrade")
+        downgrade.installProfile(.init(ai: nil, tweaks: ["analytics"]))
+        downgrade.installed.tweaks.insert("future-tweak")
+        let dropped = MacTweaksSettings.droppedNote(["future-tweak"])!
+        let rebuild = MacTweaksSettings.plan(downgrade.rows.filter { $0.id == "improve-siri" }, downgrade.reading)
+        assertTrue(rebuild.profile?.tweaks == ["analytics", "improve-siri"] && rebuild.dropped == ["future-tweak"]
+                   && MacTweaksSettings.planNotes(ticked: downgrade.rows.filter { $0.id == "improve-siri" }, context: downgrade.reading).contains(dropped),
+                   "A rebuilt profile drops the unknown ID, and the plan says so")
+        assertTrue(MacTweaksSettings.plan(downgrade.rows.filter { $0.id == "file-extensions" }, downgrade.reading).dropped.isEmpty
+                   && !MacTweaksSettings.planNotes(ticked: downgrade.rows.filter { $0.id == "file-extensions" }, context: downgrade.reading).contains(dropped),
+                   "A plan that leaves the profile keeps it, and says nothing")
+        result = MacTweaksSettings.apply(downgrade.rows.filter { $0.id == "improve-siri" }, env: downgrade.environment)
+        assertTrue(result.receipt.lines.contains("Taken out of Lightspot's profile: future-tweak."), "...and the receipt names it: \(result.receipt.lines)")
+        // Apple Intelligence's turn-off rebuilds the profile from the tweaks this version knows, so
+        // the unknown ID can't keep the wait from ever matching.
+        let ai = AIFixture()
+        ai.inventory = spatialRetiredInventory
+        let before = MacTweaksProfile.Installed(on: true, ai: false, kept: [], tweaks: ["analytics", "future-tweak"], features: AIFixture.allIDs)
+        ai.installed = before
+        ai.onSleep = { [unowned ai] count in
+            // macOS installs it; its marker records only the tweaks the profile could build.
+            guard count == 1, let contents = ai.presented.first else { return }
+            ai.installed = MacTweaksProfile.Installed(on: true, ai: contents.ai != nil, kept: contents.ai ?? [],
+                                                      tweaks: MacTweaksSettings.profileTweakIDs(contents.tweaks), features: AIFixture.allIDs)
+        }
+        let aiRows = featureRows(ai)
+        assertTrue(MacTweaksIntelligence.planNotes(ticked: aiRows, shown: aiRows, context: .init(inventory: ai.inventory, installed: before)).contains(dropped),
+                   "Apple Intelligence's plan says the unknown ID goes too")
+        let aiResult = MacTweaksIntelligence.apply(aiRows, shown: aiRows, env: ai.environment)
+        assertTrue(ai.presented.first?.tweaks == ["analytics"] && aiResult.receipt.isSuccess && ai.installed.tweaks == ["analytics"],
+                   "Turning Apple Intelligence off with an unknown ID in the marker works: \(aiResult.receipt.headline)")
+        print("✅ Settings in the profile passed!\n")
+    }
+
+    // MARK: Undo everything
+
+    static func testSettingsUndoEverything() {
+        print("Testing Undo everything...")
+        let fx = SettingsFixture("undo-all")
+        // What Lightspot changed earlier, and the journal that says so; one entry from a tweak no
+        // longer in the catalog, one of a kind this version doesn't know, one background item.
+        fx.set("com.apple.finder", "AppleShowAllFiles", .bool(true))
+        fx.set("com.apple.dock", "show-recents", .bool(false))
+        fx.set("com.example.retired", "OldKey", .bool(true))
+        fx.disabled = ["com.apple.rcd"]
+        fx.setDock([("com.example.editor", "Editor")])
+        _ = MacTweaksSettings.Environment.live.setHidden(fx.home + "/Library", false)
+        var journal = MacTweaksJournal()
+        let date = fx.clock
+        journal.recordIfAbsent("pref:com.apple.finder:AppleShowAllFiles", .pref(tweak: "hidden-files", date: date, domain: "com.apple.finder",
+                                                                              key: "AppleShowAllFiles", previous: nil, restart: ["Finder"]))
+        journal.recordIfAbsent("pref:com.apple.dock:show-recents", .pref(tweak: "dock-recents", date: date, domain: "com.apple.dock",
+                                                                       key: "show-recents", previous: .int(1), restart: ["Dock"]))
+        journal.recordIfAbsent("pref:com.example.retired:OldKey", .pref(tweak: "retired-tweak", date: date, domain: "com.example.retired",
+                                                                      key: "OldKey", previous: .bool(false), restart: ["Finder"]))
+        journal.recordIfAbsent("service:com.apple.rcd", .service(tweak: "media-keys", date: date, label: "com.apple.rcd", wasDisabled: false,
+                                                                 plist: "/System/Library/LaunchAgents/com.apple.rcd.plist"))
+        let music = MacTweaksDock.encode(SettingsFixture.tile("com.apple.Music", "Music"))!
+        journal.recordIfAbsent("dock:" + MacTweaksSettings.unusedDockApps.joined(separator: ","),
+                               .dock(tweak: "dock-apple-apps", date: date, tiles: [.init(index: 0, label: "Music", plist: music)], restart: ["Dock"]))
+        journal.recordIfAbsent("library", .hidden(tweak: "show-library", date: date, path: "Library", wasHidden: true))
+        journal.recordIfAbsent("firmware:x", Data(#"{"kind":"firmware","tweak":"future"}"#.utf8))
+        journal.recordIfAbsent("background:system/us.zoom.ZoomDaemon", Data(#"{"kind":"background","label":"us.zoom.ZoomDaemon","tweak":"background:system/us.zoom.ZoomDaemon"}"#.utf8))
+        try? journal.saveAhead(url: fx.journalURL)
+        fx.installProfile(.init(ai: [], tweaks: ["analytics"]))
+
+        let row = fx.row(MacTweaksSettings.undoEverythingID)
+        assertTrue(row?.exclusive == true && row?.undoes == true && row?.countLabel == "9 changes", "Undo everything counts every entry and the profile")
+        let lines = row?.items.map(\.target) ?? []
+        assertTrue(lines.first?.hasPrefix("Lightspot's profile: '/usr/bin/profiles' remove") == true && lines.first?.contains("Apple Intelligence comes back on") == true,
+                   "The plan lists the profile first, with what comes back")
+        assertTrue(lines.contains("defaults delete com.example.retired OldKey") == false && lines.contains("defaults write com.example.retired OldKey -bool false"),
+                   "An entry from a tweak no longer in the catalog is listed from its own fields")
+        assertTrue(lines.contains { $0.hasPrefix("firmware:x: kept") } && lines.contains { $0.hasPrefix("background:system/us.zoom.ZoomDaemon: kept") },
+                   "Unknown kinds and, without the hook, background items are kept")
+        let notes = MacTweaksSettings.planNotes(ticked: [row!], context: fx.reading)
+        assertTrue(notes.contains(MacTweaksSettings.trashNote) && notes.contains(MacTweaksSettings.sharedProfileNote), "The plan says the Trash stays and the profile is shared")
+
+        // The background hook: its root steps join the one batch; verified entries go.
+        final class Calls: @unchecked Sendable { var user = 0; var keys: [String] = [] }
+        let calls = Calls()
+        fx.background = { entries in
+            calls.keys = entries.map(\.key)
+            return MacTweaksSettings.BackgroundUndo(adminCommands: ["/bin/launchctl enable 'system/us.zoom.ZoomDaemon'"],
+                                                    userSteps: { calls.user += 1; return [] }, verify: { _ in true })
+        }
+        let result = MacTweaksSettings.apply([row!], env: fx.environment)
+        assertEqual(fx.value("com.apple.finder", "AppleShowAllFiles"), nil, "A key that was unset is deleted")
+        assertEqual(fx.value("com.apple.dock", "show-recents"), .int(1), "A recorded value comes back as it was")
+        assertEqual(fx.value("com.example.retired", "OldKey"), .bool(false), "An entry for a tweak no longer in the catalog is undone too")
+        assertTrue(!fx.disabled.contains("com.apple.rcd") && fx.loaded.contains("com.apple.rcd"), "rcd is enabled and bootstrapped again")
+        assertEqual(fx.dockIDs, ["com.apple.Music", "com.example.editor"], "The Dock tile goes back to its place")
+        assertEqual(MacTweaksSettings.Environment.live.isHidden(fx.home + "/Library"), true, "~/Library is hidden again")
+        assertEqual(fx.killed, ["Finder", "Dock"], "Finder and the Dock restart once each")
+        assertEqual(fx.adminScripts.count, 1, "One administrator prompt for everything")
+        assertTrue(fx.adminScripts[0].contains("'/usr/bin/profiles' remove") && fx.adminScripts[0].contains("/bin/launchctl enable 'system/us.zoom.ZoomDaemon'"),
+                   "...holding the profile's removal and Background Items' root steps")
+        assertTrue(calls.keys == ["background:system/us.zoom.ZoomDaemon"] && calls.user == 1, "The hook gets the background entries as (key, json), and runs its user steps")
+        assertTrue(!fx.installed.on, "The profile is removed")
+        assertEqual(fx.journal.keys, ["firmware:x"], "Every entry is gone but the kind this version can't undo")
+        assertTrue(!result.receipt.isSuccess && result.receipt.headline == "Some changes couldn't be undone.", "...so the receipt isn't a full success")
+        // A blocked journal: nothing at all.
+        let blocked = SettingsFixture("undo-all-blocked")
+        try? Data("garbage".utf8).write(to: blocked.journalURL)
+        var fs = MacTweaksJournal.FileSystem.live
+        fs.move = { _, _ in throw CocoaError(.fileWriteNoPermission) }
+        fs.canRename = { _ in false }
+        blocked.fileSystem = fs
+        blocked.installed = MacTweaksProfile.Installed(on: true, ai: false, tweaks: ["analytics"])
+        let undoRow = MacTweaksRow(id: MacTweaksSettings.undoEverythingID, symbol: "x", title: "x", detail: "")
+        let none = MacTweaksSettings.apply([undoRow.with(exclusive: true)], env: blocked.environment)
+        assertTrue(none.receipt.headline == "Nothing changed." && blocked.adminScripts.isEmpty && blocked.installed.on, "A blocked journal changes nothing, the profile included")
+
+        // Without the profile, Background Items' root steps still run, in one batch.
+        let zoom = #"{"kind":"background","label":"us.zoom.ZoomDaemon","tweak":"background:system/us.zoom.ZoomDaemon"}"#
+        let enableZoom = "/bin/launchctl enable 'system/us.zoom.ZoomDaemon'"
+        var backgroundOnly = MacTweaksJournal()
+        backgroundOnly.recordIfAbsent("background:system/us.zoom.ZoomDaemon", Data(zoom.utf8))
+        let noProfile = SettingsFixture("undo-all-no-profile")
+        try? backgroundOnly.saveAhead(url: noProfile.journalURL)
+        noProfile.background = { _ in MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], verify: { _ in true }) }
+        var undoAll = MacTweaksSettings.apply(noProfile.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: noProfile.environment)
+        assertTrue(noProfile.adminScripts.count == 1 && noProfile.adminScripts[0].contains(enableZoom) && !noProfile.adminScripts[0].contains("profiles"),
+                   "Without the profile, the background items' root steps run in one batch")
+        assertTrue(undoAll.receipt.isSuccess && noProfile.journal.isEmpty, "...and their entry goes once verified: \(undoAll.receipt.problems)")
+        // The profile removed between the reading and the batch: the root steps still run, once.
+        let gone = SettingsFixture("undo-all-profile-gone")
+        try? backgroundOnly.saveAhead(url: gone.journalURL)
+        gone.installProfile(.init(ai: nil, tweaks: ["analytics"]))
+        gone.background = { [unowned gone] _ in
+            gone.removeProfile()
+            return MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], verify: { _ in true })
+        }
+        undoAll = MacTweaksSettings.apply(gone.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: gone.environment)
+        assertTrue(gone.adminScripts.count == 1 && gone.adminScripts[0].contains(enableZoom) && !gone.adminScripts[0].contains("profiles"),
+                   "A profile gone before the batch still leaves the root steps to run: \(gone.adminScripts.count) batches")
+        assertTrue(undoAll.receipt.isSuccess && gone.journal.isEmpty, "...and Undo everything finishes: \(undoAll.receipt.problems)")
+        // A prompt cancelled with no profile says what stays: the background items, not a profile.
+        let cancelledBatch = SettingsFixture("undo-all-batch-cancelled")
+        try? backgroundOnly.saveAhead(url: cancelledBatch.journalURL)
+        cancelledBatch.adminAnswer = .cancelled
+        cancelledBatch.background = { _ in MacTweaksSettings.BackgroundUndo(adminCommands: [enableZoom], verify: { _ in false }) }
+        undoAll = MacTweaksSettings.apply(cancelledBatch.rows.filter { $0.id == MacTweaksSettings.undoEverythingID }, env: cancelledBatch.environment)
+        assertEqual(undoAll.receipt.problems, ["The administrator prompt was cancelled, so background items for every account stay off."],
+                    "A cancelled prompt without the profile names only what stays")
+        // An entry of a kind this version reads that doesn't decode: kept, and the plan and the
+        // receipt say why.
+        let damaged = SettingsFixture("undo-all-damaged")
+        var damagedJournal = MacTweaksJournal()
+        damagedJournal.recordIfAbsent("pref:com.example:Key", Data(#"{"date":"not a date","kind":"pref","tweak":"x"}"#.utf8))
+        try? damagedJournal.saveAhead(url: damaged.journalURL)
+        let damagedRow = damaged.row(MacTweaksSettings.undoEverythingID)
+        assertEqual(damagedRow?.items.map(\.target), ["pref:com.example:Key: kept, its journal entry can't be read, so Lightspot can't tell what to put back"],
+                    "The plan says a damaged entry is kept, and why")
+        undoAll = MacTweaksSettings.apply([damagedRow!], env: damaged.environment)
+        assertTrue(!undoAll.receipt.isSuccess && undoAll.receipt.notes.contains { $0.hasPrefix("Kept: 1 change whose journal entry can't be read") }
+                   && damaged.journal.json("pref:com.example:Key") != nil, "...and so does the receipt, keeping it: \(undoAll.receipt.notes)")
+        print("✅ Undo everything passed!\n")
+    }
+
+    // MARK: Ticks, the provider and the search row
+
+    static func testSettingsTicksAndProvider() {
+        print("Testing Settings' ticks, provider and search row...")
+        let fx = SettingsFixture("ticks")
+        fx.set("com.apple.finder", "ShowPathbar", .bool(true))
+        let rows = fx.rows
+        assertEqual(Array(rows.prefix(2).map(\.id)), ["preset-recommended", "preset-maximum-privacy"], "The presets come first")
+        assertTrue(fx.row(MacTweaksSettings.undoEverythingID) == nil, "With nothing to undo there is no Undo everything row")
+        assertTrue(rows.filter { MacTweaksSettings.tweak($0.id) != nil }.allSatisfy { $0.group != nil && !$0.isDefault }, "Every tweak has its group, none starts ticked")
+        assertTrue(rows.filter { $0.tags.contains(MacTweaksSettings.profileTag) }.map(\.id) == MacTweaksSettings.catalog.filter(\.inProfile).map(\.id),
+                   "Profile rows carry the Profile tag")
+        let recommended = rows.first { $0.id == "preset-recommended" }!
+        assertTrue(recommended.ticks?.contains("path-bar") == false && recommended.ticks?.contains("analytics") == true, "A preset ticks only what isn't on yet")
+        var ticks = MacTweaksTicks.toggled([], recommended.id, in: rows)
+        assertEqual(ticks, Set(recommended.ticks ?? []), "Space on a preset ticks its rows")
+        assertEqual(MacTweaksTicks.box(recommended, ticks, in: rows), .ticked, "...and its box shows them all ticked")
+        ticks = MacTweaksTicks.toggled(ticks, "analytics", in: rows)
+        assertEqual(MacTweaksTicks.box(recommended, ticks, in: rows), .mixed, "Some of them: mixed")
+        ticks = MacTweaksTicks.toggled(MacTweaksTicks.toggled(ticks, "analytics", in: rows), recommended.id, in: rows)
+        assertTrue(ticks.isEmpty, "Space again unticks them")
+        let maximum = rows.first { $0.id == "preset-maximum-privacy" }!
+        ticks = MacTweaksTicks.toggled([], maximum.id, in: rows)
+        assertTrue(Set(recommended.ticks ?? []).isSubset(of: ticks) && ticks.contains("game-center"), "Maximum privacy ticks Recommended's and its own")
+        assertTrue(MacTweaksTicks.ticked(rows, ticks.union([recommended.id])).allSatisfy { !$0.isPreset }, "A preset is never applied")
+        assertEqual(MacTweaksTicks.box(rows.first { $0.id == "path-bar" }!, ["path-bar"], in: rows), .undo, "An On row's tick is drawn as an undo")
+        // Undo everything is exclusive.
+        let undo = MacTweaksRow(id: MacTweaksSettings.undoEverythingID, symbol: "x", title: "x", detail: "").with(exclusive: true)
+        let withUndo = rows + [undo]
+        assertEqual(MacTweaksTicks.toggled(["analytics"], undo.id, in: withUndo), [undo.id], "Ticking Undo everything clears the other ticks")
+        assertEqual(MacTweaksTicks.toggled([undo.id], maximum.id, in: withUndo).contains(undo.id), false, "...and a preset clears it")
+
+        // The provider: built, scanned, applied with a full rescan, the sibling's scan dropped.
+        assertTrue(MacTweaksSection.built.contains(.settings), "Settings is built on every Mac")
+        assertEqual(MacTweaksSection.sections(appleIntelligence: false), [.freeUpSpace, .settings], "...Apple Intelligence or not")
+        let provider = MacTweaksProvider(environment: fx.environment)
+        func wait(_ section: MacTweaksSection, _ done: (MacTweaksProvider.SectionState) -> Bool) -> MacTweaksProvider.SectionState {
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline {
+                let state = provider.snapshot[section]
+                if done(state) { return state }
+                usleep(5_000)
+            }
+            print("❌ FAIL: \(section) never got there; at \(provider.snapshot[section].phase)")
+            exit(1)
+        }
+        provider.open(.settings)
+        let ready = wait(.settings) { $0.phase == .ready }
+        assertTrue(provider.snapshot.settingsScan != nil && ready.rows.count >= 43, "Opening scans and keeps what it read for the plan")
+        assertTrue(!provider.planNotes(.settings, rows: ready.rows.filter { $0.id == "file-extensions" }).isEmpty, "The plan's notes come from that scan")
+        if MacTweaksSection.built.contains(.appleIntelligence) {
+            provider.open(.appleIntelligence)
+            _ = wait(.appleIntelligence) { $0.phase == .ready }
+        }
+        provider.apply(.settings, ids: ["file-extensions", "preset-recommended"])
+        let done = wait(.settings) { $0.phase == .finished }
+        assertTrue(done.receipt?.headline == "Changed 1 setting." && done.rows.first { $0.id == "file-extensions" }?.countLabel == "On",
+                   "A preset ID is never applied; the receipt and the full rescan show the change")
+        assertEqual(done.rows.count, ready.rows.count + (ready.rows.contains { $0.id == MacTweaksSettings.undoEverythingID } ? 0 : 1),
+                    "Every row comes back, Undo everything now among them")
+        assertEqual(done.rows.last?.id, MacTweaksSettings.undoEverythingID, "...as the last row")
+        if MacTweaksSection.built.contains(.appleIntelligence) {
+            assertTrue(provider.snapshot[.appleIntelligence].scannedAt == nil, "Apple Intelligence's scan no longer stands: they share the profile")
+        }
+        fx.clock = fx.clock.addingTimeInterval(6 * 60)
+        provider.overlayClosed()
+        assertTrue(provider.snapshot[.settings].rows.isEmpty && provider.snapshot.settingsScan == nil,
+                   "Closing drops an old receipt's rows and what the scan read")
+        // The search row: high-intent phrases open the section; bare words stay with their rows.
+        for phrase in ["stop music from opening", "turn off apple music", "turn off mac analytics", "turn off personalized ads", "show the library folder"] {
+            let top = SearchEngine.shared.searchImmediate(SearchQuery(phrase))[.topHit]?.first
+            assertEqual(top?.id, "top-" + MacTweaksProvider.settingsResultID, "'\(phrase)' opens Mac Tweaks' Settings")
+            if case .runQuickAction(let script, _) = top?.action { assertEqual(MacTweaksProvider.section(forScript: script), .settings, "...on its section") }
+        }
+        for word in ["music", "analytics", "library", "dock"] {
+            let top = SearchEngine.shared.searchImmediate(SearchQuery(word))[.topHit]?.first
+            assertTrue(top?.id != "top-" + MacTweaksProvider.settingsResultID, "'\(word)' stays with its own row")
+        }
+        assertEqual(SearchEngine.shared.searchImmediate(SearchQuery("restore dock icons"))[.topHit]?.first?.title, "Restore Dock Icons",
+                    "'restore dock icons' is the quick action's")
+        print("✅ Settings' ticks, provider and search row passed!\n")
     }
 }
