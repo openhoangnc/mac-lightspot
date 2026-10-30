@@ -233,6 +233,14 @@ final class CleanDevMacProvider: @unchecked Sendable {
         return state
     }
 
+    /// The rules the cleaner holds now, loading nothing: the last scan's, else the ones it
+    /// fetched from GitHub. Mac Tweaks reads them to leave these caches to the cleaner.
+    var heldRules: CleanDevMacRuleSet? {
+        lock.lock()
+        defer { lock.unlock() }
+        return scannedRules ?? remoteRules?.rules
+    }
+
     /// Called on the main queue after each change of `snapshot`.
     func setObserver(_ observer: (@Sendable () -> Void)?) {
         lock.lock()

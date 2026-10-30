@@ -28,23 +28,7 @@ struct CleanDevMacView: View {
 
             footer
         }
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.black.opacity(0.88))
-
-                VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow, cornerRadius: 22)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-                Color.black.opacity(0.72)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.85)
-            )
-            .shadow(color: .black.opacity(0.6), radius: 30, x: 0, y: 14)
-        )
+        .background(OverlayCardBackground())
     }
 
     // MARK: - Header
@@ -549,6 +533,40 @@ struct CleanDevMacView: View {
     }
 
     private func hint(key: String, label: String) -> some View {
+        OverlayKeyHint(key: key, label: label)
+    }
+}
+
+// MARK: - Shared overlay pieces (Clean Dev Mac, Mac Tweaks)
+
+/// The card both cleaners draw on: dark glass whatever the system appearance, so light and
+/// dark mode look the same.
+struct OverlayCardBackground: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Color.black.opacity(0.88))
+
+            VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow, cornerRadius: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+
+            Color.black.opacity(0.72)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.85)
+        )
+        .shadow(color: .black.opacity(0.6), radius: 30, x: 0, y: 14)
+    }
+}
+
+/// A key and what it does, in an overlay's footer.
+struct OverlayKeyHint: View {
+    let key: String
+    let label: String
+
+    var body: some View {
         HStack(spacing: 5) {
             Text(key)
                 .font(.system(size: 10.5, weight: .semibold))
@@ -563,6 +581,23 @@ struct CleanDevMacView: View {
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.45))
         }
+    }
+}
+
+/// A small capsule beside a row's size: what happens to it.
+struct OverlayTag: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 9.5, weight: .bold))
+            .foregroundColor(color.opacity(0.95))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.18)))
     }
 }
 
@@ -670,14 +705,7 @@ struct CleanDevMacMethodTag: View {
     let methods: [CleanDevMacRule.Method]
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 9.5, weight: .bold))
-            .foregroundColor(color.opacity(0.95))
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(color.opacity(0.18)))
+        OverlayTag(label: label, color: color)
     }
 
     private var trashOnly: Bool { !methods.isEmpty && methods.allSatisfy { $0 == .trash } }

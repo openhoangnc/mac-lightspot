@@ -213,6 +213,7 @@ struct TestRunner {
         testToolInstallers()
         testMacTweaks()
         testCleanDevMacRepoScan()
+        runMacTweaksTests()
 
         print("🎉 ALL TESTS PASSED SUCCESSFULLY! 100% VERIFIED.")
     }
@@ -4742,4 +4743,1204 @@ struct TestRunner {
 /// Carries a completion handler's value out to the test waiting on it.
 final class ResultBox<Value>: @unchecked Sendable {
     var value: Value?
+}
+
+// MARK: - Mac Tweaks: Free Up Space (fakes only: a temp system root and home)
+
+/// A fake Mac for Mac Tweaks: a system root and a home folder in a temp folder, fake
+/// `xcode-select`, `simctl` and `tmutil` scripts, and recorders for every program run and
+/// every administrator batch. Nothing it hands the engine reaches the real system: the
+/// administrator batch runs as this user with /bin/sh, inside the temp folder.
+final class MacTweaksFixture: @unchecked Sendable {
+    let base: String
+    let root: String
+    let home: String
+    let bin: String
+    let developer: String
+    private let lock = NSLock()
+    private var programs: [String] = []
+    private var scripts: [String] = []
+    private var foreignPaths: Set<String> = []
+    private var stuckPaths: Set<String> = []
+    private var apps: Set<String> = []
+    private var answer = QuickActionsProvider.PrivilegedRun.ran(status: 0, output: "")
+    private var clock = Date()
+    private var cdmRules: CleanDevMacRuleSet?
+    private var brokenPaths: Set<String> = []
+    private var deniedPaths: Set<String> = []
+    private var adminHook: (@Sendable () -> Void)?
+    private var appQueries = 0
+
+    init(_ name: String) {
+        let fm = FileManager.default
+        base = NSTemporaryDirectory() + "lightspot-mactweaks-\(name)-\(getpid())"
+        try? fm.removeItem(atPath: base)
+        root = base + "/root"
+        home = base + "/home"
+        bin = base + "/bin"
+        developer = base + "/Developer"
+        for folder in [root + "/Applications", home + "/.Trash", home + "/Library/Caches", bin, developer + "/usr/bin"] {
+            try? fm.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        }
+        script(bin + "/xcode-select", """
+            #!/bin/sh
+            [ "$1" = "-p" ] && [ -f "\(base)/developer-dir" ] || exit 2
+            cat "\(base)/developer-dir"
+            """)
+        script(developer + "/usr/bin/simctl", """
+            #!/bin/sh
+            case "$1 $2" in
+            "list devices") cat "\(base)/simctl-list.json" ;;
+            "delete unavailable")
+              while IFS= read -r folder; do rm -rf "$folder"; done < "\(base)/simctl-devices.txt"
+              printf '{"devices":{}}' > "\(base)/simctl-list.json" ;;
+            *) exit 64 ;;
+            esac
+            """)
+        script(bin + "/tmutil", """
+            #!/bin/sh
+            case "$1" in
+            listlocalsnapshotdates)
+              [ -f "\(base)/tmutil-fails" ] && exit 1
+              echo "Snapshot dates for disk $2:"; cat "\(base)/snapshots.txt" 2>/dev/null ;;
+            deletelocalsnapshots)
+              grep -v -x -F "$2" "\(base)/snapshots.txt" > "\(base)/snapshots.tmp"
+              mv "\(base)/snapshots.tmp" "\(base)/snapshots.txt"
+              echo "$2" >> "\(base)/deleted-snapshots.txt" ;;
+            *) exit 64 ;;
+            esac
+            """)
+    }
+
+    deinit { try? FileManager.default.removeItem(atPath: base) }
+
+    private func script(_ path: String, _ text: String) {
+        FileManager.default.createFile(atPath: path, contents: Data((text + "\n").utf8), attributes: [.posixPermissions: 0o755])
+    }
+
+    var environment: MacTweaksProvider.Environment {
+        var environment = MacTweaksProvider.Environment(home: home)
+        environment.systemRoot = root
+        environment.xcodeSelect = bin + "/xcode-select"
+        environment.tmutil = bin + "/tmutil"
+        environment.ownerOf = { [self] path in isForeign(path) ? 0 : getuid() }
+        environment.isAppInstalled = { [self] id in lock.lock(); defer { lock.unlock() }; appQueries += 1; return apps.contains(id) }
+        environment.run = { [self] executable, arguments, timeout in
+            lock.lock()
+            programs.append(([executable] + arguments).joined(separator: " "))
+            lock.unlock()
+            return CleanDevMacEngine.run(executable, arguments, timeout: timeout)
+        }
+        environment.moveToTrash = { [self] url in
+            if isStuck(url.path) { throw CocoaError(.fileWriteNoPermission) }
+            if isBroken(url.path) { throw CocoaError(.fileWriteOutOfSpace) }
+            if isDenied(url.path) { throw NSError(domain: NSCocoaErrorDomain, code: 513, userInfo: [NSUnderlyingErrorKey: POSIXError(.EACCES)]) }
+            var taken = Set<String>()
+            let name = MacTweaksStorage.uniqueTrashName(url.lastPathComponent, in: home + "/.Trash", taken: &taken)
+            try FileManager.default.moveItem(atPath: url.path, toPath: home + "/.Trash/" + name)
+        }
+        environment.runAdmin = { [self] script in
+            lock.lock()
+            scripts.append(script)
+            let answer = self.answer
+            let hook = adminHook
+            lock.unlock()
+            // The world changes while the prompt is up, whatever its answer. A cancelled or
+            // refused prompt runs nothing; otherwise the batch runs as this user, as
+            // /bin/sh -c runs it as root on either backend.
+            hook?()
+            guard case .ran = answer else { return answer }
+            let run = CleanDevMacEngine.run("/bin/sh", ["-c", script], timeout: 60)
+            return .ran(status: run.status, output: run.output)
+        }
+        environment.cleanDevMacRules = { [self] _ in lock.lock(); defer { lock.unlock() }; return cdmRules }
+        environment.now = { [self] in lock.lock(); defer { lock.unlock() }; return clock }
+        return environment
+    }
+
+    // The fake Mac's state, set by the tests.
+    func setForeign(_ paths: Set<String>) { lock.lock(); foreignPaths = paths; lock.unlock() }
+    func setStuck(_ paths: Set<String>) { lock.lock(); stuckPaths = paths; lock.unlock() }
+    func setInstalledApps(_ ids: Set<String>) { lock.lock(); apps = ids; lock.unlock() }
+    /// What the password prompt does: `.ran` runs the batch; `.cancelled` and `.refused` run nothing.
+    func setAdminAnswer(_ run: QuickActionsProvider.PrivilegedRun) { lock.lock(); answer = run; lock.unlock() }
+    func setCleanDevMacRules(_ rules: CleanDevMacRuleSet?) { lock.lock(); cdmRules = rules; lock.unlock() }
+    /// Paths the Trash refuses for a reason other than permission (a full disk).
+    func setBroken(_ paths: Set<String>) { lock.lock(); brokenPaths = paths; lock.unlock() }
+    /// Paths the Trash refuses with EACCES, a folder's permissions, which root overrides.
+    func setDenied(_ paths: Set<String>) { lock.lock(); deniedPaths = paths; lock.unlock() }
+    /// Runs after the prompt, whatever its answer, just before the batch would: the world
+    /// changing meanwhile.
+    func setBeforeAdmin(_ hook: (@Sendable () -> Void)?) { lock.lock(); adminHook = hook; lock.unlock() }
+    var launchServicesQueries: Int { lock.lock(); defer { lock.unlock() }; return appQueries }
+    func advanceClock(_ seconds: TimeInterval) { lock.lock(); clock = clock.addingTimeInterval(seconds); lock.unlock() }
+    private func isForeign(_ path: String) -> Bool { lock.lock(); defer { lock.unlock() }; return foreignPaths.contains(path) }
+    private func isStuck(_ path: String) -> Bool { lock.lock(); defer { lock.unlock() }; return stuckPaths.contains(path) }
+    private func isBroken(_ path: String) -> Bool { lock.lock(); defer { lock.unlock() }; return brokenPaths.contains(path) }
+    private func isDenied(_ path: String) -> Bool { lock.lock(); defer { lock.unlock() }; return deniedPaths.contains(path) }
+
+    var programsRun: [String] { lock.lock(); defer { lock.unlock() }; return programs }
+    var adminScripts: [String] { lock.lock(); defer { lock.unlock() }; return scripts }
+    func clearRecords() { lock.lock(); programs = []; scripts = []; lock.unlock() }
+
+    @discardableResult
+    func make(_ path: String, bytes: Int) -> String {
+        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: path, contents: Data(repeating: 0x61, count: bytes))
+        return path
+    }
+
+    @discardableResult
+    func makeApp(_ path: String, bundleID: String, bytes: Int = 50_000) -> String {
+        let plist = try? PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": bundleID], format: .xml, options: 0)
+        try? FileManager.default.createDirectory(atPath: path + "/Contents/MacOS", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: path + "/Contents/Info.plist", contents: plist)
+        make(path + "/Contents/MacOS/binary", bytes: bytes)
+        return path
+    }
+
+    func write(_ name: String, _ text: String) {
+        FileManager.default.createFile(atPath: base + "/" + name, contents: Data(text.utf8))
+    }
+
+    func read(_ name: String) -> String {
+        (try? String(contentsOfFile: base + "/" + name, encoding: .utf8)) ?? ""
+    }
+
+    func kb(_ path: String) -> Int64 { Int64(CleanDevMacEngine.allocatedKB(path)) * 1024 }
+}
+
+extension TestRunner {
+    static func runMacTweaksTests() {
+        testMacTweaksGate()
+        testMacTweaksScan()
+        testMacTweaksClean()
+        testMacTweaksAdminBatch()
+        testMacTweaksWithoutDeveloperTools()
+        testMacTweaksProvider()
+    }
+
+    // MARK: Test 41: the gate every Free Up Space path passes, at scan and at clean
+
+    static func testMacTweaksGate() {
+        print("Testing MacTweaks gate...")
+        let fx = MacTweaksFixture("gate")
+        let env = fx.environment
+        let fm = FileManager.default
+        let apps = fx.root + "/Applications"
+        let caches = fx.home + "/Library/Caches"
+        func allowed(_ path: String, _ id: MacTweaksStorage.RowID) -> Bool {
+            MacTweaksStorage.isAllowed(path, id, environment: env)
+        }
+
+        let installer = fx.makeApp(apps + "/Install macOS Sequoia.app", bundleID: "com.apple.InstallAssistant.macOSSequoia")
+        let fakeInstaller = fx.makeApp(apps + "/Install macOS Free Upgrade.app", bundleID: "com.example.upgrader")
+        let pages = fx.makeApp(apps + "/Pages.app", bundleID: "com.apple.iWork.Pages")
+        let notKeynote = fx.makeApp(apps + "/Keynote.app", bundleID: "com.example.keynote-clone")
+        let cache = fx.make(caches + "/com.example.app/blob", bytes: 2_000)
+        assertTrue(allowed(installer, .installers), "An Apple installer passes")
+        assertTrue(!allowed(fakeInstaller, .installers), "An installer without the InstallAssistant id is refused")
+        assertTrue(allowed(pages, .pages), "Apple's Pages passes")
+        assertTrue(!allowed(notKeynote, .keynote), "A non-Apple app with an Apple app's name is refused")
+        assertTrue(!allowed(pages, .keynote), "...and an app only passes for its own row")
+        // An app borrowing an Apple identity through a symlinked Contents or Info.plist.
+        let realNumbers = fx.makeApp(fx.base + "/elsewhere/Numbers.app", bundleID: "com.apple.iWork.Numbers")
+        try? fm.createDirectory(atPath: apps + "/Numbers.app", withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: apps + "/Numbers.app/Contents", withDestinationPath: realNumbers + "/Contents")
+        assertEqual(MacTweaksStorage.bundleIdentifier(ofApp: apps + "/Numbers.app"), nil, "A symlinked Contents is not read")
+        assertTrue(!allowed(apps + "/Numbers.app", .numbers), "...so the app is refused")
+        let realIMovie = fx.makeApp(fx.base + "/elsewhere/iMovie.app", bundleID: "com.apple.iMovieApp")
+        try? fm.createDirectory(atPath: apps + "/iMovie.app/Contents", withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: apps + "/iMovie.app/Contents/Info.plist", withDestinationPath: realIMovie + "/Contents/Info.plist")
+        assertTrue(!allowed(apps + "/iMovie.app", .imovie), "...and so is one with a symlinked Info.plist")
+        assertTrue(allowed(caches + "/com.example.app", .caches), "Another app's cache passes")
+        assertTrue(!allowed(cache, .caches), "Only the cache folder's own entries, not what is inside them")
+
+        // The lexical half: absolute, plain, inside the row's folders, never the folder itself.
+        assertTrue(!allowed(caches + "/../Caches/com.example.app", .caches), "A .. segment is refused")
+        assertTrue(!allowed(caches + "/./com.example.app", .caches), "A . segment is refused")
+        assertTrue(!allowed(caches + "//com.example.app", .caches), "An empty segment is refused")
+        assertTrue(!allowed(caches + "/com.example.app/", .caches), "A trailing slash is refused")
+        assertTrue(!allowed("Library/Caches/com.example.app", .caches), "A relative path is refused")
+        assertTrue(!allowed(caches, .caches), "The root itself is refused")
+        assertTrue(!allowed(apps, .installers), "...for every row")
+        fx.make(fx.home + "/Library/Preferences/com.example.plist", bytes: 10)
+        assertTrue(!allowed(fx.home + "/Library/Preferences/com.example.plist", .caches), "A path outside the row's roots is refused")
+        assertTrue(!allowed(caches + "/com.example.app", .installers), "...as is one from another row's root")
+        assertTrue(!allowed("/etc/hosts", .caches), "...and anything outside the fake Mac")
+
+        // The physical half: the last component is never a symlink, and no symlinked folder
+        // on the way leads out of the root.
+        try? fm.createDirectory(atPath: fx.home + "/Documents/Taxes", withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: caches + "/linked", withDestinationPath: fx.home + "/Documents/Taxes")
+        assertTrue(!allowed(caches + "/linked", .caches), "A symlinked last component is refused")
+        try? fm.createDirectory(atPath: fx.base + "/elsewhere/iPhone Software Updates", withIntermediateDirectories: true)
+        let away = fx.make(fx.base + "/elsewhere/iPhone Software Updates/iPhone.ipsw", bytes: 1_000)
+        try? fm.createDirectory(atPath: fx.home + "/Library", withIntermediateDirectories: true)
+        try? fm.createSymbolicLink(atPath: fx.home + "/Library/iTunes", withDestinationPath: fx.base + "/elsewhere")
+        let throughLink = fx.home + "/Library/iTunes/iPhone Software Updates/iPhone.ipsw"
+        assertTrue(fm.fileExists(atPath: throughLink) && fm.fileExists(atPath: away), "(the link leads out of the home folder)")
+        assertTrue(!allowed(throughLink, .iosUpdates), "A symlinked parent leading out of the root is refused")
+        try? fm.removeItem(atPath: fx.home + "/Library/iTunes")
+        let realUpdate = fx.make(fx.home + "/Library/iTunes/iPhone Software Updates/iPhone.ipsw", bytes: 1_000)
+        assertTrue(allowed(realUpdate, .iosUpdates), "...where the same path without the link passes")
+        try? fm.createSymbolicLink(atPath: caches + "/outside", withDestinationPath: fx.base + "/elsewhere")
+        assertTrue(!allowed(caches + "/outside/iPhone Software Updates", .caches), "A path through a symlinked entry is refused")
+
+        // macOS's own caches and Lightspot's stay, by name and by prefix, in any case.
+        for name in ["com.apple.Safari", "COM.APPLE.akd", "CloudKit", "GeoServices", "SiriTTS", "AAProfilePicture_0F2C.png",
+                     "Brushes", "MiniLauncher", "mbuseragent", "com.lightspot.app", ".DS_Store"] {
+            fx.make(caches + "/" + name + "/x", bytes: 10)
+            assertTrue(!allowed(caches + "/" + name, .caches), "\(name) is macOS's or Lightspot's and stays")
+        }
+        assertTrue(MacTweaksStorage.isAppleCache("familycircled") && !MacTweaksStorage.isAppleCache("Google")
+                   && !MacTweaksStorage.isAppleCache("com.google.Chrome") && !MacTweaksStorage.isAppleCache("GIPPseudonymousID"),
+                   "Third-party names are not taken for macOS's")
+
+        // GarageBand's library only while nothing else uses it; simulators by device folder.
+        let library = fx.root + "/Library/Application Support/GarageBand"
+        fx.make(library + "/Instruments/piano", bytes: 10)
+        fx.make(fx.root + "/Library/Application Support/Other/x", bytes: 10)
+        assertTrue(allowed(library, .garageband), "GarageBand's library passes")
+        assertTrue(!allowed(fx.root + "/Library/Application Support/Other", .garageband), "...but no other folder beside it")
+        fx.setInstalledApps(["com.apple.logic10"])
+        assertTrue(!allowed(library, .garageband), "...and not while Logic Pro is installed")
+        fx.setInstalledApps([])
+        let devices = fx.home + "/Library/Developer/CoreSimulator/Devices"
+        fx.make(devices + "/0E9C4D3A-6E2B-4C8F-9C1D-2F3A4B5C6D7E/data/x", bytes: 10)
+        assertTrue(allowed(devices + "/0E9C4D3A-6E2B-4C8F-9C1D-2F3A4B5C6D7E", .simulators), "A simulator device folder passes")
+        fx.make(devices + "/device_set.plist/x", bytes: 10)
+        assertTrue(!allowed(devices + "/device_set.plist", .simulators), "...but nothing that isn't one")
+        let aerials = fx.root + "/Library/Application Support/com.apple.idleassetsd/Customer"
+        fx.make(aerials + "/4KSDR240FPS/a.mov", bytes: 10)
+        fx.make(aerials + "/TVIdleScreenStrings.bundle/x", bytes: 10)
+        assertTrue(allowed(aerials + "/4KSDR240FPS", .aerials), "An aerial video folder passes")
+        assertTrue(!allowed(aerials + "/TVIdleScreenStrings.bundle", .aerials), "...not the strings bundle macOS installs")
+        assertTrue(!allowed(fx.home + "/Documents/Taxes", .caches), "A user document is never a target")
+        // Even a system root misplaced inside the user's Documents offers nothing there.
+        var misplaced = env
+        misplaced.systemRoot = fx.home + "/Documents/root"
+        let inDocuments = fx.makeApp(fx.home + "/Documents/root/Applications/Install macOS Sequoia.app",
+                                     bundleID: "com.apple.InstallAssistant.macOSSequoia")
+        assertTrue(!MacTweaksStorage.isAllowed(inDocuments, .installers, environment: misplaced),
+                   "Nothing in a folder macOS guards passes, whatever the roots say")
+        assertTrue(!allowed(caches + "/missing", .caches), "Nothing that isn't there")
+
+        print("✅ MacTweaks gate passed all tests!\n")
+    }
+
+    // MARK: Test 42: every Free Up Space row, as the spec's table has it
+
+    /// A fake Mac with something for every row.
+    static func stockMacTweaksFixture(_ name: String) -> (fixture: MacTweaksFixture, unavailable: String, available: String) {
+        let fx = MacTweaksFixture(name)
+        let apps = fx.root + "/Applications"
+        fx.makeApp(apps + "/Install macOS Sequoia.app", bundleID: "com.apple.InstallAssistant.macOSSequoia", bytes: 300_000)
+        fx.makeApp(apps + "/Install macOS Free Upgrade.app", bundleID: "com.example.upgrader")
+        fx.makeApp(apps + "/GarageBand.app", bundleID: "com.apple.garageband10", bytes: 200_000)
+        fx.makeApp(apps + "/iMovie.app", bundleID: "com.apple.iMovieApp", bytes: 150_000)
+        fx.makeApp(apps + "/Numbers.app", bundleID: "com.example.numbers", bytes: 80_000)
+        fx.makeApp(apps + "/Pages.app", bundleID: "com.apple.iWork.Pages", bytes: 90_000)
+        fx.make(fx.root + "/Library/Application Support/GarageBand/Instruments/piano", bytes: 120_000)
+        fx.make(fx.root + "/Library/Application Support/Logic/Sampler/strings", bytes: 60_000)
+        fx.make(fx.root + "/Library/Audio/Apple Loops/Apple/Loops/beat", bytes: 40_000)
+        fx.make(fx.home + "/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw", bytes: 250_000)
+        fx.make(fx.home + "/Library/iTunes/iPad Software Updates/iPad_17.ipsw", bytes: 220_000)
+        fx.make(fx.home + "/Library/iTunes/iPad Software Updates/.DS_Store", bytes: 6_000)
+        let devices = fx.home + "/Library/Developer/CoreSimulator/Devices"
+        let unavailable = devices + "/0E9C4D3A-6E2B-4C8F-9C1D-2F3A4B5C6D7E"
+        let available = devices + "/7A1B2C3D-4E5F-4061-8273-9A0B1C2D3E4F"
+        fx.make(unavailable + "/data/Library/blob", bytes: 70_000)
+        fx.make(available + "/data/Library/blob", bytes: 70_000)
+        fx.write("developer-dir", fx.developer + "\n")
+        fx.write("simctl-list.json", """
+            {"devices": {
+              "com.apple.CoreSimulator.SimRuntime.iOS-16-0": [
+                {"dataPath": "\(unavailable)/data", "udid": "0E9C4D3A-6E2B-4C8F-9C1D-2F3A4B5C6D7E", "isAvailable": false, "name": "iPhone 14"},
+                {"dataPath": "\(fx.base)/elsewhere/AB12CD34-0000-4000-8000-000000000000/data", "isAvailable": false, "name": "Stray"}
+              ]
+            }}
+            """)
+        fx.write("simctl-devices.txt", unavailable + "\n")
+        fx.write("snapshots.txt", "2026-10-30-101112\n2026-10-30-111213\n")
+        let aerials = fx.root + "/Library/Application Support/com.apple.idleassetsd/Customer"
+        fx.make(aerials + "/4KSDR240FPS/AB12.mov", bytes: 180_000)
+        fx.make(aerials + "/TVIdleScreenStrings.bundle/Contents/strings", bytes: 4_000)
+        fx.make(aerials + "/entries.json", bytes: 2_000)
+        let wallpaper = fx.home + "/Library/Application Support/com.apple.wallpaper/Store/Index.plist"
+        try? FileManager.default.createDirectory(atPath: (wallpaper as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let index = try? PropertyListSerialization.data(fromPropertyList: ["AllSpacesAndDisplays": ["Linked": ["Content": ["Choices": [["Provider": "com.apple.wallpaper.choice.aerials"]]]]]],
+                                                         format: .binary, options: 0)
+        FileManager.default.createFile(atPath: wallpaper, contents: index)
+        let caches = fx.home + "/Library/Caches"
+        fx.make(caches + "/com.example.app/Cache.db", bytes: 110_000)
+        fx.make(caches + "/Google/Chrome/blob", bytes: 130_000)
+        fx.make(caches + "/com.apple.Safari/blob", bytes: 50_000)
+        fx.make(caches + "/CloudKit/blob", bytes: 50_000)
+        fx.make(caches + "/com.lightspot.app/blob", bytes: 50_000)
+        try? FileManager.default.createDirectory(atPath: caches + "/EmptyApp", withIntermediateDirectories: true)
+        return (fx, unavailable, available)
+    }
+
+    static func testMacTweaksScan() {
+        print("Testing MacTweaks scan...")
+        let (fx, unavailable, _) = stockMacTweaksFixture("scan")
+        let apps = fx.root + "/Applications"
+        let pages = apps + "/Pages.app"
+        fx.setForeign([pages])
+        let rows = MacTweaksStorage.scan(fx.environment)
+        func row(_ id: MacTweaksStorage.RowID) -> MacTweaksRow? { rows.first { $0.id == id.rawValue } }
+        func targets(_ id: MacTweaksStorage.RowID) -> [String] { row(id)?.items.map(\.target) ?? [] }
+
+        assertEqual(rows.map(\.id), ["installers", "ios-updates", "simulators", "snapshots", "aerials", "garageband", "imovie",
+                                     "pages", "caches", "clean-dev-mac", "storage-settings"],
+                    "Every row with something to offer, in the table's order, the links last; Numbers isn't Apple's, Keynote isn't there")
+        assertEqual(Set(rows.filter(\.isDefault).map(\.id)), ["installers", "ios-updates", "simulators"],
+                    "Installers, iPhone updates and simulators are ticked; the rest are not")
+        assertEqual(targets(.installers), [apps + "/Install macOS Sequoia.app"], "Only Apple's installer")
+        assertEqual(targets(.iosUpdates), [fx.home + "/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw",
+                                           fx.home + "/Library/iTunes/iPad Software Updates/iPad_17.ipsw"],
+                    "Both update folders, nothing hidden")
+        assertEqual(targets(.simulators), [unavailable], "The unavailable device simctl names, inside Devices only")
+        assertEqual(row(.simulators)?.tags, ["Deleted right away"], "Simulators say they are deleted right away")
+        assertEqual(row(.simulators)?.caveat, "Deleted right away by simctl, not moved to the Trash.", "...in the warning too")
+        assertEqual(targets(.snapshots), ["2026-10-30-101112", "2026-10-30-111213"], "Snapshot dates: tmutil's lines that start with a digit")
+        assertEqual(row(.snapshots)?.bytes, nil, "A snapshot's size is unknown")
+        assertEqual(row(.snapshots)?.value, "2 snapshots", "...so the row shows the count")
+        assertEqual(row(.snapshots)?.tags, ["Deleted right away", "May ask for password"], "Snapshots may ask for the password and are deleted right away")
+        assertEqual(targets(.aerials), [fx.root + "/Library/Application Support/com.apple.idleassetsd/Customer/4KSDR240FPS"],
+                    "The aerial video folders only")
+        assertEqual(row(.aerials)?.caveat, "You use an aerial wallpaper or screen saver now, so macOS will download it again.",
+                    "An aerial in the wallpaper index brings the warning")
+        assertEqual(targets(.garageband), [apps + "/GarageBand.app", fx.root + "/Library/Application Support/GarageBand",
+                                           fx.root + "/Library/Application Support/Logic", fx.root + "/Library/Audio/Apple Loops/Apple"],
+                    "GarageBand comes with its sound library")
+        assertEqual(row(.garageband)?.caveat, nil, "...and no warning while nothing else uses it")
+        assertEqual(targets(.pages), [pages], "Pages is offered")
+        assertEqual(row(.pages)?.tags, ["May ask for password"], "...with the password tag, since another user owns it")
+        assertEqual(row(.imovie)?.tags, [], "...which an app this user owns doesn't get")
+        assertEqual(targets(.caches), [fx.home + "/Library/Caches/Google", fx.home + "/Library/Caches/com.example.app"],
+                    "Other apps' caches; macOS's, Lightspot's and empty ones stay out")
+        assertEqual(row(.cleanDevMac)?.link, .cleanDevMac, "A link row opens Clean Dev Mac")
+        assertEqual(row(.storageSettings)?.link, .settings(deepLink: "x-apple.systempreferences:com.apple.settings.Storage"),
+                    "...and another opens Storage settings")
+        assertEqual(SettingsProvider.shared.items.first { $0.name == "Storage" }?.deepLink, MacTweaksStorage.storageSettingsLink,
+                    "...the link SettingsProvider opens")
+        assertTrue(rows.filter(\.isLink).allSatisfy { $0.items.isEmpty && !$0.isDefault }, "Link rows hold nothing and are never ticked")
+        for item in rows.filter({ !$0.isLink && $0.id != "snapshots" }).flatMap(\.items) {
+            assertEqual(item.bytes, fx.kb(item.target), "\(item.target) is sized like du, in allocated bytes")
+        }
+        for id in ["installers", "ios-updates", "simulators", "aerials", "garageband", "imovie", "pages", "caches"] {
+            let found = rows.first { $0.id == id }
+            assertEqual(found?.bytes, found?.items.reduce(0) { $0 + $1.bytes }, "\(id)'s size is its items'")
+        }
+        assertTrue(fx.programsRun.allSatisfy { !$0.hasPrefix("/usr/bin/xcrun") }, "xcrun is never run")
+        assertEqual(fx.programsRun, [fx.bin + "/xcode-select -p", fx.developer + "/usr/bin/simctl list devices unavailable -j",
+                                     fx.bin + "/tmutil listlocalsnapshotdates /"],
+                    "The scan runs xcode-select, simctl and tmutil once each, and nothing else")
+        assertTrue(fx.adminScripts.isEmpty, "A scan never asks for the password")
+        assertEqual(fx.launchServicesQueries, 2, "LaunchServices is asked about Logic Pro and MainStage once, for GarageBand's library")
+
+        // Logic Pro or MainStage keep the sound library, and the row says which.
+        fx.setInstalledApps(["com.apple.logic10"])
+        let shared = MacTweaksStorage.scan(fx.environment, only: ["garageband"])
+        assertEqual(shared.map(\.id), ["garageband"], "`only` limits the scan to those rows")
+        assertEqual(shared.first?.items.map(\.target), [apps + "/GarageBand.app"], "With Logic Pro installed, only the app goes")
+        assertEqual(shared.first?.caveat, "Its sound library stays, because Logic Pro uses it too.", "...and the row says why")
+        fx.setInstalledApps(["com.apple.logic10", "com.apple.mainstage3"])
+        assertEqual(MacTweaksStorage.scan(fx.environment, only: ["garageband"]).first?.caveat,
+                    "Its sound library stays, because Logic Pro and MainStage use it too.", "Both are named")
+        fx.setInstalledApps([])
+
+        // Without an aerial in use, no warning; with nothing anywhere, only the links.
+        FileManager.default.createFile(atPath: fx.home + "/Library/Application Support/com.apple.wallpaper/Store/Index.plist",
+                                       contents: try? PropertyListSerialization.data(fromPropertyList: ["Provider": "default"], format: .binary, options: 0))
+        assertEqual(MacTweaksStorage.scan(fx.environment, only: ["aerials"]).first?.caveat, nil, "No aerial in use, no warning")
+        let empty = MacTweaksFixture("scan-empty")
+        assertEqual(MacTweaksStorage.scan(empty.environment).map(\.id), ["clean-dev-mac", "storage-settings"],
+                    "Rows with nothing to offer are hidden")
+        assertEqual(empty.programsRun, [empty.bin + "/tmutil listlocalsnapshotdates /"],
+                    "...and with no simulator folder, xcode-select is not even asked")
+        assertEqual(empty.launchServicesQueries, 0, "...nor LaunchServices, without GarageBand")
+
+        // App caches leaves whatever Clean Dev Mac's rules reach to the cleaner, whole entries.
+        let caches = fx.home + "/Library/Caches"
+        fx.make(caches + "/com.microsoft.VSCode.ShipIt/update.zip", bytes: 30_000)
+        func cdmRule(_ patterns: [String]) -> CleanDevMacRule {
+            CleanDevMacRule(kind: .paths, icon: "🧪", name: "Rule", desc: "", method: .rm, isDefault: true, patterns: patterns, procs: [])
+        }
+        let cdm = CleanDevMacRuleSet(rules: [cdmRule(["~/Library/Caches/Google", "~/Library/Caches/*.ShipIt"]),
+                                             cdmRule(["~/Library/Caches/com.example.app/Sub/*", "~/.npm/_cacache", "@cache/clang"])],
+                                     terminalOnly: [], source: .bundled)
+        assertEqual(MacTweaksStorage.cacheGlobs(of: cdm, home: fx.home), ["Google", "*.ShipIt", "com.example.app"],
+                    "The cleaner's reach in ~/Library/Caches, one glob per entry")
+        assertEqual(MacTweaksStorage.cacheGlobs(of: CleanDevMacRuleSet(rules: [cdmRule(["~/Library/Caches"])], terminalOnly: [], source: .bundled), home: fx.home),
+                    ["*"], "A rule over the whole folder takes every entry")
+        assertEqual(MacTweaksStorage.scan(fx.environment, only: ["caches"]).first?.items.map { ($0.target as NSString).lastPathComponent },
+                    ["Google", "com.example.app", "com.microsoft.VSCode.ShipIt"], "(without the cleaner's rules, App caches offers these)")
+        fx.setCleanDevMacRules(cdm)
+        assertTrue(MacTweaksStorage.scan(fx.environment, only: ["caches"]).isEmpty, "With them, nothing the cleaner offers is counted here too")
+        assertTrue(!MacTweaksStorage.isAllowed(caches + "/google", .caches, environment: fx.environment)
+                   && !MacTweaksStorage.isAllowed(caches + "/com.microsoft.VSCode.ShipIt", .caches, environment: fx.environment),
+                   "...nor allowed, whatever the case")
+        fx.make(caches + "/com.other.app/blob", bytes: 20_000)
+        assertEqual(MacTweaksStorage.scan(fx.environment, only: ["caches"]).first?.items.map(\.target), [caches + "/com.other.app"],
+                    "Other apps' caches are still offered")
+        assertTrue(row(.caches)?.detail.hasSuffix("Developer and browser caches are in Clean Dev Mac.") == true, "...and the row says where the rest are")
+        fx.setCleanDevMacRules(nil)
+        // Where the rules come from when the cleaner holds none: cdm's own folder, never GitHub.
+        let localRules = fx.home + "/.cleandevmac/rules"
+        try? FileManager.default.createDirectory(atPath: localRules, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: localRules + "/index.json", contents: Data(#"{"patternFiles": ["mine.json"]}"#.utf8))
+        FileManager.default.createFile(atPath: localRules + "/mine.json", contents: Data(#"{"categories": [{"name": "Mine", "paths": ["~/Library/Caches/Mine"]}]}"#.utf8))
+        assertEqual(CleanDevMacProvider.shared.heldRules, nil, "(the cleaner has not scanned here)")
+        let found = MacTweaksStorage.cleanDevMacRules(home: fx.home)
+        assertEqual(found?.source, .local, "Without rules in memory, cdm's local folder is read")
+        assertEqual(MacTweaksStorage.cacheGlobs(of: found, home: fx.home), ["Mine"], "...and used")
+
+        // The text a scan hands tmutil and simctl parsing.
+        assertEqual(MacTweaksStorage.snapshotDates(tmutilOutput: "Snapshot dates for disk /:\n2026-10-30-101112\n  2026-10-30-111213 \nnot a date\n2026-10-30-12;rm\n"),
+                    ["2026-10-30-101112", "2026-10-30-111213"], "Only dates go to tmutil")
+        assertEqual(MacTweaksStorage.unavailableSimulatorFolders(json: #"{"devices":{"r":[{"udid":"U-1"},{"dataPath":"/d/U-2/data"},{"name":"x"}]}}"#, devices: "/d"),
+                    ["/d/U-1", "/d/U-2"], "A device without a dataPath is found by its udid")
+        assertEqual(MacTweaksStorage.unavailableSimulatorFolders(json: "not json", devices: "/d"), [], "Garbage from simctl offers nothing")
+
+        print("✅ MacTweaks scan passed all tests!\n")
+    }
+
+    // MARK: Test 43: cleaning — the Trash, the administrator batch, simctl, tmutil, verify, receipt
+
+    static func testMacTweaksClean() {
+        print("Testing MacTweaks clean...")
+        let fm = FileManager.default
+        let (fx, unavailable, available) = stockMacTweaksFixture("clean")
+        let apps = fx.root + "/Applications"
+        let trash = fx.home + "/.Trash"
+        let caches = fx.home + "/Library/Caches"
+        let iPhoneUpdate = fx.make(fx.home + "/Library/iTunes/iPhone Software Updates/Update.ipsw", bytes: 100_000)
+        let iPadUpdate = fx.make(fx.home + "/Library/iTunes/iPad Software Updates/Update.ipsw", bytes: 100_000)
+        fx.make(trash + "/Update.ipsw", bytes: 10)
+        let pages = apps + "/Pages.app"
+        let stuckCache = caches + "/com.example.app"
+        // Two updates another user owns that the Trash refuses: the administrator moves them,
+        // to names free in the Trash and in the batch. Pages, also another user's, moves on
+        // its own. A cache this user owns that won't move is protected by macOS.
+        fx.setForeign([iPhoneUpdate, iPadUpdate, pages])
+        fx.setStuck([iPhoneUpdate, iPadUpdate, stuckCache])
+        let rows = MacTweaksStorage.scan(fx.environment)
+        let ticked = rows.filter { ["installers", "ios-updates", "simulators", "snapshots", "pages", "caches"].contains($0.id) }
+        assertEqual(ticked.count, 6, "(six rows ticked)")
+        let before = ticked.reduce(Int64(0)) { $0 + ($1.bytes ?? 0) }
+        let stuckBytes = fx.kb(stuckCache)
+        fx.clearRecords()
+        let logPath = fx.environment.logURL.path
+        try? fm.createDirectory(atPath: (logPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        fm.createFile(atPath: logPath, contents: Data(repeating: 0x2E, count: 1_200_000))
+
+        let steps = ResultBox<[String]>()
+        steps.value = []
+        let lock = NSLock()
+        let (receipt, after) = MacTweaksStorage.apply(ticked, environment: fx.environment) { line in
+            lock.lock(); steps.value?.append(line); lock.unlock()
+        }
+
+        assertEqual(fx.adminScripts.count, 1, "One administrator batch for the whole apply")
+        let script = fx.adminScripts.first ?? ""
+        assertTrue(script.hasPrefix("exec </dev/null; ( ") && script.hasSuffix("; exit 0"),
+                   "The batch reads nothing from the pty, and always exits 0: a failed step is never taken for a failed prompt")
+        func physicalFolder(_ path: String) -> String { MacTweaksStorage.resolved((path as NSString).deletingLastPathComponent) ?? "" }
+        let firstMove = MacTweaksStorage.guardedMove(iPhoneUpdate, to: trash + "/Update 2.ipsw", trash: trash, physicalParent: physicalFolder(iPhoneUpdate))
+        let secondMove = MacTweaksStorage.guardedMove(iPadUpdate, to: trash + "/Update 3.ipsw", trash: trash, physicalParent: physicalFolder(iPadUpdate))
+        assertTrue(script.contains("( \(firstMove) ) 2>&1; printf '\\n%s %d %d\\n' '__LS_"),
+                   "The first update moves to a name the Trash doesn't hold, its status printed on a line of its own")
+        assertTrue(firstMove.hasPrefix("if cd -P -- '\((iPhoneUpdate as NSString).deletingLastPathComponent)' 2>/dev/null && [ \"$(pwd -P)\" = '\(physicalFolder(iPhoneUpdate))' ]"),
+                   "...from inside the update's folder, and only while that is where the gate found it")
+        assertTrue(firstMove.contains("[ ! -e '\(trash)/Update 2.ipsw' ] && [ ! -L '\(trash)/Update 2.ipsw' ]")
+                   && firstMove.contains("[ ! -L './Update.ipsw' ]") && firstMove.contains("then /bin/mv -n './Update.ipsw' '\(trash)/Update 2.ipsw'"),
+                   "...moving ./Update.ipsw with mv -n, guarded as it runs: nothing at that name yet, nothing a symlink")
+        assertTrue(script.contains("( \(secondMove) ) 2>&1; printf"), "...and the second to one the batch hasn't used either")
+        assertTrue(script.contains("( '\(fx.bin)/tmutil' deletelocalsnapshots '2026-10-30-101112' ) 2>&1; printf")
+                   && script.contains("( '\(fx.bin)/tmutil' deletelocalsnapshots '2026-10-30-111213' ) 2>&1; printf"),
+                   "Each snapshot is deleted by tmutil in the batch")
+        assertTrue(!script.contains("~") && !script.contains("$HOME"), "Every path in it is absolute, the Trash's too")
+        assertTrue(!script.contains("Pages.app") && !script.contains("com.example.app"), "Nothing the Trash took, or macOS protects, is in it")
+        assertEqual(steps.value, ["Moving 8 items to the Trash…", "macOS may ask for Touch ID or your password.", "Deleting unavailable simulators…",
+                                  "Checking what was freed…"],
+                    "One progress line per step, simctl after the batch: nothing slow between the checks and the prompt")
+
+        assertTrue(fm.fileExists(atPath: trash + "/Update 2.ipsw") && fm.fileExists(atPath: trash + "/Update 3.ipsw")
+                   && fm.fileExists(atPath: trash + "/Update.ipsw"), "The administrator moved both updates into the Trash, overwriting nothing")
+        assertTrue(fm.fileExists(atPath: trash + "/Pages.app") && fm.fileExists(atPath: trash + "/Install macOS Sequoia.app")
+                   && fm.fileExists(atPath: trash + "/Google"), "The Trash took the rest")
+        assertTrue(fm.fileExists(atPath: stuckCache), "The protected cache stays")
+        assertTrue(!fm.fileExists(atPath: unavailable) && fm.fileExists(atPath: available), "simctl deleted the unavailable simulator only")
+        assertTrue(fx.programsRun.contains(fx.developer + "/usr/bin/simctl delete unavailable"), "...as this user, outside the batch")
+        assertEqual(fx.read("deleted-snapshots.txt"), "2026-10-30-101112\n2026-10-30-111213\n", "tmutil deleted both snapshots")
+        assertTrue(fm.fileExists(atPath: fx.root + "/Library/Application Support/GarageBand"), "Nothing unticked was touched")
+
+        // Verified by scanning again: freed is before minus after, and what stayed is said.
+        assertEqual(after.map(\.id), ["caches"], "Rescanned, only the protected cache is left")
+        assertEqual(receipt.headline, "Freed \(MacTweaksProvider.size(before - stuckBytes)).", "Freed is before minus after")
+        assertTrue(receipt.lines.contains("Deleted 1 unavailable simulator.") && receipt.lines.contains("Deleted 2 local snapshots."),
+                   "The receipt counts what was deleted")
+        assertTrue(receipt.lines.first?.hasPrefix("Moved 7 items to the Trash (") == true, "...and what went to the Trash: \(receipt.lines)")
+        assertTrue(receipt.lines.contains { $0.hasPrefix("1 item (\(MacTweaksProvider.size(stuckBytes))) is protected by macOS and stays") },
+                   "...and what macOS protects, with its size")
+        assertEqual(receipt.problems, [], "Nothing else stayed")
+        assertEqual(receipt.notes, ["Empty the Trash to get the space back."], "Something went to the Trash, so empty it")
+
+        let log = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
+        assertTrue(log.hasPrefix(String(repeating: "=", count: 50) + "\nTruncated "), "The receipts log is capped like cdm's clean.log")
+        assertTrue(log.utf8.count < 256 * 1024 + 8_000, "...keeping the newest 256 KiB")
+        for expected in ["Mac Tweaks run (Lightspot): ", "▸ Free Up Space\n", "  trashed: /", "  protected by macOS: ~/Library/Caches/com.example.app",
+                         "  moved by the administrator: ~/Library/iTunes/iPhone Software Updates/Update.ipsw",
+                         "  simctl delete unavailable: done", "  administrator batch (4 steps): ran (status 0)", "  freed: ", "Finished: "] {
+            assertTrue(log.contains(expected), "The receipt is logged: '\(expected)'")
+        }
+
+        // A cancelled prompt: nothing that needs it changes, and the receipt says so.
+        let (cancel, _, _) = stockMacTweaksFixture("cancel")
+        let foreignUpdate = cancel.home + "/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw"
+        cancel.setForeign([foreignUpdate])
+        cancel.setStuck([foreignUpdate])
+        cancel.setAdminAnswer(.cancelled)
+        let cancelRows = MacTweaksStorage.scan(cancel.environment).filter { $0.id == "ios-updates" || $0.id == "snapshots" }
+        let cancelled = MacTweaksStorage.apply(cancelRows, environment: cancel.environment)
+        assertEqual(cancel.adminScripts.count, 1, "The prompt is asked once")
+        assertTrue(fm.fileExists(atPath: foreignUpdate) && cancel.read("deleted-snapshots.txt").isEmpty, "...and when it is cancelled nothing it covers changes")
+        assertTrue(cancelled.receipt.problems.contains("~/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw stays: it needs Touch ID or your password, and the prompt was cancelled."),
+                   "The receipt names what stayed and why: \(cancelled.receipt.problems)")
+        assertTrue(cancelled.receipt.problems.contains("2 snapshots stay: they need Touch ID or your password, and the prompt was cancelled."),
+                   "...snapshots too")
+        assertTrue(cancelled.receipt.lines.contains { $0.hasPrefix("Moved 1 item to the Trash") }, "What needed no password still went")
+        cancel.setAdminAnswer(.refused("The administrator user name or password was incorrect."))
+        let refusedRows = MacTweaksStorage.scan(cancel.environment).filter { $0.id == "ios-updates" }
+        let refused = MacTweaksStorage.apply(refusedRows, environment: cancel.environment)
+        assertEqual(refused.receipt.problems, ["~/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw stays: it needs Touch ID or your password, and macOS didn't accept it."],
+                    "A refused password is said too")
+
+        // A step that fails in the batch: the receipt carries the tool's own reason.
+        let (failing, _, _) = stockMacTweaksFixture("failing")
+        let lockedFolder = failing.home + "/Library/iTunes/iPad Software Updates"
+        let lockedUpdate = lockedFolder + "/iPad_17.ipsw"
+        failing.setForeign([lockedUpdate])
+        failing.setStuck([lockedUpdate])
+        let failingRows = MacTweaksStorage.scan(failing.environment).filter { $0.id == "ios-updates" }
+        try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: lockedFolder)
+        let failed = MacTweaksStorage.apply(failingRows, environment: failing.environment)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedFolder)
+        assertEqual(failed.receipt.problems, ["~/Library/iTunes/iPad Software Updates/iPad_17.ipsw stays: the administrator couldn't move it (Permission denied)."],
+                    "mv's own reason reaches the receipt")
+        assertTrue(failed.receipt.lines.contains { $0.hasPrefix("Moved 1 item to the Trash") } && failing.adminScripts.count == 1,
+                   "...the rest still went, with one prompt")
+
+        // tmutil that can't answer afterwards: no snapshot is counted as deleted.
+        let (silent, _, _) = stockMacTweaksFixture("silent")
+        let silentRows = MacTweaksStorage.scan(silent.environment, only: ["snapshots"])
+        silent.write("tmutil-fails", "")
+        let unanswered = MacTweaksStorage.apply(silentRows, environment: silent.environment)
+        assertEqual(unanswered.receipt.problems, ["Time Machine didn't say which snapshots are left, so none are counted as deleted."],
+                    "Snapshots whose deletion can't be checked are not claimed")
+        assertTrue(unanswered.receipt.lines.isEmpty && unanswered.rescanned.first?.items.count == 2, "...and stay offered as they were")
+
+        // The gate again at clean time, and things gone meanwhile.
+        let (late, _, _) = stockMacTweaksFixture("late")
+        let lateRows = MacTweaksStorage.scan(late.environment).filter { $0.id == "caches" || $0.id == "installers" }
+        let lateCaches = late.home + "/Library/Caches"
+        try? fm.createDirectory(atPath: late.home + "/Documents/Taxes", withIntermediateDirectories: true)
+        try? fm.removeItem(atPath: lateCaches + "/Google")
+        try? fm.createSymbolicLink(atPath: lateCaches + "/Google", withDestinationPath: late.home + "/Documents/Taxes")
+        try? fm.removeItem(atPath: late.root + "/Applications/Install macOS Sequoia.app")
+        let lateResult = MacTweaksStorage.apply(lateRows, environment: late.environment)
+        assertTrue(fm.fileExists(atPath: late.home + "/Documents/Taxes") && fm.fileExists(atPath: lateCaches + "/Google"),
+                   "A path swapped for a symlink after the scan is refused at clean time")
+        assertTrue(lateResult.receipt.problems.contains("~/Library/Caches/Google stays: it no longer passes Mac Tweaks' checks."),
+                   "...and the receipt says so")
+        assertTrue(!lateResult.receipt.problems.contains { $0.contains("Install macOS") }, "Something already gone is simply skipped")
+        assertTrue(late.adminScripts.isEmpty, "With nothing for the administrator, no prompt at all")
+
+        // A Trash name is reserved only after the Trash has taken everything else: a later
+        // move of a same-named item can't take the administrator's name first.
+        let (collide, _, _) = stockMacTweaksFixture("collide")
+        let collideTrash = collide.home + "/.Trash"
+        let rootsUpdate = collide.make(collide.home + "/Library/iTunes/iPhone Software Updates/Update.ipsw", bytes: 100_000)
+        let ownUpdate = collide.make(collide.home + "/Library/iTunes/iPad Software Updates/Update.ipsw", bytes: 90_000)
+        collide.setForeign([rootsUpdate])
+        collide.setStuck([rootsUpdate])
+        let collideRows = MacTweaksStorage.scan(collide.environment).filter { $0.id == "ios-updates" }
+        let collided = MacTweaksStorage.apply(collideRows, environment: collide.environment)
+        assertTrue(collide.adminScripts.first?.contains("'\(collideTrash)/Update 2.ipsw'") == true,
+                   "The administrator's name is reserved after this user's Update.ipsw took the first")
+        let sizeOf = { (path: String) in (try? fm.attributesOfItem(atPath: path)[.size] as? Int) ?? -1 }
+        assertEqual([sizeOf(collideTrash + "/Update.ipsw"), sizeOf(collideTrash + "/Update 2.ipsw")], [90_000, 100_000],
+                    "...so both are in the Trash, each under its own name, nothing moved into anything")
+        assertTrue(!fm.fileExists(atPath: rootsUpdate) && !fm.fileExists(atPath: ownUpdate)
+                   && collided.receipt.lines.first?.hasPrefix("Moved 4 items to the Trash") == true && collided.receipt.problems.isEmpty,
+                   "...and the receipt counts them: \(collided.receipt.lines) \(collided.receipt.problems)")
+
+        // The guard inside the script: a name taken between the reservation and the batch.
+        let (race, _, _) = stockMacTweaksFixture("race")
+        let racer = race.home + "/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw"
+        race.setForeign([racer])
+        race.setStuck([racer])
+        let raceRows = MacTweaksStorage.scan(race.environment).filter { $0.id == "ios-updates" }
+        let raceTrash = race.home + "/.Trash"
+        race.setBeforeAdmin { try? FileManager.default.createDirectory(atPath: raceTrash + "/iPhone_17.ipsw", withIntermediateDirectories: true) }
+        let raced = MacTweaksStorage.apply(raceRows, environment: race.environment)
+        assertTrue(fm.fileExists(atPath: racer) && (try? fm.contentsOfDirectory(atPath: raceTrash + "/iPhone_17.ipsw"))?.isEmpty == true,
+                   "A folder appearing at the reserved name stops the move: the item stays, nothing goes inside the folder")
+        assertTrue(raced.receipt.problems.contains("~/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw stays: the administrator couldn't move it (the item or the Trash changed before the move)."),
+                   "...and the receipt says why: \(raced.receipt.problems)")
+        // A move counts only when the item is gone and its Trash name is there; an item gone
+        // on its own is listed, and isn't counted as freed.
+        let (vanish, _, _) = stockMacTweaksFixture("vanish")
+        let ghost = vanish.home + "/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw"
+        vanish.setForeign([ghost])
+        vanish.setStuck([ghost])
+        let vanishRows = MacTweaksStorage.scan(vanish.environment).filter { $0.id == "ios-updates" }
+        let keptBytes = vanishRows.first?.items.first { $0.target != ghost }?.bytes ?? 0
+        vanish.setBeforeAdmin { try? FileManager.default.removeItem(atPath: ghost) }
+        let vanished = MacTweaksStorage.apply(vanishRows, environment: vanish.environment)
+        assertTrue(vanished.receipt.lines.first?.hasPrefix("Moved 1 item to the Trash") == true,
+                   "An item that vanished before the administrator moved it is not counted as moved: \(vanished.receipt.lines)")
+        assertEqual(vanished.receipt.problems, ["~/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw: It was gone before Lightspot moved it."],
+                    "...it is listed")
+        assertEqual(vanished.receipt.headline, "Freed \(MacTweaksProvider.size(keptBytes)).", "...and freed counts only what Lightspot moved")
+        // Taken during the prompt into the Trash under the very name Lightspot reserved (Finder,
+        // say): the administrator didn't move it, whether the batch then ran (its guard
+        // refuses) or the prompt was cancelled, so it is listed and not counted.
+        let answers: [(String, QuickActionsProvider.PrivilegedRun)] = [("ran", .ran(status: 0, output: "")), ("cancelled", .cancelled)]
+        for (label, answer) in answers {
+            let (finder, _, _) = stockMacTweaksFixture("finder-\(label)")
+            let taken = finder.home + "/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw"
+            finder.setForeign([taken])
+            finder.setStuck([taken])
+            finder.setAdminAnswer(answer)
+            let finderRows = MacTweaksStorage.scan(finder.environment).filter { $0.id == "ios-updates" }
+            let otherBytes = finderRows.first?.items.first { $0.target != taken }?.bytes ?? 0
+            let reserved = finder.home + "/.Trash/iPhone_17.ipsw"
+            finder.setBeforeAdmin { try? FileManager.default.moveItem(atPath: taken, toPath: reserved) }
+            let found = MacTweaksStorage.apply(finderRows, environment: finder.environment)
+            assertTrue(finder.adminScripts.first?.contains("'\(reserved)'") == true && fm.fileExists(atPath: reserved),
+                       "Someone else put the item at the name the administrator was to use (\(label))")
+            assertEqual(found.receipt.problems, ["~/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw: It was gone before Lightspot moved it."],
+                        "...so it is listed (\(label))")
+            assertTrue(found.receipt.lines.first?.hasPrefix("Moved 1 item to the Trash") == true
+                       && found.receipt.headline == "Freed \(MacTweaksProvider.size(otherBytes)).",
+                       "...and not counted as moved or freed (\(label)): \(found.receipt.headline) \(found.receipt.lines)")
+        }
+
+        // The item's folder swapped, during the prompt, for a symlink to a folder holding a
+        // same-named entry: root moves neither.
+        let (swap, _, _) = stockMacTweaksFixture("swap")
+        let updates = swap.home + "/Library/iTunes/iPhone Software Updates"
+        let swapped = updates + "/iPhone_17.ipsw"
+        swap.setForeign([swapped])
+        swap.setStuck([swapped])
+        let swapRows = MacTweaksStorage.scan(swap.environment).filter { $0.id == "ios-updates" }
+        let decoy = swap.base + "/decoy"
+        swap.make(decoy + "/iPhone_17.ipsw", bytes: 5_000)
+        swap.setBeforeAdmin {
+            try? FileManager.default.moveItem(atPath: updates, toPath: updates + ".real")
+            try? FileManager.default.createSymbolicLink(atPath: updates, withDestinationPath: decoy)
+        }
+        let swapResult = MacTweaksStorage.apply(swapRows, environment: swap.environment)
+        assertTrue(fm.fileExists(atPath: decoy + "/iPhone_17.ipsw") && fm.fileExists(atPath: updates + ".real/iPhone_17.ipsw")
+                   && !fm.fileExists(atPath: swap.home + "/.Trash/iPhone_17.ipsw"),
+                   "A swapped folder stops the administrator's move: the decoy and the real item both stay")
+        assertTrue(swapResult.receipt.problems.contains("~/Library/iTunes/iPhone Software Updates/iPhone_17.ipsw stays: the administrator couldn't move it (the item or the Trash changed before the move)."),
+                   "...and the receipt says why: \(swapResult.receipt.problems)")
+
+        // "Operation not permitted" is mv's reason, not a phrase anywhere in what it printed,
+        // which names both paths.
+        let (phrase, _, _) = stockMacTweaksFixture("phrase")
+        let lockedUpdates = phrase.home + "/Library/iTunes/iPad Software Updates"
+        let worded = phrase.make(lockedUpdates + "/Operation not permitted.ipsw", bytes: 50_000)
+        phrase.setForeign([worded])
+        phrase.setStuck([worded])
+        let phraseRows = MacTweaksStorage.scan(phrase.environment).filter { $0.id == "ios-updates" }
+        try? fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: lockedUpdates)
+        let phrased = MacTweaksStorage.apply(phraseRows, environment: phrase.environment)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedUpdates)
+        assertTrue(phrased.receipt.problems.contains("~/Library/iTunes/iPad Software Updates/Operation not permitted.ipsw stays: the administrator couldn't move it (Permission denied).")
+                   && !phrased.receipt.lines.contains { $0.contains("protected") },
+                   "A name holding the phrase isn't taken for macOS protecting it: \(phrased.receipt.problems) \(phrased.receipt.lines)")
+
+        // "Protected" by the error, not the owner, and apps by App Management.
+        let (refuse, _, _) = stockMacTweaksFixture("refuse")
+        let refuseApps = refuse.root + "/Applications"
+        let full = refuse.home + "/Library/Caches/com.example.app"
+        let ownApp = refuseApps + "/Pages.app"
+        let othersApp = refuseApps + "/iMovie.app"
+        let othersVideos = refuse.root + "/Library/Application Support/com.apple.idleassetsd/Customer/4KSDR240FPS"
+        refuse.setBroken([full])
+        refuse.setForeign([othersApp, othersVideos])
+        for locked in [ownApp, othersApp, othersVideos] { try? fm.setAttributes([.immutable: true], ofItemAtPath: locked) }
+        let refuseRows = MacTweaksStorage.scan(refuse.environment).filter { ["pages", "imovie", "aerials", "caches"].contains($0.id) }
+        let videoBytes = refuseRows.first { $0.id == "aerials" }?.bytes ?? 0
+        let refusals = MacTweaksStorage.apply(refuseRows, environment: refuse.environment)
+        for locked in [ownApp, othersApp, othersVideos] { try? fm.setAttributes([.immutable: false], ofItemAtPath: locked) }
+        assertTrue(refusals.receipt.problems.contains { $0.hasPrefix("~/Library/Caches/com.example.app stays: ") && !$0.contains("protected") },
+                   "A move that fails for another reason says macOS's own words, not \"protected\": \(refusals.receipt.problems)")
+        assertTrue(refusals.receipt.problems.contains(MacTweaksStorage.appManagementAdvice(ownApp))
+                   && refusals.receipt.problems.contains(MacTweaksStorage.appManagementAdvice(othersApp)),
+                   "An app macOS won't let go, this user's or another's, points to App Management and to Finder")
+        assertEqual(MacTweaksStorage.appManagementAdvice(ownApp),
+                    "macOS didn't let Lightspot move Pages. Drag it to the Trash in Finder (⌥↵ shows it), or allow Lightspot under Privacy & Security › App Management.",
+                    "...in those words")
+        assertEqual(refusals.receipt.reveal, ownApp, "...and ⌥↵ on the receipt shows the first such app")
+        assertTrue(refusals.receipt.lines.contains { $0.hasPrefix("1 item (\(MacTweaksProvider.size(videoBytes))) is protected by macOS") },
+                   "What macOS refuses even the administrator, and isn't an app, is protected: \(refusals.receipt.lines)")
+        assertTrue(fm.fileExists(atPath: ownApp) && fm.fileExists(atPath: othersApp) && fm.fileExists(atPath: othersVideos) && fm.fileExists(atPath: full),
+                   "...and none of them moved")
+        assertTrue(MacTweaksStorage.isAppBundle(ownApp, .pages) && MacTweaksStorage.isAppBundle(refuseApps + "/GarageBand.app", .garageband)
+                   && !MacTweaksStorage.isAppBundle(full, .caches) && !MacTweaksStorage.isAppBundle(refuse.root + "/Library/Application Support/Logic", .garageband),
+                   "An app is known by its row, not by a name ending in .app: the cache com.example.app is not one")
+        assertTrue(MacTweaksStorage.isPermissionError(CocoaError(.fileWriteNoPermission)) && MacTweaksStorage.isPermissionError(POSIXError(.EACCES))
+                   && MacTweaksStorage.isPermissionError(NSError(domain: NSCocoaErrorDomain, code: 513, userInfo: [NSUnderlyingErrorKey: POSIXError(.EPERM)]))
+                   && !MacTweaksStorage.isPermissionError(CocoaError(.fileWriteOutOfSpace)) && !MacTweaksStorage.isPermissionError(POSIXError(.ENOSPC)),
+                   "Permission errors are EPERM and EACCES, however Foundation wraps them")
+
+        // EACCES is a folder's permissions, which root overrides: the administrator moves the
+        // item, this user's included (an app in an Applications folder this user can't write).
+        let (denied, _, _) = stockMacTweaksFixture("denied")
+        let ownInstaller = denied.root + "/Applications/Install macOS Sequoia.app"
+        denied.setDenied([ownInstaller])
+        let deniedRows = MacTweaksStorage.scan(denied.environment, only: ["installers"])
+        let deniedResult = MacTweaksStorage.apply(deniedRows, environment: denied.environment)
+        assertTrue(denied.adminScripts.first?.contains("/bin/mv -n './Install macOS Sequoia.app' ") == true && !fm.fileExists(atPath: ownInstaller)
+                   && deniedResult.receipt.lines.first?.hasPrefix("Moved 1 item to the Trash") == true && deniedResult.receipt.problems.isEmpty,
+                   "A move refused with EACCES goes to the administrator, whoever owns the item: \(deniedResult.receipt.problems)")
+        assertTrue(MacTweaksStorage.isAccessDenied(POSIXError(.EACCES)) && !MacTweaksStorage.isAccessDenied(POSIXError(.EPERM))
+                   && !MacTweaksStorage.isAccessDenied(CocoaError(.fileWriteNoPermission)), "...and only EACCES does")
+
+        // Freed counts what really went: the gate turning between scan and clean (Logic Pro
+        // installed meanwhile) keeps GarageBand's library, and freed leaves it out.
+        let (logic, _, _) = stockMacTweaksFixture("logic")
+        let band = MacTweaksStorage.scan(logic.environment, only: ["garageband"])
+        assertEqual(band.first?.items.count, 4, "(the app and its library are offered)")
+        let appBytes = band.first?.items.first?.bytes ?? 0
+        logic.setInstalledApps(["com.apple.logic10"])
+        let banded = MacTweaksStorage.apply(band, environment: logic.environment)
+        assertEqual(banded.receipt.headline, "Freed \(MacTweaksProvider.size(appBytes)).", "Freed is the app alone, the library having stayed")
+        assertEqual(banded.receipt.problems.count, 3, "...and the receipt says each library folder stayed")
+
+        print("✅ MacTweaks clean passed all tests!\n")
+    }
+
+    // MARK: Test 44: the administrator batch, exact on both of runPrivilegedScript's backends
+
+    /// Hostile file names: the platform report's two lists (privileged_quoting_check.swift and
+    /// quote_crosscheck.swift), without their leading slash, plus a few more.
+    static let hostileNames = [
+        "a b", "c'd", "x \"quoted\" y", "dollar $HOME and $(id -u) and `id`", "back\\slash\\n", "semi; colon & amp | pipe",
+        "tab\there", "new\nline", "x|sudo -u root w", "Password: here", "unicode é ü 日本 🙂", "trailing space ",
+        "x; sudo y", "x && sudo rm -rf z", "x|sudo y", "x;sudo y", "x& sudo y", "a;b&c|d", "x;'sudo y", "x \"q\" y",
+        "$HOME `id`", "back\\slash", "ends with ;", "; sudo ; sudo ;",
+        "-n starts with a dash", "--", "-", "-rf -- x", "* glob ?", "~tilde", "__LS_00000000 1 0",
+    ]
+
+    static func testMacTweaksAdminBatch() {
+        print("Testing MacTweaks administrator batch...")
+        let fm = FileManager.default
+        let base = NSTemporaryDirectory() + "lightspot-mactweaks-batch-\(getpid())"
+        try? fm.removeItem(atPath: base)
+        defer { try? fm.removeItem(atPath: base) }
+        for folder in ["a", "b"] { try? fm.createDirectory(atPath: base + "/" + folder, withIntermediateDirectories: true) }
+        let names = hostileNames
+        for name in names { fm.createFile(atPath: base + "/a/" + name, contents: Data("x".utf8)) }
+        assertEqual((try? fm.contentsOfDirectory(atPath: base + "/a"))?.count, names.count, "(every hostile name is a file)")
+
+        for name in names {
+            let echoed = CleanDevMacEngine.run("/bin/sh", ["-c", "printf %s " + MacTweaksStorage.shellQuote(name)], timeout: 10).output
+            assertEqual(echoed, name, "The shell reads back exactly '\(name)'")
+        }
+        // Every name moved as the administrator moves it (`guardedMove`: `./<name>` from inside
+        // its folder), from one folder to the other, which stands in for the Trash.
+        func moves(_ from: String, _ to: String) -> [String] {
+            let physical = MacTweaksStorage.resolved(base + "/" + from) ?? ""
+            return names.map {
+                MacTweaksStorage.guardedMove(base + "/" + from + "/" + $0, to: base + "/" + to + "/" + $0, trash: base + "/" + to, physicalParent: physical)
+            }
+        }
+        let tag = "__LS_1A2B3C4D"
+        let steps = names.count
+
+        // Runs `command` with /bin/sh -c and a stdin that stays open as a pty's does. If a step
+        // read it, its end is closed after 5 s, so the test fails instead of hanging.
+        func runWithOpenStdin(_ command: String) -> (output: String, status: Int32, seconds: TimeInterval) {
+            let shell = Process()
+            shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+            shell.arguments = ["-c", command]
+            let stdout = Pipe()
+            let stdin = Pipe()
+            shell.standardOutput = stdout
+            shell.standardError = stdout
+            shell.standardInput = stdin
+            let started = Date()
+            try? shell.run()
+            let writer = stdin.fileHandleForWriting
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) { try? writer.close() }
+            let output = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            shell.waitUntilExit()
+            return (output, shell.terminationStatus, Date().timeIntervalSince(started))
+        }
+
+        // The batch reads nothing from stdin, whichever backend runs it.
+        let catScript = MacTweaksStorage.adminScript(["/bin/cat"], tag: tag)
+        let catRun = runWithOpenStdin(catScript)
+        assertTrue(catRun.seconds < 4 && MacTweaksStorage.batchResults(catRun.output, tag: tag)[1]?.status == 0,
+                   "cat ends at once: the batch's stdin is /dev/null, not the pty (\(String(format: "%.1f", catRun.seconds)) s)")
+
+        // The Touch ID pty: sudo runs the marked command with /bin/sh -c. Here /bin/sh runs it
+        // as this user, its output going through the same verdict, with the pty's \r\n.
+        let marker = "__LS_ROOT_TEST"
+        let script = MacTweaksStorage.adminScript(moves("a", "b") + ["/bin/cat"], tag: tag)
+        assertTrue(script.contains("then /bin/mv -n './-n starts with a dash' ") && script.contains("then /bin/mv -n './--' "),
+                   "(a name starting with a dash reaches mv as ./-…, never as an option)")
+        let markedRun = runWithOpenStdin(QuickActionsProvider.markedCommand(script, marker: marker))
+        assertTrue(markedRun.seconds < 4, "...and after the marker, the marked command's stdin is /dev/null too")
+        let printed = markedRun.output
+        let verdict = QuickActionsProvider.touchIDVerdict(transcript: printed.replacingOccurrences(of: "\n", with: "\r\n"), marker: marker,
+                                                         status: markedRun.status)
+        guard case .ran(let status, let output) = verdict else {
+            assertTrue(false, "The marker reaches the pty first, so the batch counts as run: \(verdict)")
+            return
+        }
+        assertEqual(status, 0, "The batch exits 0")
+        let results = MacTweaksStorage.batchResults(output, tag: tag)
+        assertEqual(results.count, steps + 1, "Every step reports its status, a name that looks like a status line included")
+        assertTrue((1...steps).allSatisfy { results[$0]?.status == 0 } && results[steps + 1]?.status == 0,
+                   "...each one 0, and cat ends at once: stdin is /dev/null, not the pty")
+        assertTrue(names.allSatisfy { fm.fileExists(atPath: base + "/b/" + $0) && !fm.fileExists(atPath: base + "/a/" + $0) },
+                   "...having moved every name, whatever it holds")
+
+        // The password dialog: the same script through do shell script, escaped as
+        // runPrivilegedScript escapes it (without administrator privileges: no prompt here).
+        var error: NSDictionary?
+        let back = MacTweaksStorage.adminScript(moves("b", "a"), tag: tag)
+        let result = NSAppleScript(source: QuickActionsProvider.doShellScriptSource(back, administrator: false))?.executeAndReturnError(&error)
+        assertTrue(error == nil, "The batch runs under do shell script: \(String(describing: error))")
+        let dialogResults = MacTweaksStorage.batchResults((result?.stringValue ?? "").replacingOccurrences(of: "\r", with: "\n"), tag: tag)
+        assertTrue(dialogResults.count == steps && dialogResults.values.allSatisfy { $0.status == 0 }, "...reporting every step")
+        assertTrue(names.allSatisfy { fm.fileExists(atPath: base + "/a/" + $0) }, "...and moving every name back")
+        assertEqual(QuickActionsProvider.doShellScriptSource("echo \"a\\b\""), #"do shell script "echo \"a\\b\"" with administrator privileges"#,
+                    "The administrator form is the one the password dialog runs")
+
+        // Every step runs; each says how it went; the batch still exits 0.
+        fm.createFile(atPath: base + "/one", contents: Data())
+        let mixed = CleanDevMacEngine.run("/bin/sh", ["-c", MacTweaksStorage.adminScript(["/usr/bin/false", "exit 3", "/bin/mv -n '\(base)/missing' '\(base)/x'",
+                                                                                        "/bin/mv -n '\(base)/one' '\(base)/two'"], tag: tag)], timeout: 10)
+        assertEqual(mixed.status, 0, "A failed step never fails the batch")
+        let mixedResults = MacTweaksStorage.batchResults(mixed.output, tag: tag)
+        assertEqual([1, 2, 3, 4].map { mixedResults[$0]?.status }, [1, 3, 1, 0], "...each step's own status is printed after it")
+        assertEqual(MacTweaksStorage.reason(mixedResults[3]?.output ?? ""), "No such file or directory", "...with what it printed")
+        assertTrue(fm.fileExists(atPath: base + "/two"), "...and the steps after a failure, even one that exits, still run")
+        // A step that ends without a line break, or prints a stray \r, can't hide a status line.
+        let ragged = CleanDevMacEngine.run("/bin/sh", ["-c", MacTweaksStorage.adminScript(["printf 'no line break'", "printf 'carriage\\r'", "/usr/bin/false"], tag: tag)],
+                                           timeout: 10)
+        let raggedResults = MacTweaksStorage.batchResults(ragged.output, tag: tag)
+        assertEqual([1, 2, 3].map { raggedResults[$0]?.status }, [0, 0, 1], "Each status line stands on a line of its own")
+        assertEqual(raggedResults[1]?.output, "no line break", "...after its step's output")
+        assertEqual(MacTweaksStorage.batchResults("first\r\n\(tag) 1 0\r\n \(tag) 2 1 \r\n", tag: tag).mapValues(\.status), [1: 0, 2: 1],
+                    "...whatever \r and spaces surround it")
+
+        // The guard on each root mv, run here as this user: the item in its folder, the Trash
+        // beside it. `change` is what happens during the prompt, after the gate's check;
+        // `afterChecks`, shell commands run once the guard's checks have passed, just before mv.
+        func guarded(_ change: (String) -> Void, afterChecks: ((String) -> String)? = nil) -> (status: Int32?, moved: Bool, base: String) {
+            let root = base + "/guard-\(UUID().uuidString.prefix(6))"
+            try? fm.createDirectory(atPath: root + "/Trash", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/folder/item/inside", withIntermediateDirectories: true)
+            let physical = MacTweaksStorage.resolved(root + "/folder") ?? ""
+            change(root)
+            var move = MacTweaksStorage.guardedMove(root + "/folder/item", to: root + "/Trash/item", trash: root + "/Trash", physicalParent: physical)
+            if let afterChecks {
+                move = move.replacingOccurrences(of: "; then /bin/mv -n ", with: "; then \(afterChecks(root)); /bin/mv -n ")
+            }
+            let run = CleanDevMacEngine.run("/bin/sh", ["-c", MacTweaksStorage.adminScript([move], tag: tag)], timeout: 10)
+            let moved = !fm.fileExists(atPath: root + "/folder/item") && fm.fileExists(atPath: root + "/Trash/item/inside")
+            return (MacTweaksStorage.batchResults(run.output, tag: tag)[1]?.status, moved, root)
+        }
+        let plain = guarded { _ in }
+        assertTrue(plain.status == 0 && plain.moved, "The guarded mv moves an item into the Trash")
+        let occupied = guarded { root in try? fm.createDirectory(atPath: root + "/Trash/item", withIntermediateDirectories: true) }
+        assertTrue(occupied.status == 1 && !occupied.moved && fm.fileExists(atPath: occupied.base + "/folder/item")
+                   && !fm.fileExists(atPath: occupied.base + "/Trash/item/item"),
+                   "A folder at its Trash name stops it, where mv -n alone would have moved the item inside")
+        let linkedTrash = guarded { root in
+            try? fm.removeItem(atPath: root + "/Trash")
+            try? fm.createDirectory(atPath: root + "/elsewhere", withIntermediateDirectories: true)
+            try? fm.createSymbolicLink(atPath: root + "/Trash", withDestinationPath: root + "/elsewhere")
+        }
+        assertTrue(linkedTrash.status == 1 && fm.fileExists(atPath: linkedTrash.base + "/folder/item"), "A Trash that became a symlink stops it")
+        let linkedItem = guarded { root in
+            try? fm.removeItem(atPath: root + "/folder/item")
+            try? fm.createSymbolicLink(atPath: root + "/folder/item", withDestinationPath: root + "/Trash")
+        }
+        assertTrue(linkedItem.status == 1, "An item that became a symlink stops it")
+        // The item's folder swapped for a symlink to a folder holding a same-named entry.
+        let swapped = guarded { root in
+            try? fm.moveItem(atPath: root + "/folder", toPath: root + "/folder.real")
+            try? fm.createDirectory(atPath: root + "/decoy/item/inside", withIntermediateDirectories: true)
+            try? fm.createSymbolicLink(atPath: root + "/folder", withDestinationPath: root + "/decoy")
+        }
+        assertTrue(swapped.status == 1 && !fm.fileExists(atPath: swapped.base + "/Trash/item")
+                   && fm.fileExists(atPath: swapped.base + "/decoy/item/inside") && fm.fileExists(atPath: swapped.base + "/folder.real/item/inside"),
+                   "A folder swapped for a symlink to a look-alike stops it: neither the decoy nor the real item moves")
+        // The same swap once the checks have passed, just before mv: root still moves the entry
+        // from the folder it verified (now folder.real), never the decoy's same-named one.
+        let swappedLater = guarded({ root in
+            try? fm.createDirectory(atPath: root + "/decoy/item", withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/decoy/item/decoy-only", contents: Data())
+        }, afterChecks: { root in
+            let quoted = MacTweaksStorage.shellQuote
+            return "/bin/mv \(quoted(root + "/folder")) \(quoted(root + "/folder.real")) && /bin/ln -s \(quoted(root + "/decoy")) \(quoted(root + "/folder"))"
+        })
+        assertTrue(swappedLater.status == 0 && fm.fileExists(atPath: swappedLater.base + "/Trash/item/inside")
+                   && !fm.fileExists(atPath: swappedLater.base + "/folder.real/item") && fm.fileExists(atPath: swappedLater.base + "/decoy/item/decoy-only")
+                   && (try? fm.destinationOfSymbolicLink(atPath: swappedLater.base + "/folder")) == swappedLater.base + "/decoy",
+                   "A folder swapped after the checks changes nothing: the verified folder's item goes to the Trash, the decoy's stays")
+        fm.createFile(atPath: base + "/kept", contents: Data("old".utf8))
+        fm.createFile(atPath: base + "/three", contents: Data("new".utf8))
+        _ = CleanDevMacEngine.run("/bin/sh", ["-c", MacTweaksStorage.adminScript(["/bin/mv -n '\(base)/three' '\(base)/kept'"], tag: tag)], timeout: 10)
+        assertEqual(try? String(contentsOfFile: base + "/kept", encoding: .utf8), "old", "mv -n never overwrites what is in the Trash")
+
+        // Names unique in the Trash and within the batch, ignoring case as the disk does.
+        fm.createFile(atPath: base + "/b/Install macOS.app", contents: Data())
+        var taken = Set<String>()
+        let first = MacTweaksStorage.uniqueTrashName("Install macOS.app", in: base + "/b", taken: &taken)
+        let second = MacTweaksStorage.uniqueTrashName("install macos.app", in: base + "/b", taken: &taken)
+        let third = MacTweaksStorage.uniqueTrashName("Logic", in: base + "/b", taken: &taken)
+        assertEqual([first, second, third], ["Install macOS 2.app", "install macos 3.app", "Logic"], "Trash names are unique, in the folder and the batch")
+
+        // The pty's verdict, from synthetic transcripts: the marker alone decides.
+        let m = "__LS_ROOT_5E1F"
+        func judge(_ transcript: String, _ status: Int32 = 0) -> QuickActionsProvider.TouchIDRun {
+            QuickActionsProvider.touchIDVerdict(transcript: transcript, marker: m, status: status)
+        }
+        assertEqual(judge("Password:"), .notStarted, "sudo asking for a password: never started, the dialog may run it")
+        assertEqual(judge("", -1), .notStarted, "Touch ID timing out: never started")
+        assertEqual(judge("sudo: hoang is not in the sudoers file.\r\n", 1), .notStarted, "sudo refusing: never started")
+        assertEqual(judge("__LS_ROOT_0THER\r\nout\r\n"), .notStarted, "Another run's marker is not this one's")
+        assertEqual(judge("\(m)\r\nfirst\r\nsecond\r\n"), .ran(status: 0, output: "first\nsecond\n"), "The marker: it ran, its output after it")
+        assertEqual(judge("\(m)\r\nmv: rename a to b: Operation not permitted\r\n", 1),
+                    .ran(status: 1, output: "mv: rename a to b: Operation not permitted\n"),
+                    "A failure right after starting, seen once the pty is read to the end: it ran, and is never run again")
+        assertEqual(judge("\(m)\r\nmv: Password: here: No such file\r\n", 1), .ran(status: 1, output: "mv: Password: here: No such file\n"),
+                    "Password: after the marker is the command's own output")
+        assertEqual(judge("Password:\r\n\(m)\r\n"), .ran(status: 0, output: ""), "Whatever came before, the marker means it ran")
+        assertEqual(judge("\(m)\r\nlong job\r\n", 15), .ran(status: 15, output: "long job\n"), "Stopped after it started, it still ran")
+        assertEqual(QuickActionsProvider.markedCommand("exit 0", marker: m), "printf '%s%s\\n' '__LS_RO' 'OT_5E1F'; exec </dev/null; exit 0",
+                    "The marker is printed first, from two halves, then stdin leaves the pty")
+        assertEqual(judge("Sorry, user hoang is not allowed to execute '/bin/sh -c \(QuickActionsProvider.markedCommand("x", marker: m))' as root.\r\n", 1),
+                    .notStarted, "sudo echoing the command line holds no marker, so it is never taken for a start")
+        assertEqual(QuickActionsProvider.appleScriptOutcome(number: -128, message: "User canceled."), .cancelled, "-128: the dialog was dismissed")
+        assertEqual(QuickActionsProvider.appleScriptOutcome(number: 1, message: "first\rsecond"), .ran(status: 1, output: "first\nsecond"),
+                    "A positive number is the script's exit status")
+        assertEqual(QuickActionsProvider.appleScriptOutcome(number: -60007, message: "The administrator user name or password was incorrect."),
+                    .refused("The administrator user name or password was incorrect."), "Anything else ran nothing")
+
+        // The fallback rule itself: a run that started under Touch ID never reaches the dialog.
+        let dialogCalls = ResultBox<Int>()
+        dialogCalls.value = 0
+        func decide(_ touchID: QuickActionsProvider.TouchIDRun, enabled: Bool = true) -> QuickActionsProvider.PrivilegedRun {
+            QuickActionsProvider.privilegedScript("x", touchIDEnabled: enabled, touchID: { _ in touchID },
+                                                  dialog: { _ in dialogCalls.value! += 1; return .ran(status: 0, output: "dialog") })
+        }
+        assertEqual(decide(.ran(status: 1, output: "mv: failed")), .ran(status: 1, output: "mv: failed"), "A started run that failed is final")
+        assertEqual(decide(.ran(status: 0, output: "ok")), .ran(status: 0, output: "ok"), "...as is one that succeeded")
+        assertEqual(dialogCalls.value, 0, "...and neither reached the password dialog")
+        assertEqual(decide(.notStarted), .ran(status: 0, output: "dialog"), "A run that never started goes to the dialog")
+        assertEqual(dialogCalls.value, 1, "...once")
+        var touchIDAsked = false
+        _ = QuickActionsProvider.privilegedScript("x", touchIDEnabled: false, touchID: { _ in touchIDAsked = true; return .notStarted },
+                                                  dialog: { _ in .cancelled })
+        assertTrue(!touchIDAsked, "Without Touch ID for sudo, the pty is never tried")
+        var commandDialog = 0
+        let failedCommand = QuickActionsProvider.privilegedCommand("x", touchIDEnabled: true, touchID: { _ in .ran(status: 1, output: "") },
+                                                                   dialog: { _ in commandDialog += 1; return true })
+        assertTrue(!failedCommand && commandDialog == 0, "executePrivilegedWithTouchID's rule: a started run with status 1 is false, no dialog")
+        assertTrue(QuickActionsProvider.privilegedCommand("x", touchIDEnabled: true, touchID: { _ in .notStarted }, dialog: { _ in commandDialog += 1; return true })
+                   && commandDialog == 1, "...and one that never started goes to the dialog")
+
+        // A command that ignores SIGTERM is killed after the grace period: the wait ends.
+        let stubborn = Process()
+        stubborn.executableURL = URL(fileURLWithPath: "/bin/sh")
+        stubborn.arguments = ["-c", "trap '' TERM; while :; do /bin/sleep 1; done"]
+        try? stubborn.run()
+        usleep(200_000)
+        let stopStarted = Date()
+        assertTrue(QuickActionsProvider.stop(stubborn, grace: 0.5) && !stubborn.isRunning,
+                   "SIGTERM ignored, SIGKILL follows and the process is gone")
+        assertTrue(Date().timeIntervalSince(stopStarted) >= 0.5, "...after the grace period, not before")
+
+        // Reading the pty after exit ends, however long a child keeps writing to it.
+        let flood = Process()
+        flood.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+        let floodPipe = Pipe()
+        flood.standardOutput = floodPipe
+        try? flood.run()
+        usleep(100_000)
+        let floodFD = floodPipe.fileHandleForReading.fileDescriptor
+        _ = fcntl(floodFD, F_SETFL, fcntl(floodFD, F_GETFL, 0) | O_NONBLOCK)
+        var drained = 0
+        let drainStarted = Date()
+        QuickActionsProvider.drain(floodFD, seconds: 1, limit: Int.max) { drained += $0.count }
+        let drainSeconds = Date().timeIntervalSince(drainStarted)
+        flood.terminate()
+        flood.waitUntilExit()
+        assertTrue(drained > 0 && drainSeconds < 2, "The drain stops after its time, with a writer that never stops (\(String(format: "%.1f", drainSeconds)) s)")
+        fm.createFile(atPath: base + "/big", contents: Data(repeating: 0x61, count: 1_000_000))
+        let bigFD = open(base + "/big", O_RDONLY)
+        var capped = 0
+        QuickActionsProvider.drain(bigFD, seconds: 10, limit: 100_000) { capped += $0.count }
+        close(bigFD)
+        assertTrue(capped >= 100_000 && capped < 104_096 + 1, "...or once it has read its limit (\(capped) bytes)")
+
+        print("✅ MacTweaks administrator batch passed all tests!\n")
+    }
+
+    // MARK: Test 45: no xcrun, and no simulator row with the Command Line Tools alone
+
+    static func testMacTweaksWithoutDeveloperTools() {
+        print("Testing MacTweaks without developer tools...")
+        let (fx, unavailable, _) = stockMacTweaksFixture("clt")
+        let commandLineTools = fx.base + "/CommandLineTools"
+        try? FileManager.default.createDirectory(atPath: commandLineTools + "/usr/bin", withIntermediateDirectories: true)
+        fx.write("developer-dir", commandLineTools + "\n")
+        let rows = MacTweaksStorage.scan(fx.environment)
+        assertTrue(!rows.contains { $0.id == "simulators" }, "With the Command Line Tools alone there is no simulator row")
+        assertEqual(fx.programsRun.filter { $0.contains("simctl") }, [], "...simctl is never looked for elsewhere")
+        assertTrue(fx.programsRun.allSatisfy { !$0.contains("xcrun") }, "...and xcrun never runs")
+        try? FileManager.default.removeItem(atPath: fx.base + "/developer-dir")
+        assertTrue(!MacTweaksStorage.scan(fx.environment, only: ["simulators"]).contains { $0.id == "simulators" },
+                   "No developer folder at all: no row either")
+
+        // A simulator row whose simctl has gone by the time it applies.
+        fx.write("developer-dir", fx.developer + "\n")
+        let offered = MacTweaksStorage.scan(fx.environment, only: ["simulators"])
+        assertEqual(offered.first?.items.map(\.target), [unavailable], "(offered while simctl is there)")
+        fx.write("developer-dir", commandLineTools + "\n")
+        fx.clearRecords()
+        let result = MacTweaksStorage.apply(offered, environment: fx.environment)
+        assertEqual(result.receipt.problems, ["Unavailable simulators stay: simctl is no longer where Xcode keeps it."],
+                    "simctl gone: the simulators stay and the receipt says why")
+        assertTrue(FileManager.default.fileExists(atPath: unavailable) && result.receipt.lines.isEmpty,
+                   "...and nothing is counted as deleted, though a rescan without simctl would see none")
+        assertEqual(result.rescanned.first?.items.map(\.target), [unavailable], "...so the row stays offered")
+        assertTrue(fx.programsRun.allSatisfy { !$0.contains("xcrun") } && fx.adminScripts.isEmpty, "...still no xcrun, and no prompt")
+        assertEqual(MacTweaksProvider.Environment.live.xcodeSelect, "/usr/bin/xcode-select", "The live engine asks xcode-select itself")
+        assertEqual(MacTweaksProvider.Environment.live.tmutil, "/usr/bin/tmutil", "...and runs tmutil from /usr/bin")
+        let source = (try? String(contentsOfFile: "Sources/Lightspot/Core/MacTweaksStorage.swift", encoding: .utf8)) ?? ""
+        assertTrue(!source.isEmpty && !source.contains("\"/usr/bin/xcrun\""), "The engine has no path to xcrun to run")
+
+        print("✅ MacTweaks without developer tools passed all tests!\n")
+    }
+
+    // MARK: Test 46: sections, the search row, and the scan → apply state machine
+
+    static func testMacTweaksProvider() {
+        print("Testing MacTweaksProvider...")
+        assertEqual(MacTweaksSection.built, [.freeUpSpace], "Phase 1 builds Free Up Space only")
+        assertEqual(MacTweaksSection.allCases.map(\.title), ["Free Up Space", "Apple Intelligence", "Settings", "Background Items"],
+                    "All four sections are modelled, in tab order")
+        assertTrue(MacTweaksSection.allCases.allSatisfy { !$0.symbol.isEmpty }, "...each with an SF Symbol")
+        assertTrue(MacTweaksSection.built.allSatisfy { MacTweaksProvider.engine(for: $0, environment: MacTweaksFixture("engines").environment) != nil },
+                   "Every built section has an engine")
+
+        for (bytes, shown) in [(Int64(999_499), "999 KB"), (999_500, "1 MB"), (999_499_999, "999 MB"), (999_500_000, "1.0 GB"),
+                               (16_300_000_000, "16.3 GB"), (1, "1 KB")] {
+            assertEqual(MacTweaksProvider.size(bytes), shown, "\(bytes) bytes show as \(shown)")
+        }
+
+        // The search row: static keywords and the last scan's total; never a bare word or an
+        // app's name that another row answers to.
+        let (fx, _, _) = stockMacTweaksFixture("provider")
+        let provider = MacTweaksProvider(environment: fx.environment)
+        func score(_ query: String) -> Double? { provider.search(SearchQuery(query)).first?.score }
+        assertEqual(score("mac tweaks"), 100, "The name is exact")
+        for query in ["free up space", "tweaks", "debloat", "time machine snapshots", "ipsw", "app caches", "remove garageband"] {
+            assertEqual(score(query), 95, "'\(query)' is an exact keyword")
+        }
+        for query in ["storage", "clean", "dock"] {
+            assertEqual(score(query), nil, "'\(query)' belongs to another row")
+        }
+        for app in ["pages", "garageband", "keynote", "numbers", "imovie"] {
+            assertTrue((score(app) ?? 0) < 85, "Typing '\(app)' leaves the app itself first (\(score(app) ?? 0))")
+        }
+        assertEqual(score("free up space"), CleanDevMacProvider.shared.search(SearchQuery("free up space")).first?.score,
+                    "Mac Tweaks and Clean Dev Mac tie on 'free up space'; SearchEngine asks Mac Tweaks first")
+        let row = provider.search(SearchQuery("mac tweaks")).first
+        assertEqual(row?.subtitle, "Free up space and tidy macOS", "Before a scan the row says what it does")
+        if case .runQuickAction(let script, let usesOsascript) = row?.action {
+            assertTrue(script == MacTweaksProvider.openScript && !usesOsascript, "The row opens the overlay and runs nothing itself")
+        } else {
+            assertTrue(false, "The row's action is Mac Tweaks' sentinel")
+        }
+        assertEqual(SearchHistoryManager.persistableSubtitle(itemId: MacTweaksProvider.resultID, subtitle: "16.3 GB you can free"),
+                    MacTweaksProvider.fixedSubtitle, "Search history never keeps a scan's sizes")
+
+        // The state machine: open scans, a recent scan stands, an old one is scanned again.
+        func wait(_ done: (MacTweaksProvider.SectionState) -> Bool) -> MacTweaksProvider.SectionState {
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                let state = provider.snapshot[.freeUpSpace]
+                if done(state) { return state }
+                usleep(10_000)
+            }
+            print("❌ FAIL: Mac Tweaks never got there; it is at \(provider.snapshot[.freeUpSpace].phase)")
+            exit(1)
+        }
+        assertEqual(provider.snapshot[.freeUpSpace].phase, .idle, "A new provider has not scanned")
+        provider.open(.freeUpSpace)
+        let ready = wait { $0.phase == .ready }
+        assertEqual(ready.generation, 1, "Opening scans")
+        assertEqual(provider.snapshot.freeableBytes, MacTweaksProvider.freeableBytes(ready.rows), "...and keeps the total for the row")
+        assertEqual(provider.search(SearchQuery("tweaks")).first?.subtitle,
+                    "\(MacTweaksProvider.size(MacTweaksProvider.freeableBytes(ready.rows))) you can free", "The row shows it")
+        provider.open(.freeUpSpace)
+        assertEqual(provider.snapshot[.freeUpSpace].generation, 1, "Opening again within five minutes reuses the scan")
+        provider.overlayClosed()
+        assertEqual(provider.snapshot[.freeUpSpace].rows, ready.rows, "Closing keeps a scan that still stands")
+        fx.advanceClock(6 * 60)
+        provider.overlayClosed()
+        let dropped = provider.snapshot
+        assertTrue(dropped[.freeUpSpace].rows.isEmpty && dropped[.freeUpSpace].phase == .idle, "Closing drops an old scan's paths and sizes")
+        assertEqual(dropped.freeableBytes, MacTweaksProvider.freeableBytes(ready.rows), "...keeping only the row's total")
+        provider.open(.freeUpSpace)
+        let again = wait { $0.phase == .ready && $0.generation == 2 }
+        assertEqual(again.rows.map(\.id), ready.rows.map(\.id), "Opening after that scans again")
+
+        // Applying: only from a scan, only rows that aren't links; the receipt stands.
+        provider.apply(.freeUpSpace, ids: ["clean-dev-mac"])
+        assertEqual(provider.snapshot[.freeUpSpace].phase, .ready, "A link row is never applied")
+        provider.apply(.freeUpSpace, ids: ["installers", "caches"])
+        let finished = wait { $0.phase == .finished }
+        assertTrue(finished.receipt?.headline.hasPrefix("Freed ") == true, "Applying ends on a receipt")
+        assertEqual(finished.rows.map(\.id), again.rows.map(\.id).filter { $0 != "installers" && $0 != "caches" },
+                    "...with the applied rows scanned again: emptied, they are gone")
+        assertTrue(!FileManager.default.fileExists(atPath: fx.root + "/Applications/Install macOS Sequoia.app"), "...having moved what was ticked")
+        assertTrue(FileManager.default.fileExists(atPath: fx.root + "/Applications/GarageBand.app"), "...and nothing else")
+        provider.apply(.freeUpSpace, ids: ["imovie"])
+        assertEqual(provider.snapshot[.freeUpSpace].phase, .finished, "A finished scan is never applied again")
+        provider.open(.freeUpSpace)
+        assertEqual(provider.snapshot[.freeUpSpace].phase, .finished, "Reopening soon after shows the receipt")
+        provider.overlayClosed()
+        let afterReceipt = provider.snapshot[.freeUpSpace]
+        assertTrue(afterReceipt.rows.isEmpty && afterReceipt.receipt == finished.receipt, "Closing drops the rows behind a receipt, not the receipt")
+        provider.startScan(.freeUpSpace, force: true)
+        let rescanned = wait { $0.phase == .ready && $0.generation == 3 }
+        assertTrue(rescanned.receipt == nil, "↵ on the receipt scans again")
+
+        // The plan's closing sentences.
+        func notes(_ ids: [String]) -> [String] { provider.planNotes(.freeUpSpace, rows: again.rows.filter { ids.contains($0.id) }) }
+        assertEqual(notes(["installers"]), ["Files go to the Trash."], "Files go to the Trash")
+        assertEqual(notes(["installers", "simulators", "snapshots"]),
+                    ["Files go to the Trash.", "Simulators and snapshots are deleted right away.", "macOS may ask for Touch ID or your password."],
+                    "Simulators and snapshots are deleted right away, and snapshots may need Touch ID or the password")
+        assertEqual(notes(["simulators"]), ["Simulators are deleted right away."], "No password for simulators alone")
+
+        print("✅ MacTweaksProvider passed all tests!\n")
+    }
 }

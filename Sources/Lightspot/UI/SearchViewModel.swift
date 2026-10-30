@@ -39,6 +39,18 @@ final class SearchViewModel: ObservableObject {
     @Published var isCleanerPresented: Bool = false
     let cleaner = CleanDevMacModel()
 
+    // Mac Tweaks. Its model is made the first time it opens, so launch builds nothing for
+    // it; like the cleaner's, the overlay observes it directly.
+    @Published var isTweaksPresented: Bool = false
+    private var tweaksModel: MacTweaksModel?
+    var tweaks: MacTweaksModel {
+        if let tweaksModel { return tweaksModel }
+        let model = MacTweaksModel()
+        model.onLink = { [weak self] link in self?.openTweaksLink(link) }
+        tweaksModel = model
+        return model
+    }
+
     // MARK: - Dependencies
     weak var hotkeyManager: HotkeyManager?
     weak var menuBarController: MenuBarController?
@@ -157,7 +169,8 @@ final class SearchViewModel: ObservableObject {
         case .launchApp, .openSettings, .openURL: return "Open"
         case .openFolder, .openProject: return "Open ↵ · Terminal ⌘↵ · Finder ⌥↵"
         case .killProcess(_, _, let force): return force ? "Force Kill" : "Terminate"
-        case .runQuickAction(let script, _) where script == CleanDevMacProvider.openScript: return "Open"
+        case .runQuickAction(let script, _) where script == CleanDevMacProvider.openScript || script == MacTweaksProvider.openScript:
+            return "Open"
         case .runInTerminal, .runQuickAction: return "Run"
         case .copyToClipboard: return "Copy"
         case .openWebSearch: return "Search"
@@ -236,7 +249,9 @@ final class SearchViewModel: ObservableObject {
     // MARK: - 2D Keyboard Navigation
 
     func moveLeft() {
-        if isCleanerPresented {
+        if isTweaksPresented {
+            tweaks.moveUp()
+        } else if isCleanerPresented {
             cleaner.moveUp()
         } else if isCustomCommandManagerPresented {
             moveUp()
@@ -254,7 +269,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveRight() {
-        if isCleanerPresented {
+        if isTweaksPresented {
+            tweaks.moveDown()
+        } else if isCleanerPresented {
             cleaner.moveDown()
         } else if isCustomCommandManagerPresented {
             moveDown()
@@ -273,7 +290,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveUp() {
-        if isCleanerPresented {
+        if isTweaksPresented {
+            tweaks.moveUp()
+        } else if isCleanerPresented {
             cleaner.moveUp()
         } else if isCustomCommandManagerPresented {
             guard !customCommands.isEmpty else { return }
@@ -301,7 +320,9 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveDown() {
-        if isCleanerPresented {
+        if isTweaksPresented {
+            tweaks.moveDown()
+        } else if isCleanerPresented {
             cleaner.moveDown()
         } else if isCustomCommandManagerPresented {
             guard !customCommands.isEmpty else { return }
@@ -332,6 +353,11 @@ final class SearchViewModel: ObservableObject {
     }
 
     func nextCategory() {
+        if isTweaksPresented {
+            // Tab switches Mac Tweaks' sections, as it switches the panel's categories.
+            tweaks.nextSection()
+            return
+        }
         if isCleanerPresented {
             // Tab answers the cleaner's "Also scan your code repos?".
             cleaner.scanRepos()
@@ -346,6 +372,10 @@ final class SearchViewModel: ObservableObject {
     }
 
     func previousCategory() {
+        if isTweaksPresented {
+            tweaks.previousSection()
+            return
+        }
         if isCleanerPresented || isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
@@ -355,6 +385,11 @@ final class SearchViewModel: ObservableObject {
     }
 
     func activateSelected() {
+        if isTweaksPresented {
+            tweaks.primaryAction()
+            return
+        }
+
         if isCleanerPresented {
             cleaner.primaryAction()
             return
@@ -406,9 +441,13 @@ final class SearchViewModel: ObservableObject {
                 RecentAppsManager.shared.recordLaunch(bundleIdentifier: bundleId)
             }
 
-            // The cleaner opens inside the panel, so the panel stays.
+            // The cleaner and Mac Tweaks open inside the panel, so the panel stays.
             if case .runQuickAction(let script, _) = result.action, script == CleanDevMacProvider.openScript {
                 showCleaner()
+                return
+            }
+            if case .runQuickAction(let script, _) = result.action, script == MacTweaksProvider.openScript {
+                showTweaks()
                 return
             }
 
@@ -481,6 +520,17 @@ final class SearchViewModel: ObservableObject {
 
     /// Secondary action: triggered by Option+Return (⌥↵) - Opens Finder for projects
     func activateSecondary() {
+        if isTweaksPresented {
+            // The row's file in Finder. A scan or an apply stays in the provider, so Mac
+            // Tweaks reopens where it was.
+            guard let path = tweaks.revealPath else { return }
+            onHide?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+            }
+            return
+        }
+
         if isCleanerPresented {
             // The scan stays in the provider, so the cleaner reopens where it was.
             onHide?()
@@ -494,6 +544,13 @@ final class SearchViewModel: ObservableObject {
 
         // Record selection in SearchHistoryManager
         SearchHistoryManager.shared.recordSelection(result: result, query: query)
+
+        // Mac Tweaks' row opens the overlay with any of its keys, rather than hiding the panel
+        // for nothing.
+        if case .runQuickAction(let script, _) = result.action, script == MacTweaksProvider.openScript {
+            showTweaks()
+            return
+        }
 
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -534,6 +591,9 @@ final class SearchViewModel: ObservableObject {
 
     /// Tertiary action: triggered by Command+Return (⌘↵) - Opens Terminal for projects
     func activateFinder() {
+        // ⌘↵ has no meaning in Mac Tweaks.
+        if isTweaksPresented { return }
+
         if isCleanerPresented {
             openCdmInTerminal()
             return
@@ -543,6 +603,11 @@ final class SearchViewModel: ObservableObject {
 
         // Record selection in SearchHistoryManager
         SearchHistoryManager.shared.recordSelection(result: result, query: query)
+
+        if case .runQuickAction(let script, _) = result.action, script == MacTweaksProvider.openScript {
+            showTweaks()
+            return
+        }
 
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -615,7 +680,12 @@ final class SearchViewModel: ObservableObject {
     }
 
     func handleCancel() {
-        if isCleanerPresented {
+        if isTweaksPresented {
+            // Esc backs out of the plan first, then closes Mac Tweaks.
+            if !tweaks.cancelConfirmation() {
+                hideTweaks()
+            }
+        } else if isCleanerPresented {
             // Esc backs out of the plan first, then closes the cleaner.
             if !cleaner.cancelConfirmation() {
                 hideCleaner()
@@ -648,6 +718,7 @@ final class SearchViewModel: ObservableObject {
         isHistoryManagerPresented = false
         isCustomCommandManagerPresented = false
         isCleanerPresented = false
+        hideTweaks()
         pinnedCommands = PinnedCommandsStore.shared.commands()
         historyEntries = SearchHistoryManager.shared.entries()
         customCommands = CustomCommandsStore.shared.entries()
@@ -665,6 +736,7 @@ final class SearchViewModel: ObservableObject {
         isHistoryManagerPresented = false
         isCustomCommandManagerPresented = false
         isCleanerPresented = false
+        hideTweaks()
         pinnedCommands.removeAll(keepingCapacity: false)
         historyEntries.removeAll(keepingCapacity: false)
         customCommands.removeAll(keepingCapacity: false)
@@ -678,6 +750,7 @@ final class SearchViewModel: ObservableObject {
     func showHistoryManager() {
         if isPinManagerPresented { isPinManagerPresented = false }
         if isCleanerPresented { isCleanerPresented = false }
+        if isTweaksPresented { hideTweaks() }
         historyEntries = SearchHistoryManager.shared.entries()
         historySelectedIndex = 0
         if !isPanelExpanded {
@@ -742,6 +815,10 @@ final class SearchViewModel: ObservableObject {
             showCleaner()
             return
         }
+        if case .runQuickAction(let script, _) = entry.action, script == MacTweaksProvider.openScript {
+            showTweaks()
+            return
+        }
 
         onHide?()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
@@ -783,6 +860,7 @@ final class SearchViewModel: ObservableObject {
         if isPinManagerPresented { isPinManagerPresented = false }
         if isHistoryManagerPresented { isHistoryManagerPresented = false }
         if isCleanerPresented { isCleanerPresented = false }
+        if isTweaksPresented { hideTweaks() }
         customCommands = CustomCommandsStore.shared.entries()
         customCommandSelectedIndex = 0
         if !isPanelExpanded {
@@ -860,6 +938,7 @@ final class SearchViewModel: ObservableObject {
         if isPinManagerPresented { isPinManagerPresented = false }
         if isHistoryManagerPresented { isHistoryManagerPresented = false }
         if isCustomCommandManagerPresented { isCustomCommandManagerPresented = false }
+        if isTweaksPresented { hideTweaks() }
         if !isPanelExpanded {
             isPanelExpanded = true
             updateHeight()
@@ -881,12 +960,56 @@ final class SearchViewModel: ObservableObject {
         }
     }
 
-    /// Space ticks the selected category while the cleaner is open; returns false to
-    /// let it type a space otherwise.
+    /// Space ticks the selected row while the cleaner or Mac Tweaks is open; returns false
+    /// to let it type a space otherwise.
     func handleSpaceKey() -> Bool {
+        if isTweaksPresented {
+            tweaks.toggleCursor()
+            return true
+        }
         guard isCleanerPresented else { return false }
         cleaner.toggleCursor()
         return true
+    }
+
+    // MARK: - Mac Tweaks
+
+    /// Opens Mac Tweaks over the results; the section on show scans unless it is busy or a
+    /// recent scan or receipt stands. Only one overlay shows at a time.
+    func showTweaks() {
+        if isPinManagerPresented { isPinManagerPresented = false }
+        if isHistoryManagerPresented { isHistoryManagerPresented = false }
+        if isCustomCommandManagerPresented { isCustomCommandManagerPresented = false }
+        if isCleanerPresented { isCleanerPresented = false }
+        if !isPanelExpanded {
+            isPanelExpanded = true
+            updateHeight()
+        }
+        isTweaksPresented = true
+        tweaks.open()
+    }
+
+    /// Closes Mac Tweaks; the provider drops what no longer needs to stay in memory. Also
+    /// run when the panel shows or hides; nothing to do if Mac Tweaks was never opened.
+    func hideTweaks() {
+        isTweaksPresented = false
+        tweaksModel?.close()
+    }
+
+    /// ↵ on one of Free Up Space's link rows.
+    func openTweaksLink(_ link: MacTweaksLink) {
+        switch link {
+        case .cleanDevMac:
+            showCleaner()
+        case .settings(let deepLink):
+            hideTweaks()
+            onHide?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                if let url = URL(string: deepLink) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
     }
 
     // MARK: - Pinned Commands
@@ -894,6 +1017,7 @@ final class SearchViewModel: ObservableObject {
     func showPinManager() {
         if isHistoryManagerPresented { isHistoryManagerPresented = false }
         if isCleanerPresented { isCleanerPresented = false }
+        if isTweaksPresented { hideTweaks() }
         pinnedCommands = PinnedCommandsStore.shared.commands()
         pinSelectedIndex = 0
         if !isPanelExpanded {
@@ -918,7 +1042,7 @@ final class SearchViewModel: ObservableObject {
     /// ⌘P: pins or unpins the selected history result, or unpins the selected row
     /// while the manager is open.
     func togglePinForSelection() {
-        if isCleanerPresented { return }
+        if isCleanerPresented || isTweaksPresented { return }
         if isPinManagerPresented {
             unpinCommand(at: pinSelectedIndex)
             return

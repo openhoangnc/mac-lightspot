@@ -619,6 +619,12 @@ enum CleanDevMacEngine {
     /// kills the command; a child that left the group and keeps the pipe open is waited
     /// for one second more, not forever.
     static func output(of executable: String, _ arguments: [String], timeout: TimeInterval) -> String {
+        run(executable, arguments, timeout: timeout).output
+    }
+
+    /// `output(of:)` with the exit status: -1 when the program could not start or was
+    /// stopped at `timeout`.
+    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -629,7 +635,7 @@ enum CleanDevMacEngine {
         do {
             try process.run()
         } catch {
-            return ""
+            return (-1, "")
         }
         let reader = pipe.fileHandleForReading.fileDescriptor
         _ = fcntl(reader, F_SETFL, fcntl(reader, F_GETFL, 0) | O_NONBLOCK)
@@ -655,7 +661,7 @@ enum CleanDevMacEngine {
         }
         if process.isRunning { process.terminate() }
         process.waitUntilExit()
-        return String(decoding: data, as: UTF8.self)
+        return (stopped ? -1 : process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
     /// Blocking, five seconds at most per part: cdm's `restart_stats` for the volume
@@ -1166,7 +1172,11 @@ enum CleanDevMacEngine {
     /// Appends one run's receipt, rotating first. Best effort: a log that cannot be written
     /// never stops or fails a clean.
     static func appendToLog(_ text: String, home: String, now: Date = Date()) {
-        let url = logURL(home: home)
+        appendToLog(text, url: logURL(home: home), now: now)
+    }
+
+    /// The same for any log kept under cdm's cap (Mac Tweaks' receipts).
+    static func appendToLog(_ text: String, url: URL, now: Date = Date()) {
         let fm = FileManager.default
         try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if let existing = try? Data(contentsOf: url), let rotated = rotatedLog(existing, now: now) {

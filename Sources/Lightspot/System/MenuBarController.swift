@@ -10,6 +10,7 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
     var onManagePins: (() -> Void)?
     var onManageHistory: (() -> Void)?
     var onOpenCleaner: (() -> Void)?
+    var onOpenTweaks: (() -> Void)?
     var onEnsurePanelVisible: (() -> Bool)?
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -135,6 +136,10 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
         let cleanerItem = NSMenuItem(title: "Clean Dev Mac...", action: #selector(openCleanerAction), keyEquivalent: "")
         cleanerItem.target = self
         menu.addItem(cleanerItem)
+
+        let tweaksItem = NSMenuItem(title: "Mac Tweaks...", action: #selector(openTweaksAction), keyEquivalent: "")
+        tweaksItem.target = self
+        menu.addItem(tweaksItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -456,6 +461,10 @@ final class MenuBarController: NSObject, NSMenuDelegate, NSMenuItemValidation {
 
     @objc private func openCleanerAction() {
         onOpenCleaner?()
+    }
+
+    @objc private func openTweaksAction() {
+        onOpenTweaks?()
     }
 
     @objc private func exportSettingsAction() {

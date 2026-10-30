@@ -454,6 +454,97 @@ struct DeepVerifier {
             print("Claude Code: no note (no history, desktopSessionCleanupPeriodDays is set, or nothing is past the limit)")
         }
 
+        // ----------------------------------------------------
+        // SECTION 12: Mac Tweaks' Free Up Space on this Mac — reads only, never moves
+        // ----------------------------------------------------
+        print("\n--- 12. Testing Mac Tweaks' Free Up Space on this Mac (reads only) ---")
+        let tweaksRecord = TweaksRecorder()
+        var tweaksEnvironment = MacTweaksProvider.Environment.live
+        let liveRun = tweaksEnvironment.run
+        tweaksEnvironment.run = { executable, arguments, timeout in
+            tweaksRecord.ran(([executable] + arguments).joined(separator: " "))
+            return liveRun(executable, arguments, timeout)
+        }
+        // The live scan never moves anything or asks for a password; if it tried, it fails here.
+        tweaksEnvironment.moveToTrash = { url in
+            tweaksRecord.forbidden("moveToTrash " + url.path)
+            throw CocoaError(.featureUnsupported)
+        }
+        tweaksEnvironment.runAdmin = { _ in
+            tweaksRecord.forbidden("runAdmin")
+            return .refused("deep_verify never asks for a password")
+        }
+        // The app falls back on the rules inside Lightspot.app; this runner has none, so it
+        // uses the repository's copy, the same files.
+        let shippedRules = bundledRules
+        tweaksEnvironment.cleanDevMacRules = { home in MacTweaksStorage.cleanDevMacRules(home: home) ?? shippedRules }
+        let residentBefore = residentBytes()
+        let tweaksStarted = Date()
+        var tweakRows: [MacTweaksRow]? = MacTweaksStorage.scan(tweaksEnvironment)
+        let tweaksSeconds = Date().timeIntervalSince(tweaksStarted)
+        let rowsFound = tweakRows ?? []
+        for row in rowsFound {
+            print("     \(row.title): \(row.isLink ? "link" : "\(row.items.count) items, \(row.value)")\(row.tags.isEmpty ? "" : " [" + row.tags.joined(separator: ", ") + "]")")
+        }
+        let offeredItems = rowsFound.filter { !$0.isLink }.flatMap { row in row.items.map { (row, $0) } }
+        print("Free Up Space found \(MacTweaksProvider.size(MacTweaksProvider.freeableBytes(rowsFound))) in \(rowsFound.filter { !$0.isLink }.count) rows (\(offeredItems.count) items) in \(String(format: "%.1f", tweaksSeconds)) s")
+        check("Free Up Space scans this Mac within 60 s", tweaksSeconds < 60)
+        check("The scan never moves a file or asks for a password", tweaksRecord.forbiddenCalls.isEmpty)
+        check("xcrun is never run", tweaksRecord.programs.allSatisfy { !$0.hasPrefix("/usr/bin/xcrun") })
+        check("It runs only xcode-select, simctl and tmutil",
+              tweaksRecord.programs.allSatisfy { $0.hasPrefix("/usr/bin/xcode-select -p") || $0.hasPrefix("/usr/bin/tmutil listlocalsnapshotdates /")
+                  || $0.contains("/usr/bin/simctl list devices unavailable -j") })
+        let tweaksRoots = MacTweaksStorage.Roots(tweaksEnvironment)
+        check("Every offered path passes the gate again", offeredItems.allSatisfy { row, item in
+            row.id == "snapshots" || MacTweaksStorage.isAllowed(item.target, MacTweaksStorage.RowID(rawValue: row.id)!, environment: tweaksEnvironment, roots: tweaksRoots)
+        })
+        check("Nothing is offered under /System or in a folder macOS guards", offeredItems.allSatisfy { _, item in
+            tweaksRoots.neverTouched.allSatisfy { !MacTweaksStorage.isInside(item.target, $0) }
+        })
+        check("Every file row is sized item by item", rowsFound.filter { !$0.isLink && $0.id != "snapshots" }.allSatisfy { row in
+            row.items.allSatisfy { $0.bytes > 0 } && row.bytes == row.items.reduce(0) { $0 + $1.bytes }
+        })
+        let cacheNames = (try? FileManager.default.contentsOfDirectory(atPath: tweaksRoots.caches.lexical)) ?? []
+        let appleNamed = cacheNames.filter { MacTweaksStorage.isAppleCache($0) && !$0.lowercased().hasPrefix("com.apple.") }.sorted()
+        print("     macOS's caches here without a com.apple. name, kept out: \(appleNamed.joined(separator: ", "))")
+        check("No cache macOS or Lightspot owns is offered", (rowsFound.first { $0.id == "caches" }?.items ?? []).allSatisfy { item in
+            let name = (item.target as NSString).lastPathComponent
+            return !MacTweaksStorage.isAppleCache(name) && name != "com.lightspot.app"
+        })
+        let cleanerCaches = cacheNames.filter { tweaksRoots.isCleanDevMacCache($0) }.sorted()
+        print("     Left to Clean Dev Mac (\(tweaksRoots.cleanDevMacCacheGlobs.count) globs from its rules): \(cleanerCaches.joined(separator: ", "))")
+        check("App caches offers nothing Clean Dev Mac's rules reach", !tweaksRoots.cleanDevMacCacheGlobs.isEmpty
+              && (rowsFound.first { $0.id == "caches" }?.items ?? []).allSatisfy { !tweaksRoots.isCleanDevMacCache(($0.target as NSString).lastPathComponent) })
+        let directDates = MacTweaksStorage.snapshotDates(tmutilOutput: CleanDevMacEngine.output(of: "/usr/bin/tmutil", ["listlocalsnapshotdates", "/"], timeout: 30))
+        check("The snapshot row lists what tmutil lists (\(directDates.count))",
+              (rowsFound.first { $0.id == "snapshots" }?.items.map(\.target) ?? []) == directDates)
+        let devicesFolder = tweaksRoots.simulatorDevices.lexical
+        let selectedDeveloper = CleanDevMacEngine.output(of: "/usr/bin/xcode-select", ["-p"], timeout: 10).trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSimctl = MacTweaksStorage.isFolder(devicesFolder) && FileManager.default.isExecutableFile(atPath: selectedDeveloper + "/usr/bin/simctl")
+        print("     Developer folder: \(selectedDeveloper.isEmpty ? "none" : selectedDeveloper); simulator devices folder \(MacTweaksStorage.isFolder(devicesFolder) ? "present" : "absent")")
+        if !hasSimctl {
+            check("Without Xcode's simctl there is no simulator row", !rowsFound.contains { $0.id == "simulators" })
+            check("...and simctl is never run", tweaksRecord.programs.allSatisfy { !$0.contains("simctl") })
+        }
+        // The gate's physical half: on a real Mac each fixed folder resolves to itself.
+        for folder in ["/Applications", "/Library/Application Support", "/Library/Audio/Apple Loops",
+                       "/Library/Application Support/com.apple.idleassetsd/Customer", tweaksRoots.caches.lexical]
+        where MacTweaksStorage.isFolder(folder) {
+            check("\(folder) resolves to itself", MacTweaksStorage.resolved(folder) == folder)
+        }
+        check("Both link rows are offered", rowsFound.filter(\.isLink).map(\.id) == ["clean-dev-mac", "storage-settings"])
+        check("The Storage link names an installed System Settings pane", panes["com.apple.settings.Storage"] != nil)
+        let symbols = [MacTweaksProvider.symbol, "xmark.circle.fill", "checkmark.square.fill", "square", "arrow.up.forward.square",
+                       "checkmark.circle.fill"]
+            + MacTweaksSection.allCases.map(\.symbol) + MacTweaksStorage.catalog.map(\.symbol)
+        let missingSymbols = symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
+        check("Every SF Symbol Mac Tweaks draws exists\(missingSymbols.isEmpty ? "" : ": missing " + missingSymbols.joined(separator: ", "))", missingSymbols.isEmpty)
+        // What the scan leaves in memory once its rows go (in this runner, not the app).
+        tweakRows = nil
+        malloc_zone_pressure_relief(nil, 0)
+        let residentAfter = residentBytes()
+        print("     Resident memory: \(residentBefore / 1_048_576) MB before the scan, \(residentAfter / 1_048_576) MB once its rows were dropped")
+
         print("\n======================================================")
         print("  SUMMARY: \(passedChecks) / \(totalChecks) CHECKS PASSED")
         print("======================================================")
@@ -471,4 +562,26 @@ struct DeepVerifier {
 /// Carries the fetched rules out of their completion handler.
 final class LiveRulesBox: @unchecked Sendable {
     var value: CleanDevMacRuleSet?
+}
+
+/// What the live Mac Tweaks scan ran, and anything it must never do.
+final class TweaksRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ranPrograms: [String] = []
+    private var forbiddenList: [String] = []
+
+    func ran(_ line: String) { lock.lock(); ranPrograms.append(line); lock.unlock() }
+    func forbidden(_ line: String) { lock.lock(); forbiddenList.append(line); lock.unlock() }
+    var programs: [String] { lock.lock(); defer { lock.unlock() }; return ranPrograms }
+    var forbiddenCalls: [String] { lock.lock(); defer { lock.unlock() }; return forbiddenList }
+}
+
+/// This process's resident memory, as Activity Monitor's Memory column counts it.
+func residentBytes() -> UInt64 {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+    }
+    return result == KERN_SUCCESS ? info.phys_footprint : 0
 }

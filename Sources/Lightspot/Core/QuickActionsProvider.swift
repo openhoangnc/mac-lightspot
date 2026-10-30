@@ -330,41 +330,203 @@ final class QuickActionsProvider: Sendable {
         return defaultActions.contains { $0.requiresAdmin && $0.script == trimmed }
     }
 
-    /// Upper bound on a single PTY sudo attempt. pam_tid gives the user three tries at the
-    /// fingerprint dialog; past this we abandon the attempt rather than pin a thread forever.
+    /// Upper bound on authenticating a single PTY sudo attempt. pam_tid gives the user three
+    /// tries at the fingerprint dialog; past this we abandon the attempt rather than pin a
+    /// thread forever. It covers authentication only: once the command has started it runs up
+    /// to `privilegedRunTimeout`.
     private static let touchIDPTYTimeout: TimeInterval = 60
+
+    /// How long a command that has started may run before it is stopped. Generous: a stopped
+    /// command is never run again, so this only keeps a hung one from pinning a thread.
+    private static let privilegedRunTimeout: TimeInterval = 30 * 60
+
+    /// What a privileged script's output is kept to.
+    static let privilegedOutputCap = 256 * 1024
+
+    /// How a script Lightspot built itself ran as root (`runPrivilegedScript`).
+    enum PrivilegedRun: Equatable, Sendable {
+        /// The password dialog was dismissed: nothing ran.
+        case cancelled
+        /// Not authorized (the password refused, not an administrator), or the runner could not
+        /// start: nothing ran.
+        case refused(String)
+        /// The script ran, exactly once: its exit status and its output, capped.
+        case ran(status: Int32, output: String)
+    }
+
+    /// What one Touch ID attempt on the pty came to.
+    enum TouchIDRun: Equatable, Sendable {
+        /// The command started (its start marker reached the pty) and ended. Never run again.
+        case ran(status: Int32, output: String)
+        /// sudo never started it: it asked for a password, timed out, refused, or could not
+        /// start. The password dialog may run it instead.
+        case notStarted
+    }
 
     /// Executes a privileged command using Touch ID via a background pseudo-terminal (PTY).
     /// If /etc/pam.d/sudo_local has pam_tid.so, this triggers native Touch ID without opening any Terminal window.
     /// If Touch ID fails or is unavailable, falls back to AppleScript password authorization.
+    /// A command that started under Touch ID is never run a second time: when it fails, the
+    /// answer is false, with no password dialog.
     ///
     /// Blocking — call from a background queue only, never from the keystroke path.
     @discardableResult
     public static func executePrivilegedWithTouchID(command: String) -> Bool {
-        let clean = normalizePrivilegedCommand(command)
-
-        if TouchIdSudoCache.shared.refreshNow(), runOnTouchIDPTY(clean) {
-            NSLog("QuickActionsProvider: Successfully executed via Touch ID PTY: %@", clean)
-            return true
-        }
-
-        // Fallback to AppleScript Authorization Services (password dialog)
-        return executePrivileged(shellScript: clean)
+        privilegedCommand(normalizePrivilegedCommand(command), touchIDEnabled: TouchIdSudoCache.shared.refreshNow(),
+                          touchID: runOnTouchIDPTY, dialog: { executePrivileged(shellScript: $0) })
     }
 
-    /// Runs `sudo /bin/sh -c <command>` against a headless PTY so pam_tid.so can raise Touch ID.
-    /// Returns false — leaving nothing running — as soon as sudo falls through to a password prompt.
-    private static func runOnTouchIDPTY(_ command: String) -> Bool {
+    /// `executePrivilegedWithTouchID`'s rule, with its two backends handed in: Touch ID on the
+    /// pty first when sudo has it; a run that started there is final, its status the answer;
+    /// only one that never started goes to the password dialog.
+    static func privilegedCommand(_ command: String, touchIDEnabled: Bool, touchID: (String) -> TouchIDRun,
+                                  dialog: (String) -> Bool) -> Bool {
+        if touchIDEnabled, case .ran(let status, _) = touchID(command) {
+            NSLog("QuickActionsProvider: Privileged command ran via Touch ID (status %d)", status)
+            return status == 0
+        }
+        // Fallback to AppleScript Authorization Services (password dialog)
+        return dialog(command)
+    }
+
+    /// Runs a script Lightspot built itself, every argument already single-quoted, as root:
+    /// exactly as given (no `admin:` or `sudo` stripping), after at most one prompt, and never
+    /// a second time once it has started. Touch ID on the pty when sudo has pam_tid, else the
+    /// password dialog. Blocking, and `NSAppleScript` is not thread-safe: one call at a time,
+    /// from a serial background queue.
+    static func runPrivilegedScript(_ script: String) -> PrivilegedRun {
+        privilegedScript(script, touchIDEnabled: TouchIdSudoCache.shared.refreshNow(), touchID: runOnTouchIDPTY,
+                         dialog: runWithPasswordDialog)
+    }
+
+    /// `runPrivilegedScript`'s rule, with its two backends handed in: a run that started under
+    /// Touch ID is final, whatever its status; only one that never started reaches the dialog.
+    static func privilegedScript(_ script: String, touchIDEnabled: Bool, touchID: (String) -> TouchIDRun,
+                                 dialog: (String) -> PrivilegedRun) -> PrivilegedRun {
+        if touchIDEnabled, case .ran(let status, let output) = touchID(script) {
+            NSLog("QuickActionsProvider: Privileged script ran via Touch ID (status %d)", status)
+            return .ran(status: status, output: output)
+        }
+        return dialog(script)
+    }
+
+    /// The password dialog: `do shell script … with administrator privileges`, the script as given.
+    private static func runWithPasswordDialog(_ script: String) -> PrivilegedRun {
+        guard let appleScript = NSAppleScript(source: doShellScriptSource(script)) else {
+            return .refused("The password dialog could not be built.")
+        }
+        var error: NSDictionary?
+        let result = appleScript.executeAndReturnError(&error)
+        let run = error.map {
+            appleScriptOutcome(number: $0[NSAppleScript.errorNumber] as? Int ?? 0, message: $0[NSAppleScript.errorMessage] as? String ?? "")
+        } ?? .ran(status: 0, output: (result.stringValue ?? "").replacingOccurrences(of: "\r", with: "\n"))
+        switch run {
+        case .cancelled: NSLog("QuickActionsProvider: Privileged script cancelled by user")
+        case .refused: NSLog("QuickActionsProvider: Privileged script refused (error %d)", error?[NSAppleScript.errorNumber] as? Int ?? 0)
+        case .ran(let status, _): NSLog("QuickActionsProvider: Privileged script ran via the password dialog (status %d)", status)
+        }
+        return run
+    }
+
+    /// What a `do shell script … with administrator privileges` error means: -128 is the
+    /// dialog dismissed; a positive number is the script's exit status, its message the
+    /// script's stderr (or stdout); anything else (a refused password) ran nothing.
+    static func appleScriptOutcome(number: Int, message: String) -> PrivilegedRun {
+        if number == -128 { return .cancelled }
+        if number > 0 { return .ran(status: Int32(clamping: number), output: message.replacingOccurrences(of: "\r", with: "\n")) }
+        return .refused(message)
+    }
+
+    /// The command the pty's sudo runs: it first prints `marker`, which only the command itself
+    /// can print, so the marker reaching the pty means sudo authenticated and started it. The
+    /// marker goes in as two halves, so the command line holds no copy of it: sudo echoing the
+    /// command ("…is not allowed to execute '/bin/sh -c …'") can never pass for it. Then stdin
+    /// is /dev/null: sudo needs the pty only before the marker, and a command that asks a
+    /// question must not wait on it.
+    static func markedCommand(_ command: String, marker: String) -> String {
+        let half = marker.index(marker.startIndex, offsetBy: marker.count / 2)
+        return "printf '%s%s\\n' '\(marker[..<half])' '\(marker[half...])'; exec </dev/null; " + command
+    }
+
+    /// Ends `process` (sudo): SIGTERM, which sudo passes on to its command; past `grace`,
+    /// SIGKILL, which it can't pass on, so a command that started may run on as root. Whether
+    /// sudo, which runs as root, takes the user's signals once its command runs could not be
+    /// checked without a prompt: `kill` says, and the log with it. Either way the wait ends.
+    /// True once sudo is gone.
+    static func stop(_ process: Process, grace: TimeInterval = 5) -> Bool {
+        process.terminate()
+        if waitForExit(process, seconds: grace) { return true }
+        if kill(process.processIdentifier, SIGKILL) == 0 {
+            NSLog("QuickActionsProvider: sudo ignored SIGTERM and was killed; the command it started may still be running as root")
+        } else {
+            NSLog("QuickActionsProvider: sudo could not be stopped (errno %d); it may still be running", errno)
+        }
+        return waitForExit(process, seconds: 2)
+    }
+
+    private static func waitForExit(_ process: Process, seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while process.isRunning && Date() < deadline { usleep(20_000) }
+        return !process.isRunning
+    }
+
+    /// Reads what non-blocking `fd` holds, handing each chunk to `take`, until it has nothing
+    /// more, `limit` bytes are read, or `seconds` pass: a child that keeps the pty open and
+    /// keeps writing can't keep it reading.
+    static func drain(_ fd: Int32, seconds: TimeInterval, limit: Int, _ take: (ArraySlice<UInt8>) -> Void) {
+        var buf = [UInt8](repeating: 0, count: 4096)
+        var total = 0
+        let deadline = Date().addingTimeInterval(seconds)
+        while total < limit && Date() < deadline {
+            let n = read(fd, &buf, buf.count)
+            if n > 0 {
+                take(buf[0..<n])
+                total += n
+            } else if !(n < 0 && errno == EINTR) {
+                break
+            }
+        }
+    }
+
+    /// How a Touch ID run ended, from everything the pty printed (`transcript`, read to the
+    /// end after the process exited) and its exit status. The marker decides: with it the
+    /// command ran, whatever came before or after it (sudo's `Password:` cannot come after,
+    /// and a `Password:` the command printed is its own output); without it, it never started.
+    /// The output is what followed the marker's line, with the pty's `\r\n` made `\n`.
+    static func touchIDVerdict(transcript: String, marker: String, status: Int32) -> TouchIDRun {
+        guard let found = transcript.range(of: marker) else { return .notStarted }
+        var output = String(transcript[found.upperBound...]).replacingOccurrences(of: "\r\n", with: "\n")
+        if output.hasPrefix("\n") { output.removeFirst() }
+        return .ran(status: status, output: output)
+    }
+
+    private static func contains(_ haystack: ArraySlice<UInt8>, _ needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty, haystack.count >= needle.count else { return false }
+        var index = haystack.startIndex
+        while index + needle.count <= haystack.endIndex {
+            if haystack[index] == needle[0] && haystack[index..<index + needle.count].elementsEqual(needle) { return true }
+            index += 1
+        }
+        return false
+    }
+
+    /// Runs `sudo /bin/sh -c <command>` against a headless PTY so pam_tid.so can raise Touch ID,
+    /// the command preceded by a random start marker (`markedCommand`). Before the marker,
+    /// sudo's `Password:` prompt (Touch ID unavailable or cancelled) or `touchIDPTYTimeout`
+    /// ends the attempt, leaving nothing running. After it, the command runs to its end.
+    private static func runOnTouchIDPTY(_ command: String) -> TouchIDRun {
         var master: Int32 = -1
         var slave: Int32 = -1
-        guard openpty(&master, &slave, nil, nil, nil) == 0 else { return false }
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else { return .notStarted }
 
+        let marker = "__LS_ROOT_" + UUID().uuidString
+        let markerBytes = Array(marker.utf8)
         // closeOnDealloc is deliberately off: FileHandle would close `slave` a second time and
         // could take down an unrelated descriptor opened meanwhile on one of the background queues.
         let slaveHandle = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["/bin/sh", "-c", command]
+        process.arguments = ["/bin/sh", "-c", markedCommand(command, marker: marker)]
         process.standardInput = slaveHandle
         process.standardOutput = slaveHandle
         process.standardError = slaveHandle
@@ -378,26 +540,40 @@ final class QuickActionsProvider: Sendable {
             close(slave)
             close(master)
             NSLog("QuickActionsProvider: PTY sudo spawn failed: %@", error.localizedDescription)
-            return false
+            return .notStarted
         }
         close(slave)
 
+        var transcript: [UInt8] = []
+        var started = false
         var askedPassword = false
         var timedOut = false
-        var tail = ""
-        var buf = [UInt8](repeating: 0, count: 1024)
-        let deadline = Date().addingTimeInterval(touchIDPTYTimeout)
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let authDeadline = Date().addingTimeInterval(touchIDPTYTimeout)
+        let runDeadline = Date().addingTimeInterval(privilegedRunTimeout)
+
+        /// Keeps what the pty printed, up to the cap (past it the rest is read and dropped, so
+        /// the command never blocks on a full pty), and notes the marker.
+        func take(_ chunk: ArraySlice<UInt8>) {
+            let room = privilegedOutputCap + markerBytes.count - transcript.count
+            if room > 0 { transcript.append(contentsOf: chunk.prefix(room)) }
+            if !started {
+                // The new bytes, and enough before them for a marker split across two reads.
+                let from = max(0, transcript.count - chunk.count - markerBytes.count)
+                started = contains(transcript[from...], markerBytes)
+            }
+        }
 
         while process.isRunning {
-            if Date() >= deadline {
+            if Date() >= (started ? runDeadline : authDeadline) {
                 timedOut = true
                 break
             }
             let n = read(master, &buf, buf.count)
             if n > 0 {
-                // Keep a short tail so a prompt split across two reads is still recognised.
-                tail = String((tail + String(decoding: buf[0..<n], as: UTF8.self)).suffix(256))
-                if tail.localizedCaseInsensitiveContains("Password:") {
+                take(buf[0..<n])
+                // Only sudo prompts before the marker; afterwards it is the command's own output.
+                if !started && String(decoding: transcript.suffix(256), as: UTF8.self).localizedCaseInsensitiveContains("Password:") {
                     askedPassword = true
                     break
                 }
@@ -406,29 +582,38 @@ final class QuickActionsProvider: Sendable {
             }
         }
 
-        if process.isRunning {
-            process.terminate()
-        }
-        process.waitUntilExit()
+        let exited = process.isRunning ? stop(process) : true
+        if exited { process.waitUntilExit() }
+        // What the command printed just before it ended is still in the pty: read it, so a
+        // command that starts and ends between two reads is still seen to have started.
+        drain(master, seconds: 1, limit: privilegedOutputCap, take)
         close(master)
 
-        if !askedPassword && !timedOut && process.terminationStatus == 0 {
-            return true
+        let status = exited ? process.terminationStatus : -1
+        let verdict = touchIDVerdict(transcript: String(decoding: transcript, as: UTF8.self), marker: marker, status: status)
+        if verdict == .notStarted {
+            NSLog("QuickActionsProvider: PTY sudo fell through (status %d, askedPassword: %d, timedOut: %d)",
+                  status, askedPassword ? 1 : 0, timedOut ? 1 : 0)
         }
-        NSLog("QuickActionsProvider: PTY sudo fell through (status %d, askedPassword: %d, timedOut: %d)",
-              process.terminationStatus, askedPassword ? 1 : 0, timedOut ? 1 : 0)
-        return false
+        return verdict
+    }
+
+    /// The AppleScript `executePrivileged` runs: `do shell script` hands `command` to
+    /// `/bin/sh -c`, as root with `administrator`. Only `\` and `"` need escaping inside an
+    /// AppleScript string.
+    static func doShellScriptSource(_ command: String, administrator: Bool = true) -> String {
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "do shell script \"\(escaped)\"" + (administrator ? " with administrator privileges" : "")
     }
 
     /// Executes a shell script with administrator privileges using macOS Authorization Services (Password).
+    /// Logs the outcome only, never the script: its paths would reach the unified log.
     @discardableResult
     public static func executePrivileged(shellScript: String) -> Bool {
         let cleanCommand = normalizePrivilegedCommand(shellScript)
-
-        let escaped = cleanCommand
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let source = "do shell script \"\(escaped)\" with administrator privileges"
+        let source = doShellScriptSource(cleanCommand)
 
         var error: NSDictionary?
         if let appleScript = NSAppleScript(source: source) {
@@ -438,7 +623,7 @@ final class QuickActionsProvider: Sendable {
                 if errNum == -128 {
                     NSLog("QuickActionsProvider: Privileged execution cancelled by user")
                 } else {
-                    NSLog("QuickActionsProvider: Privileged execution failed: %@", error)
+                    NSLog("QuickActionsProvider: Privileged execution failed (error %d)", errNum ?? 0)
                 }
                 return false
             }

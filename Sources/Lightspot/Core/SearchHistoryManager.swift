@@ -397,7 +397,8 @@ final class SearchHistoryManager: @unchecked Sendable {
     /// the local and public IP, the frontmost Finder folder, or the cleaner's last scan.
     private static let quickActionSubtitles: [String: String] = Dictionary(
         QuickActionsProvider.defaultActions.map { ($0.id, $0.subtitle) }
-            + [(CleanDevMacProvider.resultID, CleanDevMacProvider.fixedSubtitle)]
+            + [(CleanDevMacProvider.resultID, CleanDevMacProvider.fixedSubtitle),
+               (MacTweaksProvider.resultID, MacTweaksProvider.fixedSubtitle)]
             + ToolInstallersProvider.installers.map { ($0.resultID, $0.summary) },
         uniquingKeysWith: { first, _ in first }
     )

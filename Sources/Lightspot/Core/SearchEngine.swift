@@ -58,6 +58,11 @@ final class SearchEngine: Sendable {
         // System Hardware HUD (sys, battery, ram, cpu)
         allResults.append(contentsOf: SystemInfoProvider.shared.search(query))
 
+        // Mac Tweaks: static keywords and the last scan's total, never scans from here.
+        // Before Clean Dev Mac, so a phrase both answer to ("free up space") is Mac Tweaks'
+        // Top Hit: its Free Up Space links to the cleaner, not the other way round.
+        allResults.append(contentsOf: MacTweaksProvider.shared.search(query))
+
         // Clean Dev Mac (cdm): reads the last scan's snapshot, never scans from here
         allResults.append(contentsOf: CleanDevMacProvider.shared.search(query))
 

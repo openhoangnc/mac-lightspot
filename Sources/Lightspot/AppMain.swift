@@ -285,6 +285,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.viewModel.showCleaner()
         }
+        menuBarController.onOpenTweaks = { [weak self] in
+            guard let self = self else { return }
+            if !self.panel.isVisible {
+                // showPanel() resets the view model, so open Mac Tweaks afterwards.
+                self.showPanel()
+            }
+            self.viewModel.showTweaks()
+        }
         menuBarController.onEnsurePanelVisible = { [weak self] in
             guard let self = self else { return false }
             if !self.panel.isVisible {

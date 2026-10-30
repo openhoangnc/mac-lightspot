@@ -22,8 +22,8 @@ final class SpotlightFieldEditor: NSTextView {
     /// ⌫ / ⌦. Returns true when a manager overlay consumed the key; otherwise the
     /// key edits the query as usual.
     var onDeleteKey: (@MainActor () -> Bool)?
-    /// Space. Returns true when an overlay consumed it (the cleaner ticks a row);
-    /// otherwise it types a space as usual.
+    /// Space. Returns true when an overlay consumed it (Clean Dev Mac or Mac Tweaks ticks
+    /// a row); otherwise it types a space as usual.
     var onSpaceKey: (@MainActor () -> Bool)?
 
     override func keyDown(with event: NSEvent) {

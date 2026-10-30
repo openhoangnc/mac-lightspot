@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Lightspot is a macOS Spotlight replacement written in pure Swift with SwiftPM — **no Xcode project, no XCTest, no third-party dependencies**. It ships as a background agent (`LSUIElement = 1`) with a menu bar item and a global Carbon hotkey.
 
+Code ported from other projects, and their licenses: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) (Mac Tweaks ports RemoveMacAI's logic, MIT).
+
 ## Commands
 
 ```bash
@@ -37,8 +39,8 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 ```
 
-- `test_engine.swift`: 43 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows) and the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's).
-- `deep_verify.swift`: 11 sections of live system checks (141 on a fully equipped machine; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac (measures only; it never deletes).
+- `test_engine.swift`: 49 test blocks (each prints a `Testing …` header; `WebSearchProvider` has two) verifying math, relaxed conversions, fuzzy matcher, shell history parsing and ranking, pinned commands, custom commands, multi-IDE project discovery, process killer, web search prefixes, dev tools, default browser URL parsing, clipboard manager, snippets, system HUD, privileged execution, first-run onboarding, search-history privacy, Spotlight symbolic-hotkey entry handling, system shortcuts that collide with the Lightspot hotkey, the updater (version maths, release parsing, download allowlist, bundle validation, swap script; the hand-over run for real against fake bundles: swap while running, rollback on request, a failed copy, and a replacing launch that waits instead of asking the old copy to quit), the launch-time removal of the HTTP cache and cookies that versions up to 1.2.0 left behind, System Settings' own search terms (read from a fixture extension folder: sections, languages, tie-breaks), Clean Dev Mac (cdm's rule format, its safety gate against cdm's own test cases, `du`-exact sizing (a row's paths checked against one `du` over all of them), the kinds that work out their offer (idle AVDs' images, older versions, old Claude Code sessions, Chrome's leftover copies), the user's own temp folders and the gate's second branch against cdm's own test cases, every delete method, the clean log, cdm's restart estimate and Claude Code note against cdm's own test cases, rule sources and the scan → clean state machine, all in a fake home; the repo scan against cdm's own git fixtures: the ignored proof, grouping, `.env*`, plus Lightspot's guards), the tool installers (their commands, the install state read off the keystroke path, the rows), the macOS tweaks (every script parses; each toggle runs for real against a scratch `defaults` domain, never the user's), and Mac Tweaks' Free Up Space against a fake system root and home with fake `xcode-select`, `simctl` and `tmutil` scripts: the gate (each refusal, the never-touched folders), every row of the table, Clean Dev Mac's caches left out, the clean (the Trash, protected items, the administrator batch with batch-unique names, simctl, tmutil, a cancelled or refused prompt, a step that fails, an item gone or its folder swapped for a symlink during the prompt or after the guard's checks, verification, the capped receipts log), the batch exact for hostile file names under `/bin/sh -c` and `do shell script`, the Touch ID verdict on synthetic pty transcripts, no xcrun and no simulator row with the Command Line Tools alone, and the sections, the search row and the scan → apply state machine.
+- `deep_verify.swift`: 12 sections of live system checks (153 on a Mac without VS Code or Xcode; the shell-history and VS Code checks are skipped when there is no zsh history or VS Code, the live cdm rules check when GitHub is unreachable, the repo scan checks without git, Mac Tweaks' two no-simctl checks when Xcode's simctl is there, and its folder checks for folders the Mac lacks) verifying that every settings deep link names an installed pane, the real System Settings search terms, AppleScript and shell quick-action syntax, terminal commands, applications scan, system invariants, and a Clean Dev Mac scan of the real home folder, caches and repos, each category with several paths against one `du` over them, plus cdm's two notes measured on this Mac, and Mac Tweaks' Free Up Space scanning this Mac: every offered path through the gate again, macOS's and Clean Dev Mac's caches left out, the programs it runs, no xcrun, no simulator row without Xcode's simctl, its SF Symbols (measures only; it never deletes, moves or asks for a password).
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
@@ -61,6 +63,7 @@ mac-lightspot/
 ├── uninstall.sh                  # Clean removal script
 ├── README.md                     # Documentation & rationale (with 4 translations)
 ├── CLAUDE.md                     # Architecture, invariants & developer guide
+├── THIRD-PARTY-NOTICES.md        # RemoveMacAI's MIT notice (Mac Tweaks ports its logic)
 ├── screenshot.png                # Visual preview for documentation
 ├── .github/
 │   └── workflows/
@@ -71,8 +74,8 @@ mac-lightspot/
 │   └── cdm-rules/                # Copy of cdm's rules/ folder, the cleaner's offline fallback
 ├── scripts/
 │   ├── generate_icon.sh          # Programmatic icon generator (Core Graphics + iconutil)
-│   ├── test_engine.swift         # Automated test runner (43 test blocks)
-│   └── deep_verify.swift         # Live-system verification (11 sections, 141 checks)
+│   ├── test_engine.swift         # Automated test runner (49 test blocks)
+│   └── deep_verify.swift         # Live-system verification (12 sections, 153 checks)
 └── Sources/
     └── Lightspot/
         ├── AppMain.swift         # @main entry point, CLI flags & NSApplicationDelegate
@@ -91,6 +94,8 @@ mac-lightspot/
         │   ├── CustomIconCache.swift    # Base64 custom command icon decoding/cache
         │   ├── DevToolsProvider.swift   # UUID, Base64, Hash, JWT, JSON, Color Swatch
         │   ├── MacTweaks.swift          # `defaults` tweaks (Dock, Finder, keyboard…) as quick actions
+        │   ├── MacTweaksProvider.swift  # "Mac Tweaks" row, sections, per-section scan/apply state machine, receipts
+        │   ├── MacTweaksStorage.swift   # Free Up Space: catalog, gate, scan, Trash / admin batch / simctl / tmutil, verify
         │   ├── Models.swift             # SearchResult, ResultCategory, SearchAction, FuzzyMatcher
         │   ├── NetworkInfoProvider.swift# Local IPv4 & public internet IP address
         │   ├── ProcessKillerProvider.swift # Name, PID, and port process terminator
@@ -123,9 +128,11 @@ mac-lightspot/
         └── UI/
             ├── AppGridView.swift        # Compact 5-column app launcher grid
             ├── CleanDevMacModel.swift   # Cleaner overlay state: ticks, cursor, plan confirmation
-            ├── CleanDevMacView.swift    # Clean Dev Mac (cdm) overlay: list, plan, receipt
+            ├── CleanDevMacView.swift    # Clean Dev Mac (cdm) overlay: list, plan, receipt; card, key hint, tag shared with Mac Tweaks
             ├── CustomCommandsView.swift # Custom command manager overlay
             ├── LazyAppIconView.swift    # Asynchronous non-blocking app icon loader
+            ├── MacTweaksModel.swift     # Mac Tweaks overlay state: section, ticks, cursor, plan confirmation
+            ├── MacTweaksView.swift      # Mac Tweaks overlay: section tabs, rows, plan, steps, receipt
             ├── PinnedCommandsView.swift # Pinned command manager overlay
             ├── PreviewPaneView.swift    # Rich details card & live previews
             ├── ResultRowView.swift      # Individual search result row
@@ -330,12 +337,121 @@ cleans and prints a receipt.
   terminal (never pipe it) and writes into setup-zsh's `env.zsh`, so without setup-zsh the row
   installs it first. Whether each tool is installed is a cached snapshot read on a background
   queue (invariant 0), primed when the panel opens; ⌥↵ opens the tool's GitHub page.
-- **`MacTweaks`** adds `defaults` one-liners to the quick actions. All but **Clear Dock Icons**
+- **`MacTweaks`** (not the Mac Tweaks overlay below, which is `MacTweaksProvider`) adds `defaults` one-liners to the quick actions. All but **Clear Dock Icons**
   (`defaults write com.apple.dock persistent-apps -array && killall Dock`) are toggles built by
   `toggleScript`, which reads the current value, treats an unset key as macOS's default, and
   writes the opposite. Get a new toggle's default right: `ApplePressAndHoldEnabled` is on while
   unset, `AppleShowAllFiles` is off, and a wrong one makes the first press do nothing. Keep
   destructive ones off bare words ("clean", "dock") that other rows answer to.
+
+### Mac Tweaks
+
+The "Mac Tweaks" row (`mac tweaks`, `tweaks`, `debloat`, `free up space`, `remove garageband`, …)
+and the menu bar's **Mac Tweaks...** open an overlay drawn like Clean Dev Mac's, in sections:
+**Free Up Space** now; Apple Intelligence, Settings and Background Items are modelled in
+`MacTweaksSection` and appear once a release builds them (`MacTweaksSection.built`). Free Up
+Space ports RemoveMacAI's Storage (MIT, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md));
+the gate, the batch and the copy are Lightspot's.
+
+- **Sections share everything but their engine.** `MacTweaksProvider` keeps one `SectionState`
+  per section (phase, rows, receipt, generation) on its own serial queue and publishes a
+  `Snapshot`; `search()` and `MacTweaksModel` only read it. Rows, items, plan notes, progress
+  lines and receipts are shared types (`MacTweaksRow`, `MacTweaksItem`, `MacTweaksReceipt`), and
+  a section is an engine conforming to `MacTweaksSectionEngine` (scan, apply, plan notes)
+  returned by `MacTweaksProvider.engine(for:environment:)`. A new section adds its case to
+  `built`, its engine, and the system access it needs as `Environment` fields; the overlay, the
+  model and the key routing take it as it is.
+- **Nothing runs until it opens.** `Environment.live` builds closures only, the row is static
+  keywords plus the last scan's total (`Snapshot.freeableBytes`), and `SearchViewModel.tweaks`
+  is made on first open: no scan, file read, subprocess or timer at launch or while closed. The
+  row comes before Clean Dev Mac's in `SearchEngine`, so a phrase both answer to
+  ("free up space") is Mac Tweaks' Top Hit; its keywords are phrases, so an app's name, "clean",
+  "dock" or "storage" stays with its own row.
+- **Free Up Space's rows** (`MacTweaksStorage.catalog`, in that order): macOS installers, iPhone
+  and iPad updates, unavailable simulators, Time Machine local snapshots, aerial videos,
+  GarageBand and its sound library, iMovie, Keynote, Numbers, Pages, App caches, and two links
+  (Clean Dev Mac; Storage in System Settings). Installers, updates and simulators are ticked. A
+  row with nothing to offer is hidden, and an item measuring 0 allocated bytes is never offered:
+  an empty root-owned folder (`TVIdleScreenStrings.bundle`) or an unreadable one (a root-owned
+  `*.ShipIt`) would put a password prompt in the plan for nothing. Sizes are Clean Dev Mac's
+  du-exact walk (`CleanDevMacProvider.measure`) in allocated bytes, shown in Finder's decimal
+  units; snapshots have no size and show their count.
+- **The gate** (`MacTweaksStorage.isAllowed`) runs when a path is offered and again just before
+  it moves: absolute, with no `.`, `..` or empty segment; a direct child of one of the row's
+  folders, fixed in code (`Roots`, `scopes`), never the folder itself; its parent resolving to
+  where that folder must be, so no symlink on the way leads out (the lexical and physical pair
+  of cdm's `is_safe_target`); the last component itself not a symlink; nothing under `/System`
+  or a folder macOS guards (Desktop, Documents, Downloads, iCloud Drive, Containers, Group
+  Containers, Mail, Messages, MobileSync, Pictures, Movies, Music); and an app or installer
+  must be Apple's by the `CFBundleIdentifier` in its Info.plist (`com.apple.InstallAssistant*`,
+  `com.apple.garageband10`, `com.apple.iMovieApp`, `com.apple.iWork.*`): a non-Apple `Pages.app`
+  stays. GarageBand's three library folders go only while LaunchServices knows no Logic Pro or
+  MainStage. Aerials skip the strings bundle macOS installs beside the videos.
+- **macOS's own caches stay**: names starting `com.apple.` or `AAProfilePicture`, RemoveMacAI's
+  `appleCaches`, plus `Brushes`, `MiniLauncher` and `mbuseragent`, found on this Mac
+  (`appleCacheNames`), and Lightspot's `com.lightspot.app`. **And so do Clean Dev Mac's**: App
+  caches leaves out every entry a cleaner rule reaches into, as a glob of the pattern's first
+  name below `~/Library/Caches` (`cacheGlobs`), so the two overlays never count one folder.
+  The rules are the ones the cleaner holds in memory (`CleanDevMacProvider.heldRules`), else
+  `~/.cleandevmac/rules`, else the app's copy; Mac Tweaks never fetches them.
+- **simctl without the trap.** Never `/usr/bin/xcrun`, which opens the Command Line Tools
+  installer on a Mac without them: `<xcode-select -p>/usr/bin/simctl`, and only once
+  `~/Library/Developer/CoreSimulator/Devices` exists and that file is executable. With the
+  Command Line Tools alone there is no simctl: no row, nothing run, no prompt.
+- **Clean**, in this order. (1) Each ticked path that still passes the gate goes to
+  `FileManager.trashItem`, all of them first. When one can't: gone already, skipped; refused
+  by a folder's permissions (EACCES, which root overrides), or refused and another user's,
+  kept for the administrator; refused by macOS itself (EPERM) and this user's, an app
+  (`isAppBundle`, by its row, never by a name ending in `.app`) gets the App Management advice (from macOS 13 moving another developer's app needs
+  that permission, which an ad-hoc signed Lightspot doesn't have) and anything else is
+  "protected by macOS", counted with its size; any other error is reported in macOS's words.
+  (2) Only then is a Trash name reserved for each of the administrator's items
+  (`uniqueTrashName`, unique in the Trash and in the batch; the Trash can't be listed, a name
+  in it can be looked up), each item through the gate once more, so no Trash move in the same
+  apply can take the name first; snapshots join the batch as `tmutil deletelocalsnapshots
+  <date>`. (3) Simulators go through `simctl delete unavailable` as this user, after the
+  batch: nothing slow sits between the checks and the prompt. (4) Then everything is looked at
+  again: an administrator move counts only when the batch ran, its step reported no error,
+  the item is gone and its Trash name is there; an item gone any other way, even into the
+  Trash under that name (Finder during the prompt), is listed ("It was gone before Lightspot
+  moved it.") and never counted. Freed is only what Lightspot moved or deleted (the Trash's
+  moves, the administrator's that check out, simulator folders there before simctl and gone
+  after) less whatever has grown back at the same path, measured again (never a fresh scan,
+  whose gate may answer differently by now: Logic Pro installed meanwhile keeps GarageBand's
+  library); snapshots by asking tmutil again. The receipt says what stayed and why, and ⌥↵
+  on it shows an app macOS kept.
+- **The administrator batch** (`adminScript`) is one `/bin/sh` script, run once through
+  `QuickActionsProvider.runPrivilegedScript` (invariant 7) and only when it has something to
+  do: `exec </dev/null`, then each command in its own subshell followed by
+  `printf '\n%s %d %d\n' <random tag> <n> $?` on a line of its own (`batchResults`), then
+  `exit 0`, so a failed step is never taken for a failed prompt. Why an item stayed is the
+  reason after the last `: ` of what its step printed (`reason`), never a search of that
+  output, which holds both paths: a file named `Operation not permitted.ipsw` is not
+  "protected by macOS". Each root `mv -n` is guarded as it runs (`guardedMove`): it goes into
+  the item's folder (`cd -P`), goes on only if `pwd -P` is where the gate found it, and moves
+  `./<name>`, so root moves the entry from the folder it just verified even if the path is
+  swapped for a symlink after the checks (and a name starting with `-` never reads as an
+  option); the Trash still a real folder, the item not a symlink, nothing yet at its Trash
+  name (onto a folder `mv -n` would move the item inside it; onto a file it skips and still
+  exits 0). Every argument is single-quoted (`'` as `'\''`), every program is absolute, and
+  so is every path but `./<name>`, which the guard's own `cd` anchors: neither backend
+  promises a working folder or a `HOME`, so the Trash is expanded in Swift.
+- **State.** A scan stands for five minutes, and reopening within them shows it again. An apply
+  runs on the provider's queue, keeps running if the panel hides (a password prompt takes the
+  focus), and reopening shows its steps, then its receipt; ↵ on the receipt scans again.
+  Closing the overlay drops an older scan's rows, and the rows behind a receipt, keeping only
+  the row's total; a scan that still stands is kept, so the five-minute reuse holds.
+- **Receipts** go to `~/Library/Application Support/Lightspot/mac-tweaks.log`, written only when
+  the user applies something and capped like cdm's clean.log
+  (`CleanDevMacEngine.appendToLog(_:url:now:)`).
+- **Binary size.** `build.sh` strips debug symbols only (`strip -S`), so every local symbol
+  name stays in the binary, and SwiftUI spells a view's whole nested type into each name it
+  generates: one long `body` made names of 2,000 characters by the hundred. The overlay is
+  therefore small view structs that take plain values (`MacTweaksHeader`, `MacTweaksList`,
+  `MacTweaksRowView`, …), per-section state lives in arrays rather than dictionaries keyed by
+  the section, and `scan`/`apply` take an optional progress closure (a closure argument made
+  the compiler copy each function once per call site). Measure each phase with `./build.sh`
+  and `stat`, against `./build.sh` at the previous release.
 
 ### Keyboard Shortcuts & Action Modifiers
 
@@ -368,6 +484,14 @@ cleans and prints a receipt.
   - `⇥`: Scan code repos too, when the overlay offers it (`nextCategory` routes it there)
   - `⌥↵`: Show the selected category's first path in Finder
   - `⌘↵` (also on the row itself): Run cdm in the preferred terminal
+- **Mac Tweaks overlay** (`↵` on its row, or the menu bar's **Mac Tweaks...**):
+  - `↑↓`: Select a row; `Space`: Tick / untick it (`SpotlightFieldEditor.keyDown`, as for the
+    cleaner; nothing on a link row)
+  - `↵`: Review the itemized plan, or open a link row; `↵` again applies, `Escape` goes back,
+    then closes
+  - `⇥` / `⇧⇥`: Next / previous section, once there is more than one
+  - `⌥↵`: Show the selected row's first item in Finder; on a receipt, the app macOS kept
+  - `⌥↵` and `⌘↵` on the Mac Tweaks row itself open the overlay, as `↵` does
 
 ### Key Invariants & Safety Rules
 
@@ -445,6 +569,25 @@ cleans and prints a receipt.
      under the home folder to the rules' depth (six), without entering `~/Library`, cdm's
      protected folders, `.git` or the names the rules prune, plus each repo's
      `git ls-files` listing. Nothing is kept but the offered paths and their sizes.
+   - For Mac Tweaks' Free Up Space, and only when the user opens Mac Tweaks, on its queue: the
+     names in `/Applications` and the `Contents/Info.plist` of each `Install macOS*.app` and of
+     GarageBand, iMovie, Keynote, Numbers and Pages there; the entries of
+     `~/Library/iTunes/iPhone Software Updates` and `iPad Software Updates`; the simctl device
+     list (`<xcode-select -p>/usr/bin/simctl list devices unavailable -j`, only once
+     `~/Library/Developer/CoreSimulator/Devices` exists); the dates
+     `/usr/bin/tmutil listlocalsnapshotdates /` prints; the entries of
+     `/Library/Application Support/com.apple.idleassetsd/Customer`; the wallpaper index
+     (`~/Library/Application Support/com.apple.wallpaper/Store/Index.plist`, only when there
+     are aerial videos to offer); the GarageBand library paths (`/Library/Application
+     Support/GarageBand` and `Logic`, `/Library/Audio/Apple Loops/Apple`) and whether
+     LaunchServices knows Logic Pro or MainStage; the entries of `~/Library/Caches`; Clean Dev
+     Mac's rule files (`~/.cleandevmac/rules`, else the app's copy) when the cleaner holds none
+     in memory; and every offered item measured and its owner read (`lstat`). Closing the
+     overlay drops the paths and sizes, keeping the total the row shows, unless the scan still
+     stands (five minutes) or a receipt is still to be read. Every scan and apply also resolves
+     each fixed folder (`realpath`, the gate's physical half); an apply puts each item through
+     the gate again, looks up names in `~/.Trash` one at a time (`lstat` of a name; the Trash
+     itself is never listed), and measures again the items still there.
 4. **Clipboard History Privacy**:
    `ClipboardHistoryManager` is 100% ephemeral in-memory (max 50 items). It is never written to disk and strictly filters out concealed/password manager types (`org.nspasteboard.ConcealedType`, `1Password`, `Bitwarden`).
 5. **AppleScript & Automation Entitlements**:
@@ -462,8 +605,32 @@ cleans and prints a receipt.
    - `lightspot_auto_update_enabled`
    - `lightspot_last_update_check`
    - `lightspot_skipped_version`
+
+   Files, besides the instance lock: `~/Library/Application Support/Lightspot/mac-tweaks.log`,
+   Mac Tweaks' receipts, written only when the user applies something and capped like cdm's
+   clean.log (over 1 MiB it keeps the newest 256 KiB).
 7. **Privileged Commands & Headless Touch ID Execution**:
    Privileged operations (`requiresAdmin`, `sudo`, `mDNSResponder`, `purge`) execute via `QuickActionsProvider.executePrivilegedWithTouchID`. This runs `/usr/bin/sudo` attached to a headless pseudo-terminal (`openpty`), triggering native macOS Touch ID (`pam_tid.so`) directly without opening a Terminal window. If Touch ID fails or is unavailable, it automatically falls back to AppleScript Authorization Services (`do shell script ... with administrator privileges`) displaying the native password dialog. A bare leading or chained `sudo` token is stripped before execution (both backends already run as root), but a `sudo` carrying its own options (`sudo -u postgres psql`) is left intact — stripping it there would promote the flags to the command. `QuickActionsProvider.isTouchIdForSudoEnabled` is a cached, non-blocking snapshot of `/etc/pam.d/sudo_local` because `search()` reads it on the keystroke path.
+
+   **Never a second run.** The pty command first prints a random marker
+   (`markedCommand`, written as two quoted halves so sudo echoing the command line can't pass
+   for it), then sets stdin to /dev/null (sudo needs the pty only before the marker, and a
+   command that asks a question must not wait on it); once the marker reaches the pty, sudo
+   has authenticated and the command has started, so it never falls back to the password
+   dialog (which would run it again behind a second prompt) and the 60 s cap stops applying.
+   A 30-minute one remains, after which sudo gets SIGTERM, which it passes on, then SIGKILL
+   five seconds later (`stop`), which it can't: the command may then run on as root, and the
+   log says so; the wait itself always ends. The pty is read after exit for at most a second
+   or the output cap (`drain`), so a command that starts and fails between two reads is still
+   seen, and a child that keeps writing can't keep it reading (`touchIDVerdict`, tested on
+   synthetic transcripts). Before the marker, `Password:` or 60 s still fall back. The rule is
+   `privilegedCommand` and `privilegedScript`, tested with the two backends faked: a command
+   that ran and failed is `false`, with no prompt. Scripts Lightspot builds itself, every argument already
+   single-quoted (Mac Tweaks' administrator batch), go through
+   `QuickActionsProvider.runPrivilegedScript` instead: no `admin:` or `sudo` stripping (it
+   rewrote file names holding `; sudo `), and a `PrivilegedRun` (`.cancelled`, `.refused`,
+   `.ran(status, output)`) instead of a Bool. Neither entry point logs a script's text, only
+   its outcome: the paths in it would reach the unified log.
 8. **Changing a system symbolic hotkey takes three things, not one**:
    Disabling Spotlight's ⌘Space is `SpotlightManager.setShortcut`, and every part of it
    is load-bearing. Earlier versions wrote the plist directly and the shortcut kept
