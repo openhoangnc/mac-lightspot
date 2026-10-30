@@ -118,6 +118,7 @@ enum SingleInstanceGuard {
     ) -> LaunchDecision {
         let deadline = Date().addingTimeInterval(takeOverTimeout)
         var askedToQuit: pid_t?
+        var askedAt = Date.distantPast
 
         while true {
             switch acquireLock(atPath: lockPath, build: build) {
@@ -135,9 +136,10 @@ enum SingleInstanceGuard {
                     }
                     return .handedOff
                 }
-                if let holder, askedToQuit != holder.pid {
+                if let holder, askedToQuit != holder.pid || Date().timeIntervalSince(askedAt) >= quitRequestInterval {
                     requestQuit(bundleIdentifier: bundleIdentifier, pid: holder.pid)
                     askedToQuit = holder.pid
+                    askedAt = Date()
                 }
                 if Date() >= deadline {
                     return .holderDidNotQuit(pid: holder?.pid)
@@ -146,6 +148,12 @@ enum SingleInstanceGuard {
             }
         }
     }
+
+    /// How often a launch waiting for another build to quit asks it again. One request can be
+    /// lost: a copy that has only just registered for it with distnoted may not hear it yet,
+    /// and the take-over would then wait out its whole timeout for nothing. Asking again is
+    /// harmless: the copy quits on the first request it hears (`NSApp.terminate`).
+    static let quitRequestInterval: TimeInterval = 0.5
 
     // MARK: - Hand-over from an update
 
