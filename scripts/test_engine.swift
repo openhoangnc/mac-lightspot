@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ServiceManagement
+import SQLite3
 
 // MARK: - Test Runner for Lightspot Core Logic
 //
@@ -1727,6 +1728,155 @@ struct TestRunner {
                     "com.jetbrains.CLion", "Prefers the stable build over EAP")
         assertEqual(RecentProjectsProvider.resolveInstalledBundleID(["com.jetbrains.rider"], isInstalled: { _ in false }), nil,
                     "No bundle ID when the IDE is not installed")
+
+        // Zed: one database per channel under db/, read with its WAL, newest first.
+        let zedHome = FileManager.default.temporaryDirectory.appendingPathComponent("lightspot-zed-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: zedHome) }
+        let zedRoot = "\(zedHome)/Library/Application Support/Zed/db"
+        for folder in ["0-global", "0-stable"] {
+            try? FileManager.default.createDirectory(atPath: "\(zedRoot)/\(folder)", withIntermediateDirectories: true)
+        }
+        FileManager.default.createFile(atPath: "\(zedRoot)/0-global/db.sqlite", contents: Data())
+        for name in ["old", "new", "multi-a", "multi-b", "remote"] {
+            try? FileManager.default.createDirectory(atPath: "\(zedHome)/\(name)", withIntermediateDirectories: true)
+        }
+
+        // Zed keeps its connection open, so a fresh workspace sits in the WAL until a checkpoint.
+        var zedConn: OpaquePointer?
+        assertTrue(sqlite3_open("\(zedRoot)/0-stable/db.sqlite", &zedConn) == SQLITE_OK, "Opens the Zed fixture")
+        let zedSQL = """
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE workspaces (workspace_id INTEGER PRIMARY KEY, paths TEXT, paths_order TEXT,
+            remote_connection_id INTEGER, timestamp TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL) STRICT;
+        INSERT INTO workspaces (paths, timestamp) VALUES ('\(zedHome)/old', '2026-01-01 00:00:00');
+        INSERT INTO workspaces (paths, timestamp) VALUES ('', '2026-03-01 00:00:00');
+        INSERT INTO workspaces (paths, remote_connection_id, timestamp) VALUES ('\(zedHome)/remote', 1, '2026-04-01 00:00:00');
+        INSERT INTO workspaces (paths, timestamp) VALUES ('\(zedHome)/multi-a' || char(10) || '\(zedHome)/multi-b', '2026-02-01 00:00:00');
+        INSERT INTO workspaces (paths, timestamp) VALUES ('\(zedHome)/gone', '2026-02-15 00:00:00');
+        PRAGMA wal_checkpoint(TRUNCATE);
+        PRAGMA wal_autocheckpoint=0;
+        INSERT INTO workspaces (paths, timestamp) VALUES ('\(zedHome)/new', '2026-05-01 00:00:00');
+        """
+        assertTrue(sqlite3_exec(zedConn, zedSQL, nil, nil, nil) == SQLITE_OK, "Builds the Zed fixture")
+        let zedDBs = RecentProjectsProvider.zedDatabases(home: zedHome)
+        assertEqual(zedDBs.map(\.path), ["\(zedRoot)/0-stable/db.sqlite"], "Finds Zed's stable database under db/, not 0-global")
+        assertEqual(zedDBs.first?.bundleID, "dev.zed.Zed", "Stable channel opens with dev.zed.Zed")
+        let zedProjects = RecentProjectsProvider.loadZedProjects(dbPath: "\(zedRoot)/0-stable/db.sqlite", iconAppPath: nil)
+        sqlite3_close(zedConn)
+        assertEqual(zedProjects.map(\.name), ["new", "multi-a", "multi-b", "old"],
+                    "Zed: the WAL-only workspace first, every folder of a multi-folder one, no remote, empty or missing paths")
+        assertTrue(zedProjects.map(\.recency) == zedProjects.map(\.recency).sorted(by: >), "Zed recency follows the timestamp")
+        assertEqual(zedProjects.first?.ideBundleID, "dev.zed.Zed", "Zed projects open in Zed")
+        assertEqual(zedProjects.first?.lastUsed, 1_777_593_600, "Zed: last used is the workspace's UTC timestamp")
+        assertEqual(zedProjects.first(where: { $0.name == "multi-b" })?.lastUsed, 1_769_904_000, "Zed: every folder of a workspace shares its timestamp")
+
+        // VS Code and Cursor: the recent list in state.vscdb, then the Open Recent menu,
+        // then workspaceStorage by last write, then profileAssociations (a dictionary).
+        let codeUser = "\(zedHome)/Code/User"
+        for dir in ["globalStorage", "workspaceStorage/e1", "workspaceStorage/a1", "workspaceStorage/a2"] {
+            try? FileManager.default.createDirectory(atPath: "\(codeUser)/\(dir)", withIntermediateDirectories: true)
+        }
+        for name in ["list-1", "list-2", "menu", "storage-new", "storage-old", "assoc"] {
+            try? FileManager.default.createDirectory(atPath: "\(zedHome)/\(name)", withIntermediateDirectories: true)
+        }
+        let codeList = #"{"entries":[{"folderUri":"file://\#(zedHome)/list-1"},{"fileUri":"file://\#(zedHome)/assoc/a.txt"},"#
+            + #"{"folderUri":"vscode-remote://ssh-remote+box/srv","remoteAuthority":"ssh-remote+box"},"#
+            + #"{"workspace":{"id":"x","configPath":"file://\#(zedHome)/w.code-workspace"}},{"folderUri":"file://\#(zedHome)/list-2"}]}"#
+        var codeConn: OpaquePointer?
+        assertTrue(sqlite3_open("\(codeUser)/globalStorage/state.vscdb", &codeConn) == SQLITE_OK, "Opens the VS Code fixture")
+        let codeSQL = """
+        CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);
+        INSERT INTO ItemTable VALUES ('history.recentlyOpenedPathsList', '\(codeList)');
+        """
+        assertTrue(sqlite3_exec(codeConn, codeSQL, nil, nil, nil) == SQLITE_OK, "Builds the VS Code fixture")
+        sqlite3_close(codeConn)
+        let codeStorage: [String: Any] = [
+            "lastKnownMenubarData": ["menus": ["File": ["items": [
+                ["id": "submenuitem.MenubarRecentMenu", "submenu": ["items": [
+                    ["id": "openRecentFolder", "uri": ["scheme": "file", "path": "\(zedHome)/menu"]],
+                    ["id": "openRecentFolder", "uri": ["scheme": "vscode-remote", "path": "/srv"]],
+                    ["id": "openRecentFile", "uri": ["scheme": "file", "path": "\(zedHome)/assoc"]],
+                    ["id": "openRecentFolder", "uri": ["scheme": "file", "path": "\(zedHome)/list-1"]],
+                ]]],
+            ]]]],
+            "profileAssociations": ["workspaces": ["file://\(zedHome)/assoc": "__default__profile__", "file://\(zedHome)/storage-old": "__default__profile__"]],
+        ]
+        try? JSONSerialization.data(withJSONObject: codeStorage).write(to: URL(fileURLWithPath: "\(codeUser)/globalStorage/storage.json"))
+        let storageFolders: [(dir: String, folder: String, age: TimeInterval)] = [
+            ("e1", "storage-new", 3_600), ("a1", "storage-old", 86_400), ("a2", "storage-old", 7 * 86_400),
+        ]
+        for entry in storageFolders {
+            let dir = "\(codeUser)/workspaceStorage/\(entry.dir)"
+            FileManager.default.createFile(atPath: "\(dir)/workspace.json", contents: Data(#"{"folder":"file://\#(zedHome)/\#(entry.folder)"}"#.utf8))
+            FileManager.default.createFile(atPath: "\(dir)/state.vscdb", contents: Data())
+            try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -entry.age)], ofItemAtPath: "\(dir)/state.vscdb")
+        }
+        let codeProjects = RecentProjectsProvider.loadVSCodeFamilyProjects(userDir: codeUser, ideName: "VS Code", ideBundleID: "com.microsoft.VSCode", iconAppPath: nil)
+        assertEqual(codeProjects.map(\.name), ["list-1", "list-2", "menu", "storage-new", "storage-old", "assoc"],
+                    "VS Code: recent list, menu, workspaceStorage newest first, then profileAssociations; no remote, file or workspace entries")
+        let storageOld = codeProjects.first(where: { $0.name == "storage-old" })?.lastUsed ?? 0
+        assertTrue(abs(storageOld - Date(timeIntervalSinceNow: -86_400).timeIntervalSince1970) < 60,
+                   "VS Code: last used is the newest of a folder's workspaceStorage writes")
+        assertEqual(codeProjects.first(where: { $0.name == "list-1" })?.lastUsed, nil, "VS Code: no date without workspaceStorage")
+
+        // JetBrains: the IDE moves an opened project to the end of additionalInfo and lists
+        // it reversed, without hidden entries.
+        let jetBrainsXML = """
+        <application>
+          <component name="RecentProjectsManager">
+            <option name="additionalInfo">
+              <map>
+                <entry key="$USER_HOME$/old">
+                  <value>
+                    <RecentProjectMetaInfo frameTitle="old">
+                      <option name="activationTimestamp" value="1700000000000" />
+                      <option name="colorInfo"><map><entry key="$USER_HOME$/not-a-project" /></map></option>
+                    </RecentProjectMetaInfo>
+                  </value>
+                </entry>
+                <entry key="$USER_HOME$/hidden">
+                  <value><RecentProjectMetaInfo><option name="hidden" value="true" /></RecentProjectMetaInfo></value>
+                </entry>
+                <entry key="$USER_HOME$/R&amp;D">
+                  <value>
+                    <RecentProjectMetaInfo>
+                      <option name="activationTimestamp" value="1700000500000" />
+                      <option name="projectOpenTimestamp" value="1700000900000" />
+                    </RecentProjectMetaInfo>
+                  </value>
+                </entry>
+              </map>
+            </option>
+            <option name="lastOpenedProject" value="$USER_HOME$/R&amp;D" />
+          </component>
+        </application>
+        """
+        let jetBrains = RecentProjectsProvider.parseJetBrainsRecentProjects(Data(jetBrainsXML.utf8), home: "/Users/test")
+        assertEqual(jetBrains.map(\.path), ["/Users/test/R&D", "/Users/test/old"],
+                    "JetBrains: newest last in the file, hidden and nested entries skipped, XML entities decoded")
+        assertEqual(jetBrains.map(\.lastUsed), [1_700_000_900, 1_700_000_000], "JetBrains: last used is the later timestamp, in seconds")
+
+        // Sublime Text: recent_workspaces name .sublime-workspace files; folder_history folders.
+        let sublimeSession = #"{"folder_history":["/p/folder"],"workspaces":{"recent_workspaces":["/p/proj/proj.sublime-workspace","/p/other"]}}"#
+        assertEqual(RecentProjectsProvider.parseSublimeSession(Data(sublimeSession.utf8)), ["/p/proj", "/p/other", "/p/folder"],
+                    "Sublime: a workspace file's folder, then folder history")
+        let sublimeLocal = "\(zedHome)/Library/Application Support/Sublime Text/Local"
+        try? FileManager.default.createDirectory(atPath: sublimeLocal, withIntermediateDirectories: true)
+        for (file, age) in [("Session.sublime_session", 86_400.0), ("Auto Save Session.sublime_session", 60.0)] {
+            FileManager.default.createFile(atPath: "\(sublimeLocal)/\(file)", contents: Data("{}".utf8))
+            try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -age)], ofItemAtPath: "\(sublimeLocal)/\(file)")
+        }
+        assertEqual(RecentProjectsProvider.sublimeSessionFiles(home: zedHome, folder: "Sublime Text").map { URL(fileURLWithPath: $0).lastPathComponent },
+                    ["Auto Save Session.sublime_session", "Session.sublime_session"], "Sublime: the session written last is read first")
+
+        // A folder open in several editors belongs to the one that had it last, by date.
+        func project(_ ide: String, recency: Double, lastUsed: TimeInterval?) -> RecentProject {
+            RecentProject(name: "p", path: "/p", displayPath: "/p", ideName: ide, ideBundleID: nil, iconAppPath: nil, recency: recency, lastUsed: lastUsed)
+        }
+        assertTrue(RecentProjectsProvider.isMoreRecent(project("Zed", recency: 0.5, lastUsed: 200), than: project("VS Code", recency: 0.9, lastUsed: 100)),
+                   "The later date wins over a higher place in a longer list")
+        assertTrue(RecentProjectsProvider.isMoreRecent(project("Sublime Text", recency: 0.9, lastUsed: nil), than: project("VS Code", recency: 0.5, lastUsed: 100)),
+                   "Without two dates, the place in each list decides")
 
         // Test 20: Process Killer Provider
         print("Testing ProcessKillerProvider...")

@@ -11,6 +11,10 @@ public struct RecentProject: Sendable, Hashable {
     public let ideBundleID: String?
     public let iconAppPath: String?
     public let recency: Double
+    /// When the editor last had the folder open (seconds since 1970), where it records
+    /// that. Unlike `recency`, a position in one editor's own list, it compares across
+    /// editors, so it decides which editor a folder open in several belongs to.
+    public let lastUsed: TimeInterval?
 
     public let lowercaseName: String
     public let nameTokens: [String]
@@ -24,7 +28,8 @@ public struct RecentProject: Sendable, Hashable {
         ideName: String,
         ideBundleID: String?,
         iconAppPath: String?,
-        recency: Double
+        recency: Double,
+        lastUsed: TimeInterval? = nil
     ) {
         self.name = name
         self.path = path
@@ -33,6 +38,7 @@ public struct RecentProject: Sendable, Hashable {
         self.ideBundleID = ideBundleID
         self.iconAppPath = iconAppPath
         self.recency = recency
+        self.lastUsed = lastUsed
 
         let lowerName = name.lowercased()
         self.lowercaseName = lowerName
@@ -206,47 +212,49 @@ public final class RecentProjectsProvider: @unchecked Sendable {
         let fm = FileManager.default
         var sig = ""
 
-        // VS Code
-        let vsCodeStorage = "\(home)/Library/Application Support/Code/User/globalStorage/storage.json"
-        if let attrs = try? fm.attributesOfItem(atPath: vsCodeStorage) {
-            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            sig += "vscode:\(mtime);"
+        // VS Code and Cursor: the recent list sits in globalStorage/state.vscdb, the Open
+        // Recent menu's copy in storage.json, a folder's last use in workspaceStorage.
+        for editor in vsCodeFamily {
+            let user = "\(home)/Library/Application Support/\(editor.folder)/User"
+            for file in ["globalStorage/storage.json", "globalStorage/state.vscdb", "globalStorage/state.vscdb-wal", "workspaceStorage"] {
+                if let mtime = modificationTime("\(user)/\(file)") {
+                    sig += "\(editor.folder):\(file):\(mtime);"
+                }
+            }
         }
 
-        // Cursor
-        let cursorStorage = "\(home)/Library/Application Support/Cursor/User/globalStorage/storage.json"
-        if let attrs = try? fm.attributesOfItem(atPath: cursorStorage) {
-            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            sig += "cursor:\(mtime);"
-        }
-
-        // Zed
-        let zedDB = "\(home)/Library/Application Support/Zed/db.sqlite"
-        if let attrs = try? fm.attributesOfItem(atPath: zedDB) {
-            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            sig += "zed:\(mtime);"
+        // Zed. New workspaces land in the WAL long before a checkpoint touches db.sqlite.
+        for zed in zedDatabases(home: home) {
+            for file in [zed.path, zed.path + "-wal"] {
+                if let mtime = modificationTime(file) {
+                    sig += "zed:\(file):\(mtime);"
+                }
+            }
         }
 
         // JetBrains (and Android Studio) options directories
         for root in jetBrainsConfigRoots(home: home) {
             guard let contents = try? fm.contentsOfDirectory(atPath: root) else { continue }
             for item in contents {
-                let xml = "\(root)/\(item)/options/recentProjects.xml"
-                if let attrs = try? fm.attributesOfItem(atPath: xml) {
-                    let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+                if let mtime = modificationTime("\(root)/\(item)/options/recentProjects.xml") {
                     sig += "jb-\(item):\(mtime);"
                 }
             }
         }
 
-        // Sublime Text
-        let sublimeSession = "\(home)/Library/Application Support/Sublime Text/Local/Session.sublime_session"
-        if let attrs = try? fm.attributesOfItem(atPath: sublimeSession) {
-            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            sig += "sublime:\(mtime);"
+        // Sublime Text: both session files of each version
+        for session in sublimeInstalls.flatMap({ sublimeSessionFiles(home: home, folder: $0.folder) }) {
+            if let mtime = modificationTime(session) {
+                sig += "sublime:\(session):\(mtime);"
+            }
         }
 
         return sig
+    }
+
+    private static func modificationTime(_ path: String) -> TimeInterval? {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        return (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970
     }
 
     // MARK: - Project Discovery
@@ -255,38 +263,42 @@ public final class RecentProjectsProvider: @unchecked Sendable {
         var allFound: [RecentProject] = []
         let home = NSHomeDirectory()
 
-        // 1. VS Code
-        allFound.append(contentsOf: loadVSCodeProjects())
+        // 1-2. VS Code and Cursor
+        for editor in vsCodeFamily {
+            let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: editor.bundleID)?.path
+                ?? (FileManager.default.fileExists(atPath: editor.appPath) ? editor.appPath : nil)
+            allFound.append(contentsOf: loadVSCodeFamilyProjects(
+                userDir: "\(home)/Library/Application Support/\(editor.folder)/User",
+                ideName: editor.name,
+                ideBundleID: editor.bundleID,
+                iconAppPath: app
+            ))
+        }
 
-        // 2. Cursor
-        let cursorApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.todesktop.230313mzl4w4u92")?.path
-        let cursorStorage = "\(home)/Library/Application Support/Cursor/User/globalStorage/storage.json"
-        allFound.append(contentsOf: loadJSONStorageProjects(
-            filePath: cursorStorage,
-            ideName: "Cursor",
-            ideBundleID: "com.todesktop.230313mzl4w4u92",
-            iconAppPath: cursorApp
-        ))
-
-        // 3. Zed
-        let zedApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "dev.zed.Zed")?.path
-        let zedDB = "\(home)/Library/Application Support/Zed/db.sqlite"
-        allFound.append(contentsOf: loadZedProjects(dbPath: zedDB, iconAppPath: zedApp))
+        // 3. Zed (stable, preview and nightly keep separate databases)
+        for zed in zedDatabases(home: home) {
+            let zedApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: zed.bundleID)?.path
+            allFound.append(contentsOf: loadZedProjects(dbPath: zed.path, ideName: zed.name, ideBundleID: zed.bundleID, iconAppPath: zedApp))
+        }
 
         // 4. JetBrains Suite
         allFound.append(contentsOf: loadJetBrainsProjects())
 
-        // 5. Sublime Text
-        let sublimeApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.sublimetext.4")?.path
-            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.sublimetext.3")?.path
-        let sublimeSession = "\(home)/Library/Application Support/Sublime Text/Local/Session.sublime_session"
-        allFound.append(contentsOf: loadSublimeProjects(sessionPath: sublimeSession, iconAppPath: sublimeApp))
+        // 5. Sublime Text (4 and 3 keep separate data folders)
+        for sublime in sublimeInstalls {
+            let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: sublime.bundleID)?.path
+            allFound.append(contentsOf: loadSublimeProjects(
+                sessionPaths: sublimeSessionFiles(home: home, folder: sublime.folder),
+                ideBundleID: sublime.bundleID,
+                iconAppPath: app
+            ))
+        }
 
-        // Deduplicate by path (keep the one with highest recency)
+        // Deduplicate by path, keeping the editor that had the folder open last
         var unique: [String: RecentProject] = [:]
         for proj in allFound {
             if let existing = unique[proj.path] {
-                if proj.recency > existing.recency {
+                if isMoreRecent(proj, than: existing) {
                     unique[proj.path] = proj
                 }
             } else {
@@ -299,97 +311,179 @@ public final class RecentProjectsProvider: @unchecked Sendable {
         return Array(result.prefix(maxProjects))
     }
 
-    // MARK: - VS Code Parser
-
-    private static func loadVSCodeProjects() -> [RecentProject] {
-        let vsCodeApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode")?.path
-            ?? (FileManager.default.fileExists(atPath: "/Applications/Visual Studio Code.app") ? "/Applications/Visual Studio Code.app" : nil)
-        let home = NSHomeDirectory()
-        let vsCodeStorage = "\(home)/Library/Application Support/Code/User/globalStorage/storage.json"
-
-        return loadJSONStorageProjects(
-            filePath: vsCodeStorage,
-            ideName: "VS Code",
-            ideBundleID: "com.microsoft.VSCode",
-            iconAppPath: vsCodeApp
-        )
+    /// By the date each editor recorded when both have one, else by position in each list.
+    static func isMoreRecent(_ project: RecentProject, than other: RecentProject) -> Bool {
+        if let mine = project.lastUsed, let theirs = other.lastUsed, mine != theirs {
+            return mine > theirs
+        }
+        return project.recency > other.recency
     }
 
-    // MARK: - Generic JSON Storage Parser (VS Code & Cursor)
+    // MARK: - Shared Helpers
 
-    public static func loadJSONStorageProjects(
-        filePath: String,
+    /// Builds the projects of one editor from its paths, most recent first: the first
+    /// occurrence of a path wins, and only folders that still exist are kept.
+    static func makeProjects(
+        _ paths: [String],
+        lastUsed: [String: TimeInterval] = [:],
+        ideName: String,
+        ideBundleID: String?,
+        iconAppPath: String?
+    ) -> [RecentProject] {
+        let home = NSHomeDirectory()
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var kept: [String] = []
+
+        for rawPath in paths where rawPath.hasPrefix("/") && !seen.contains(rawPath) {
+            seen.insert(rawPath)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: rawPath, isDirectory: &isDir), isDir.boolValue else { continue }
+            let name = URL(fileURLWithPath: rawPath).lastPathComponent
+            guard !name.isEmpty && name != "/" else { continue }
+            kept.append(rawPath)
+        }
+
+        let total = Double(max(kept.count, 1))
+        return kept.enumerated().map { idx, rawPath in
+            RecentProject(
+                name: URL(fileURLWithPath: rawPath).lastPathComponent,
+                path: rawPath,
+                displayPath: rawPath.hasPrefix(home) ? "~" + rawPath.dropFirst(home.count) : rawPath,
+                ideName: ideName,
+                ideBundleID: ideBundleID,
+                iconAppPath: iconAppPath,
+                recency: 1.0 - (Double(idx) / total),
+                lastUsed: lastUsed[rawPath]
+            )
+        }
+    }
+
+    /// Runs one query against another app's SQLite database without getting in its way.
+    /// With a WAL beside it, the database opens read-only (`mode=ro`), which reads the WAL:
+    /// `immutable=1` skips it, and with it everything written since the last checkpoint
+    /// (Zed's newest workspaces). Without one, `immutable=1` takes no lock, so an app
+    /// writing through a rollback journal (VS Code) never finds its database busy.
+    static func querySQLite(dbPath: String, sql: String) -> String? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dbPath) else { return nil }
+        let mode = fm.fileExists(atPath: dbPath + "-wal") ? "mode=ro" : "immutable=1"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = ["file:\(dbPath)?\(mode)", sql]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - VS Code Family Parser (VS Code & Cursor)
+
+    /// Editors laid out as VS Code is, under `Application Support/<folder>/User`.
+    static let vsCodeFamily: [(folder: String, name: String, bundleID: String, appPath: String)] = [
+        ("Code", "VS Code", "com.microsoft.VSCode", "/Applications/Visual Studio Code.app"),
+        ("Cursor", "Cursor", "com.todesktop.230313mzl4w4u92", "/Applications/Cursor.app"),
+    ]
+
+    /// Most recent first, from four places in order:
+    /// 1. `history.recentlyOpenedPathsList` in `globalStorage/state.vscdb`, the editor's
+    ///    own recent list (`storage.json` held it as `openedPathsList` before 1.5x);
+    /// 2. the File ▸ Open Recent menu cached in `storage.json`, its top entries;
+    /// 3. `workspaceStorage/*/workspace.json`, by when the folder's `state.vscdb` was last
+    ///    written, i.e. last open, which covers folders the list has dropped;
+    /// 4. `profileAssociations`, every folder ever opened, but a dictionary, so in no order.
+    public static func loadVSCodeFamilyProjects(
+        userDir: String,
         ideName: String,
         ideBundleID: String,
         iconAppPath: String?
     ) -> [RecentProject] {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        var paths: [String] = []
+
+        if let raw = querySQLite(
+            dbPath: "\(userDir)/globalStorage/state.vscdb",
+            sql: "SELECT value FROM ItemTable WHERE key = 'history.recentlyOpenedPathsList';"
+        ), let data = raw.data(using: .utf8),
+           let list = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            paths += recentListFolders(list)
+        }
+
+        let storage = (try? Data(contentsOf: URL(fileURLWithPath: "\(userDir)/globalStorage/storage.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        if let legacyList = storage["openedPathsList"] as? [String: Any] {
+            paths += recentListFolders(legacyList)
+        }
+        paths += menubarRecentFolders(storage)
+        let opened = workspaceStorageFolders("\(userDir)/workspaceStorage")
+        paths += opened.map(\.path)
+        if let profileAssoc = storage["profileAssociations"] as? [String: Any],
+           let workspaces = profileAssoc["workspaces"] as? [String: Any] {
+            paths += workspaces.keys.sorted().compactMap(decodeURIPath)
+        }
+
+        // Sorted newest first, so a folder with several storage folders keeps its latest.
+        var lastUsed: [String: TimeInterval] = [:]
+        for folder in opened where lastUsed[folder.path] == nil {
+            lastUsed[folder.path] = folder.time
+        }
+        return makeProjects(paths, lastUsed: lastUsed, ideName: ideName, ideBundleID: ideBundleID, iconAppPath: iconAppPath)
+    }
+
+    /// The folders of a recent list (`{"entries": [{"folderUri": …}, {"fileUri": …}, …]}`).
+    static func recentListFolders(_ list: [String: Any]) -> [String] {
+        guard let entries = list["entries"] as? [[String: Any]] else { return [] }
+        return entries.compactMap { entry in
+            guard entry["remoteAuthority"] == nil, let uri = entry["folderUri"] as? String else { return nil }
+            return decodeURIPath(uri)
+        }
+    }
+
+    static func menubarRecentFolders(_ storage: [String: Any]) -> [String] {
+        guard let menubar = storage["lastKnownMenubarData"] as? [String: Any],
+              let menus = menubar["menus"] as? [String: Any],
+              let fileMenu = menus["File"] as? [String: Any],
+              let items = fileMenu["items"] as? [[String: Any]],
+              let recent = items.first(where: { ($0["id"] as? String) == "submenuitem.MenubarRecentMenu" }),
+              let submenu = recent["submenu"] as? [String: Any],
+              let subItems = submenu["items"] as? [[String: Any]] else {
             return []
         }
+        return subItems.compactMap { item in
+            guard (item["id"] as? String) == "openRecentFolder",
+                  let uri = item["uri"] as? [String: Any],
+                  (uri["scheme"] as? String ?? "file") == "file",
+                  let path = uri["path"] as? String,
+                  !path.hasSuffix(".git") else { return nil }
+            return path
+        }
+    }
 
-        let home = NSHomeDirectory()
+    static func workspaceStorageFolders(_ dir: String) -> [(path: String, time: TimeInterval)] {
         let fm = FileManager.default
-        var pathsInOrder: [String] = []
-
-        // Extract profileAssociations.workspaces keys
-        if let profileAssoc = json["profileAssociations"] as? [String: Any],
-           let workspaces = profileAssoc["workspaces"] as? [String: Any] {
-            for (key, _) in workspaces {
-                if let path = decodeURIPath(key) {
-                    pathsInOrder.append(path)
-                }
-            }
+        guard let subdirs = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
+        var dated: [(path: String, time: TimeInterval)] = []
+        for subdir in subdirs {
+            let folder = "\(dir)/\(subdir)"
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: "\(folder)/workspace.json")),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let uri = json["folder"] as? String,
+                  let path = decodeURIPath(uri) else { continue }
+            let time = modificationTime("\(folder)/state.vscdb") ?? modificationTime("\(folder)/workspace.json") ?? 0
+            dated.append((path, time))
         }
-
-        // Also check openedPathsList / entries
-        if let openedPaths = json["openedPathsList"] as? [String: Any],
-           let entries = openedPaths["entries"] as? [[String: Any]] {
-            for entry in entries {
-                if let folderUri = entry["folderUri"] as? String, let path = decodeURIPath(folderUri) {
-                    pathsInOrder.append(path)
-                } else if let fileUri = entry["fileUri"] as? String, let path = decodeURIPath(fileUri) {
-                    pathsInOrder.append(path)
-                }
-            }
-        }
-
-        var results: [RecentProject] = []
-        var seen = Set<String>()
-        let total = Double(max(pathsInOrder.count, 1))
-
-        for (idx, rawPath) in pathsInOrder.enumerated() {
-            guard !seen.contains(rawPath) else { continue }
-            seen.insert(rawPath)
-
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: rawPath, isDirectory: &isDir), isDir.boolValue else {
-                continue
-            }
-
-            let name = URL(fileURLWithPath: rawPath).lastPathComponent
-            guard !name.isEmpty && name != "/" else { continue }
-
-            let displayPath: String
-            if rawPath.hasPrefix(home) {
-                displayPath = "~" + rawPath.dropFirst(home.count)
-            } else {
-                displayPath = rawPath
-            }
-
-            let recency = 1.0 - (Double(idx) / total)
-            results.append(RecentProject(
-                name: name,
-                path: rawPath,
-                displayPath: displayPath,
-                ideName: ideName,
-                ideBundleID: ideBundleID,
-                iconAppPath: iconAppPath,
-                recency: recency
-            ))
-        }
-
-        return results
+        return dated.sorted { $0.time > $1.time }
     }
 
     private static func decodeURIPath(_ uriString: String) -> String? {
@@ -406,59 +500,46 @@ public final class RecentProjectsProvider: @unchecked Sendable {
 
     // MARK: - Zed Parser
 
-    public static func loadZedProjects(dbPath: String, iconAppPath: String?) -> [RecentProject] {
-        guard FileManager.default.fileExists(atPath: dbPath) else { return [] }
+    /// Zed's database per release channel: `db/<scope>-<channel>/db.sqlite`, where the
+    /// scope is `0` unless Zed was started with a custom data directory. `0-global` holds
+    /// app-wide state, no workspaces.
+    static let zedChannels: [(folder: String, name: String, bundleID: String)] = [
+        ("0-stable", "Zed", "dev.zed.Zed"),
+        ("0-preview", "Zed Preview", "dev.zed.Zed-Preview"),
+        ("0-nightly", "Zed Nightly", "dev.zed.Zed-Nightly"),
+    ]
 
-        // Use sqlite3 CLI or read file string to extract workspace directory paths without locking
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = ["file:\(dbPath)?immutable=1", "SELECT paths FROM workspaces;"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard let output = String(data: data, encoding: .utf8) else { return [] }
-
-            let home = NSHomeDirectory()
-            let fm = FileManager.default
-            var results: [RecentProject] = []
-            var seen = Set<String>()
-
-            let lines = output.components(separatedBy: .newlines)
-            for (idx, line) in lines.enumerated() {
-                let candidate = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !candidate.isEmpty && candidate.hasPrefix("/") && !seen.contains(candidate) else { continue }
-                seen.insert(candidate)
-
-                var isDir: ObjCBool = false
-                guard fm.fileExists(atPath: candidate, isDirectory: &isDir), isDir.boolValue else { continue }
-
-                let name = URL(fileURLWithPath: candidate).lastPathComponent
-                guard !name.isEmpty && name != "/" else { continue }
-
-                let displayPath = candidate.hasPrefix(home) ? "~" + candidate.dropFirst(home.count) : candidate
-                let recency = 1.0 - (Double(idx) / Double(max(lines.count, 1)))
-
-                results.append(RecentProject(
-                    name: name,
-                    path: candidate,
-                    displayPath: displayPath,
-                    ideName: "Zed",
-                    ideBundleID: "dev.zed.Zed",
-                    iconAppPath: iconAppPath,
-                    recency: recency
-                ))
-            }
-            return results
-        } catch {
-            return []
+    static func zedDatabases(home: String) -> [(path: String, name: String, bundleID: String)] {
+        let root = "\(home)/Library/Application Support/Zed/db"
+        return zedChannels.compactMap { channel in
+            let path = "\(root)/\(channel.folder)/db.sqlite"
+            return FileManager.default.fileExists(atPath: path) ? (path, channel.name, channel.bundleID) : nil
         }
+    }
+
+    public static func loadZedProjects(dbPath: String, ideName: String = "Zed", ideBundleID: String = "dev.zed.Zed", iconAppPath: String?) -> [RecentProject] {
+        // `paths` is the workspace's folders, one per line, so each row comes back as its
+        // UTC timestamp in epoch seconds and its folders, tab-separated. A remote
+        // workspace names paths on another host.
+        guard let output = querySQLite(
+            dbPath: dbPath,
+            sql: """
+            SELECT strftime('%s', timestamp) || char(9) || replace(paths, char(10), char(9)) FROM workspaces \
+            WHERE remote_connection_id IS NULL AND paths != '' ORDER BY timestamp DESC;
+            """
+        ) else { return [] }
+
+        var paths: [String] = []
+        var lastUsed: [String: TimeInterval] = [:]
+        for row in output.components(separatedBy: .newlines) {
+            let fields = row.components(separatedBy: "\t")
+            guard fields.count > 1, let time = TimeInterval(fields[0]) else { continue }
+            for path in fields.dropFirst() where !path.isEmpty {
+                paths.append(path)
+                if lastUsed[path] == nil { lastUsed[path] = time }
+            }
+        }
+        return makeProjects(paths, lastUsed: lastUsed, ideName: ideName, ideBundleID: ideBundleID, iconAppPath: iconAppPath)
     }
 
     // MARK: - JetBrains Parser
@@ -479,62 +560,43 @@ public final class RecentProjectsProvider: @unchecked Sendable {
         }
 
         var results: [RecentProject] = []
-        var seen = Set<String>()
-
         for (root, item) in folders {
-            let xmlPath = "\(root)/\(item)/options/recentProjects.xml"
-            guard fm.fileExists(atPath: xmlPath),
-                  let content = try? String(contentsOfFile: xmlPath, encoding: .utf8) else {
-                continue
-            }
+            guard let data = fm.contents(atPath: "\(root)/\(item)/options/recentProjects.xml") else { continue }
 
             // Determine JetBrains product display name and the bundle ID actually installed
             let product = jetBrainsProduct(forFolder: item)
-            let productName = product?.name ?? "JetBrains"
             let bundleID = product.flatMap { resolveInstalledBundleID($0.bundleIDs) }
             let appPath = bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)?.path }
 
-            // Parse <entry key="$USER_HOME$/..." or <entry key="/..."
-            let lines = content.components(separatedBy: .newlines)
-            var extractedPaths: [String] = []
-
-            for line in lines {
-                if line.contains("<entry key=\"") {
-                    let parts = line.components(separatedBy: "<entry key=\"")
-                    if parts.count > 1, let pathPart = parts[1].components(separatedBy: "\"").first {
-                        let expanded = pathPart.replacingOccurrences(of: "$USER_HOME$", with: home)
-                        if !seen.contains(expanded) {
-                            extractedPaths.append(expanded)
-                            seen.insert(expanded)
-                        }
-                    }
-                }
+            let recent = parseJetBrainsRecentProjects(data, home: home)
+            var lastUsed: [String: TimeInterval] = [:]
+            for project in recent {
+                lastUsed[project.path] = project.lastUsed
             }
-
-            let total = Double(max(extractedPaths.count, 1))
-            for (idx, rawPath) in extractedPaths.enumerated() {
-                var isDir: ObjCBool = false
-                guard fm.fileExists(atPath: rawPath, isDirectory: &isDir), isDir.boolValue else { continue }
-
-                let name = URL(fileURLWithPath: rawPath).lastPathComponent
-                guard !name.isEmpty && name != "/" else { continue }
-
-                let displayPath = rawPath.hasPrefix(home) ? "~" + rawPath.dropFirst(home.count) : rawPath
-                let recency = 1.0 - (Double(idx) / total)
-
-                results.append(RecentProject(
-                    name: name,
-                    path: rawPath,
-                    displayPath: displayPath,
-                    ideName: productName,
-                    ideBundleID: bundleID,
-                    iconAppPath: appPath,
-                    recency: recency
-                ))
-            }
+            results += makeProjects(
+                recent.map(\.path),
+                lastUsed: lastUsed,
+                ideName: product?.name ?? "JetBrains",
+                ideBundleID: bundleID,
+                iconAppPath: appPath
+            )
         }
-
         return results
+    }
+
+    /// The projects in a `recentProjects.xml`, most recent first. They are the keys of the
+    /// `additionalInfo` map; opening a project moves its entry to the end, and the IDE lists
+    /// the map reversed, leaving out entries marked hidden
+    /// (`RecentProjectsManagerBase.markPathRecent` / `getRecentPaths`). Last used is the
+    /// later of `activationTimestamp` and `projectOpenTimestamp` (milliseconds).
+    static func parseJetBrainsRecentProjects(_ data: Data, home: String) -> [(path: String, lastUsed: TimeInterval?)] {
+        let delegate = JetBrainsRecentProjectsParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        guard parser.parse() else { return [] }
+        return delegate.entries.reversed().map { entry in
+            (entry.key.replacingOccurrences(of: "$USER_HOME$", with: home), entry.timestamp.map { $0 / 1000 })
+        }
     }
 
     /// An IntelliJ-platform IDE, identified by the prefix of its per-version config
@@ -601,63 +663,92 @@ public final class RecentProjectsProvider: @unchecked Sendable {
 
     // MARK: - Sublime Text Parser
 
-    public static func loadSublimeProjects(sessionPath: String, iconAppPath: String?) -> [RecentProject] {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: sessionPath)),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return []
+    static let sublimeInstalls: [(folder: String, bundleID: String)] = [
+        ("Sublime Text", "com.sublimetext.4"),
+        ("Sublime Text 3", "com.sublimetext.3"),
+    ]
+
+    /// Sublime Text writes `Session.sublime_session` when it quits and
+    /// `Auto Save Session.sublime_session` while it runs (hot exit), so the newer one is
+    /// current. Newest first.
+    static func sublimeSessionFiles(home: String, folder: String) -> [String] {
+        let local = "\(home)/Library/Application Support/\(folder)/Local"
+        return ["Auto Save Session.sublime_session", "Session.sublime_session"]
+            .map { "\(local)/\($0)" }
+            .compactMap { path in modificationTime(path).map { (path, $0) } }
+            .sorted { $0.1 > $1.1 }
+            .map(\.0)
+    }
+
+    public static func loadSublimeProjects(sessionPaths: [String], ideBundleID: String, iconAppPath: String?) -> [RecentProject] {
+        let paths = sessionPaths.flatMap { path -> [String] in
+            guard let data = FileManager.default.contents(atPath: path) else { return [] }
+            return parseSublimeSession(data)
         }
+        return makeProjects(paths, ideName: "Sublime Text", ideBundleID: ideBundleID, iconAppPath: iconAppPath)
+    }
 
-        let home = NSHomeDirectory()
-        let fm = FileManager.default
-        var extractedPaths: [String] = []
+    /// `workspaces.recent_workspaces` lists `.sublime-workspace` files, each beside its
+    /// project, and `folder_history` the folders opened without one; both most recent first.
+    static func parseSublimeSession(_ data: Data) -> [String] {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        var paths: [String] = []
 
-        // Parse workspaces -> recent
         if let workspaces = json["workspaces"] as? [String: Any],
-           let recent = workspaces["recent"] as? [String] {
+           let recent = workspaces["recent_workspaces"] as? [String] {
             for item in recent {
-                // If it's a .sublime-project file, use its parent folder
-                if item.hasSuffix(".sublime-project") {
-                    let parent = URL(fileURLWithPath: item).deletingLastPathComponent().path
-                    extractedPaths.append(parent)
+                if item.hasSuffix(".sublime-workspace") || item.hasSuffix(".sublime-project") {
+                    paths.append(URL(fileURLWithPath: item).deletingLastPathComponent().path)
                 } else {
-                    extractedPaths.append(item)
+                    paths.append(item)
                 }
             }
         }
 
-        // Parse folder_history
         if let folderHistory = json["folder_history"] as? [String] {
-            extractedPaths.append(contentsOf: folderHistory)
+            paths.append(contentsOf: folderHistory)
         }
+        return paths
+    }
+}
 
-        var results: [RecentProject] = []
-        var seen = Set<String>()
-        let total = Double(max(extractedPaths.count, 1))
+/// Collects the keys of `<option name="additionalInfo"><map><entry key="…">` in document
+/// order, with their newest timestamp, skipping entries marked hidden.
+private final class JetBrainsRecentProjectsParser: NSObject, XMLParserDelegate {
+    private(set) var entries: [(key: String, timestamp: TimeInterval?)] = []
+    private var stack: [(element: String, optionName: String?)] = []
+    private var entry: (key: String, depth: Int, hidden: Bool, timestamp: TimeInterval?)?
 
-        for (idx, rawPath) in extractedPaths.enumerated() {
-            guard !seen.contains(rawPath) else { continue }
-            seen.insert(rawPath)
-
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: rawPath, isDirectory: &isDir), isDir.boolValue else { continue }
-
-            let name = URL(fileURLWithPath: rawPath).lastPathComponent
-            guard !name.isEmpty && name != "/" else { continue }
-
-            let displayPath = rawPath.hasPrefix(home) ? "~" + rawPath.dropFirst(home.count) : rawPath
-            let recency = 1.0 - (Double(idx) / total)
-
-            results.append(RecentProject(
-                name: name,
-                path: rawPath,
-                displayPath: displayPath,
-                ideName: "Sublime Text",
-                ideBundleID: "com.sublimetext.4",
-                iconAppPath: iconAppPath,
-                recency: recency
-            ))
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes: [String: String] = [:]
+    ) {
+        if entry == nil, elementName == "entry", let key = attributes["key"],
+           stack.count >= 2, stack[stack.count - 1].element == "map",
+           stack[stack.count - 2].optionName == "additionalInfo" {
+            entry = (key, stack.count, false, nil)
+        } else if let current = entry {
+            let name = elementName == "option" ? attributes["name"] : nil
+            if (name == "hidden" && attributes["value"] == "true")
+                || (elementName == "RecentProjectMetaInfo" && attributes["hidden"] == "true") {
+                entry?.hidden = true
+            }
+            if name == "activationTimestamp" || name == "projectOpenTimestamp",
+               let value = attributes["value"].flatMap(TimeInterval.init) {
+                entry?.timestamp = max(current.timestamp ?? 0, value)
+            }
         }
+        stack.append((elementName, elementName == "option" ? attributes["name"] : nil))
+    }
 
-        return results
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        stack.removeLast()
+        if let current = entry, stack.count == current.depth {
+            if !current.hidden { entries.append((current.key, current.timestamp)) }
+            entry = nil
+        }
     }
 }

@@ -412,7 +412,11 @@ cleans and prints a receipt.
    Lightspot never indexes the filesystem. The only filesystem reads are:
    - Known app directories (`/Applications`, `~/Applications`, `/System/Applications`)
    - The user's zsh history file (last 2 MB only)
-   - IDE recent workspace state files (`storage.json`, `recentProjects.xml`, etc.)
+   - IDE recent workspace state files: VS Code's and Cursor's `storage.json`, `state.vscdb`
+     and `workspaceStorage/*/workspace.json`, Zed's `db/0-<channel>/db.sqlite`, JetBrains'
+     `recentProjects.xml`, Sublime Text's two session files. SQLite files are read with
+     `RecentProjectsProvider.querySQLite`: `mode=ro` beside a WAL (an `immutable=1` open
+     skips it and loses everything since the last checkpoint), `immutable=1` without one
    - The user's default browser bookmarks file (default browser only)
    - System Settings' pane bundles, once at launch: each `Info.plist` under
      `/System/Library/ExtensionKit/Extensions`, System Settings.app's `PlugIns` and the
