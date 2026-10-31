@@ -77,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var viewModel: SearchViewModel!
     private var hostingView: NSHostingView<SpotlightView>!
     private var instanceRequests: SingleInstanceGuard.RequestListener?
+    /// Mac Tweaks' window, made on its first open, never at launch.
+    private var tweaks: MacTweaksWindowController?
     private let launchedAt = Date()
 
     struct InstanceClaim {
@@ -174,6 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel = SearchViewModel()
         viewModel.onHide = { [weak self] in
             self?.hidePanel()
+        }
+        viewModel.onOpenTweaks = { [weak self] section in
+            self?.openTweaks(section)
         }
 
         // Create and configure the panel
@@ -296,12 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.viewModel.showCleaner()
         }
         menuBarController.onOpenTweaks = { [weak self] in
-            guard let self = self else { return }
-            if !self.panel.isVisible {
-                // showPanel() resets the view model, so open Mac Tweaks afterwards.
-                self.showPanel()
-            }
-            self.viewModel.showTweaks()
+            self?.openTweaks(nil)
         }
         menuBarController.onEnsurePanelVisible = { [weak self] in
             guard let self = self else { return false }
@@ -369,6 +369,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 }
             )
+        }
+    }
+
+    // MARK: - Mac Tweaks
+
+    /// Opens Mac Tweaks' window on `section` (nil: where it was left), or focuses it. The panel
+    /// hides first: the window takes over from it.
+    private func openTweaks(_ section: MacTweaksSection?) {
+        if panel.isShowing { hidePanel() }
+        let controller = tweaks ?? makeTweaksWindow()
+        controller.show(section)
+    }
+
+    private func makeTweaksWindow() -> MacTweaksWindowController {
+        let controller = MacTweaksWindowController(model: MacTweaksModel())
+        controller.onLink = { [weak self] link in self?.openTweaksLink(link) }
+        // A click into the window dismisses the panel, as a click outside it does.
+        controller.onBecomeKey = { [weak self] in
+            guard let self, self.panel.isShowing else { return }
+            self.hidePanel()
+        }
+        tweaks = controller
+        return controller
+    }
+
+    /// ↵ on one of Mac Tweaks' links that leave it. The window stays open.
+    private func openTweaksLink(_ link: MacTweaksLink) {
+        switch link {
+        case .cleanDevMac:
+            // The cleaner is the panel's overlay: the panel shows over the window.
+            if !panel.isShowing { showPanel() }
+            viewModel.showCleaner()
+        case .settings(let deepLink):
+            if let url = URL(string: deepLink) { SystemSettingsOpener.open(url) }
+        case .section:
+            break // The window switches sections itself.
         }
     }
 

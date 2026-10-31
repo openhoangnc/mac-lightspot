@@ -1,10 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// The Mac Tweaks overlay's state: the provider's latest snapshot, the section on show, and
+/// The Mac Tweaks window's state: the provider's latest snapshot, the section on show, and
 /// per section the ticks, the cursor and whether the plan is up for confirmation. Ticks
 /// start at each row's default after every scan. Made the first time Mac Tweaks opens, so
-/// launch builds nothing for it.
+/// launch builds nothing for it, and kept while Lightspot runs (`MacTweaksWindowController`).
 @MainActor
 final class MacTweaksModel: ObservableObject {
     typealias Row = MacTweaksRow
@@ -18,12 +18,13 @@ final class MacTweaksModel: ObservableObject {
     /// The itemized plan is showing; ↵ now applies.
     @Published private(set) var isConfirming = false
 
-    /// ↵ on a link row: the view model owns the panel, so it opens the link.
+    /// ↵ on a link row: the window controller switches the section, or hands Clean Dev Mac and
+    /// System Settings to the app.
     var onLink: ((MacTweaksLink) -> Void)?
 
     private let provider: MacTweaksProvider
     private var generations: [Int]
-    /// The overlay is on screen: only then does a stale section scan again by itself.
+    /// The window is open: only then does a stale section scan again by itself.
     private var isShown = false
 
     init(provider: MacTweaksProvider = .shared) {
@@ -151,7 +152,7 @@ final class MacTweaksModel: ObservableObject {
         provider.open(section)
     }
 
-    /// The overlay went away: the provider drops what no longer needs to be in memory.
+    /// The window closed: the provider drops what no longer needs to be in memory.
     func close() {
         isConfirming = false
         isShown = false
@@ -260,9 +261,14 @@ final class MacTweaksModel: ObservableObject {
         return true
     }
 
+    /// The section on show waits for System Settings: Esc stops that wait rather than closing.
+    var isWaiting: Bool {
+        if case .applying = state.phase { return state.waiting }
+        return false
+    }
+
     /// Esc while this section waits for System Settings: stop that wait, this section's only.
-    /// Panel hiding (System Settings taking the focus) does not reach here, so the wait survives
-    /// that.
+    /// System Settings taking the focus does not reach here, so the wait survives that.
     func requestCancel() {
         provider.cancelWait(section)
     }

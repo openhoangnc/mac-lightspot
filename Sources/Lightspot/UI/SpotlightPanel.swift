@@ -22,8 +22,8 @@ final class SpotlightFieldEditor: NSTextView {
     /// ⌫ / ⌦. Returns true when a manager overlay consumed the key; otherwise the
     /// key edits the query as usual.
     var onDeleteKey: (@MainActor () -> Bool)?
-    /// Space. Returns true when an overlay consumed it (Clean Dev Mac or Mac Tweaks ticks
-    /// a row); otherwise it types a space as usual.
+    /// Space. Returns true when an overlay consumed it (Clean Dev Mac ticks a row); otherwise
+    /// it types a space as usual. Mac Tweaks' window takes its own keys.
     var onSpaceKey: (@MainActor () -> Bool)?
 
     override func keyDown(with event: NSEvent) {
@@ -313,7 +313,11 @@ final class SpotlightPanel: NSPanel {
 
     // MARK: - Show / Hide
 
+    /// Shown and not on its way out: `isVisible` stays true through the hide's fade.
+    private(set) var isShowing = false
+
     func showPanel() {
+        isShowing = true
         positionOnActiveScreen()
 
         alphaValue = 0
@@ -339,6 +343,7 @@ final class SpotlightPanel: NSPanel {
     }
 
     func hidePanel() {
+        isShowing = false
         removeMonitors()
 
         NSAnimationContext.runAnimationGroup({ context in

@@ -178,7 +178,7 @@ Lightspot自动监控以下最近工作区：
 均无需管理员密码。Restore Dock Icons 可撤销 Clear Dock Icons，开关类操作用同一行即可恢复。如需再调整 41 项设置（每项都显示状态并可撤销），请使用 Mac Tweaks 的 Settings（第 14 节）。
 
 ### 14. 🧰 Mac Tweaks (`free up space`)
-Mac Tweaks 会释放 macOS 一直占着的空间，为这台 Mac 上的所有账户关闭 Apple Intelligence，以可撤销的方式更改 41 项 macOS 设置，并关闭其他应用安装的 launchd 代理和守护进程。输入 `mac tweaks`、`free up space`、`debloat` 或想清除的内容（`remove garageband`、`macos installers`、`time machine snapshots`、`app caches`）并按下 **`↵`**，或在菜单栏中选择 **Clean Dev Mac...** 正下方的 **Mac Tweaks...**；输入 `turn off apple intelligence` 会直接打开 Apple Intelligence 部分，输入 `stop music from opening`、`turn off apple music`、`turn off mac analytics`、`turn off personalized ads` 或 `show the library folder` 会直接打开 Settings 部分，输入 `turn off background items`、`turn off launch agents`、`disable launch agents`、`turn off google updater`、`leftover launch agents` 或 `launch daemons` 会直接打开 Background Items 部分。它和 Clean Dev Mac 一样在搜索结果上方打开，每个部分一个标签页；每个部分在更改任何内容之前都会显示逐项计划，完成后显示结果。（第 13 节中的 `defaults` 开关是快捷操作，不属于 Mac Tweaks。）
+Mac Tweaks 会释放 macOS 一直占着的空间，为这台 Mac 上的所有账户关闭 Apple Intelligence，以可撤销的方式更改 41 项 macOS 设置，并关闭其他应用安装的 launchd 代理和守护进程。输入 `mac tweaks`、`free up space`、`debloat` 或想清除的内容（`remove garageband`、`macos installers`、`time machine snapshots`、`app caches`）并按下 **`↵`**，或在菜单栏中选择 **Clean Dev Mac...** 正下方的 **Mac Tweaks...**；输入 `turn off apple intelligence` 会直接打开 Apple Intelligence 部分，输入 `stop music from opening`、`turn off apple music`、`turn off mac analytics`、`turn off personalized ads` 或 `show the library folder` 会直接打开 Settings 部分，输入 `turn off background items`、`turn off launch agents`、`disable launch agents`、`turn off google updater`、`leftover launch agents` 或 `launch daemons` 会直接打开 Background Items 部分。它在自己的窗口中打开，每个部分一个标签页；每个部分在更改任何内容之前都会显示逐项计划，完成后显示结果。切换到系统设置批准描述文件或回应 Touch ID 提示时，窗口仍保持打开；可以把它移到任何位置（会记住位置），用关闭按钮、`⌘W` 或 `Esc` 关闭。（第 13 节中的 `defaults` 开关是快捷操作，不属于 Mac Tweaks。）
 - **Free Up Space** 用与 Clean Dev Mac 相同的方式测量每一行；没有可释放内容的行会隐藏，0 字节的内容从不列出，前三行默认勾选：
   - **macOS installers**：`/Applications` 中旧的 `Install macOS*.app`，仅限带有 Apple 软件包标识符（`com.apple.InstallAssistant…`）的。
   - **iPhone and iPad updates**：访达下载的更新，位于 `~/Library/iTunes/iPhone Software Updates` 和 `iPad Software Updates`。
@@ -187,7 +187,7 @@ Mac Tweaks 会释放 macOS 一直占着的空间，为这台 Mac 上的所有账
   - **Aerial videos**：这台 Mac 上所有账户共用的航拍视频（`/Library/Application Support/com.apple.idleassetsd/Customer`）；每个账户自己的副本是 Clean Dev Mac 中的一行。
   - **GarageBand and its sound library**：GarageBand 及其声音资源库；只要装有 Logic Pro 或 MainStage，资源库就会保留。
   - **iMovie**、**Keynote**、**Numbers** 和 **Pages**，仅限 Apple 自己的：不是 Apple 的 `Pages.app` 会保留。
-  - **App caches**：`~/Library/Caches` 中的缓存，但不包括 macOS 自己的（`com.apple.*` 以及 macOS 写入的其他名称）、Lightspot 的，以及 Clean Dev Mac 规则涵盖的所有缓存，因此两个浮层绝不会重复计算同一个文件夹。Mac Tweaks 从 Clean Dev Mac 的内存、`~/.cleandevmac/rules` 或应用内置的副本读取这些规则，从不下载。
+  - **App caches**：`~/Library/Caches` 中的缓存，但不包括 macOS 自己的（`com.apple.*` 以及 macOS 写入的其他名称）、Lightspot 的，以及 Clean Dev Mac 规则涵盖的所有缓存，因此 Mac Tweaks 和 Clean Dev Mac 绝不会重复计算同一个文件夹。Mac Tweaks 从 Clean Dev Mac 的内存、`~/.cleandevmac/rules` 或应用内置的副本读取这些规则，从不下载。
   - 三个链接行：**Apple Intelligence models**（扫描过该部分之后、且模型仍在磁盘上时显示其大小）打开 Apple Intelligence 部分，**Developer caches and project junk** 打开 Clean Dev Mac，**More in System Settings** 打开系统设置中的储存空间。
 - **Free Up Space 的文件去向**：移到废纸篓，在倒空废纸篓之前都能取回。模拟器（`simctl delete unavailable`）和快照（`tmutil deletelocalsnapshots`）会立即删除，对应的行也会注明；备份磁盘上的备份不受影响。结果会显示释放了多少空间、移到废纸篓的内容、删除的内容，以及留下的内容及原因，例如没有 App Management 权限时 macOS 不让 Lightspot 移动的应用（`⌥↵` 在访达中显示它）。
 - **Apple Intelligence**（Apple 芯片，macOS 15.1 或更高版本）：这个 macOS 上的每项功能一行（Siri、ChatGPT 及其他 AI 扩展、Writing Tools、Genmoji、Image Playground、邮件・通知・信息・Safari 浏览器・备忘录的摘要、行内文本预测、Spatial Photos、Photos Clean Up、Xcode 预测性代码补全），显示其状态（On、Off、Locked off、Managed、Unknown）以及所需的模型。每项功能一开始都已勾选，表示要关闭；取消勾选即可保留。执行时会安装一个配置描述文件 **Lightspot Mac Tweaks**，由您在系统设置 › 通用 › 设备管理中批准（Lightspot 会打开它并最多等待 10 分钟；按 `Esc` 停止等待）：它为这台 Mac 上的所有账户关闭已勾选的功能，并把这些功能的模型下载指向一个关闭的本地端口。只有在描述文件生效后，Lightspot 才会请求 Apple 的资源服务删除保留的功能都不需要的模型，在 macOS 仍在使用时重试，并检查清单直到模型消失。**Finish removing the models** 会在重启后完成剩下的删除；**Turn Apple Intelligence back on** 会移除描述文件（如果其中还包含 Settings 的设置，则换成不含 Apple Intelligence 的描述文件）。由其他描述文件设定的功能保持原样，安装了 RemoveMacAI 的描述文件时，这个部分为只读。Lightspot 自身从不调用私有的资源框架：每次读取和删除都在一个短暂运行的子进程 `Lightspot --asset-service` 中进行，因此该框架占用的 9–11 MB 绝不会留在 Lightspot 的内存中。
@@ -195,8 +195,8 @@ Mac Tweaks 会释放 macOS 一直占着的空间，为这台 Mac 上的所有账
 - **Background Items**：`~/Library/LaunchAgents`、`/Library/LaunchAgents` 和 `/Library/LaunchDaemons` 中的每个 `.plist` 各占一行，但不包括 macOS 自己的（`com.apple.*`）、没有 `Label` 的 plist（Google 的 Keystone 留下的空存根）以及以点开头的文件。每行显示该项目所属的应用（其程序所在的 `.app`、它运行的内容，或其 `AssociatedBundleIdentifiers` 指明的应用，因此 Docker 的辅助程序显示为“Docker”）、它的标签和它运行的内容（绝不显示其他参数，因为参数中可能含有令牌），以及它的状态：On、Off、Not loaded（可能已在系统设置的登录项中被关闭）或 Unknown，通过 `launchctl print-disabled` 和 `launchctl print` 读取。更新程序（标签或程序名中含有 `update`）带有 **Updater** 标记；既不是更新程序也不是残留项的行会提醒：关闭它可能导致所属应用无法正常工作。`Space` 勾选该行的更改：关闭（`launchctl disable`，然后 `bootout`）、重新开启（`enable`，然后 `bootstrap`），或者对于 macOS 确认其程序已不存在的 **Leftover**，先停止它，再把它的 plist 移到废纸篓；只有残留项一开始就是勾选的。位于 macOS 保护的文件夹中或其他磁盘上的程序，以及以内联代码（`-c`、`-e`）运行的解释器，绝不会被判定为已不存在；plist 是符号链接、或与另一个 plist 共用标签的残留项绝不会被移动。您自己的代理以您的身份更改；每个守护进程的更改，以及只有管理员才能进行的移动，共用一次管理员授权；守护进程的更改适用于这台 Mac 上的所有账户，而关闭或开启 `/Library/LaunchAgents` 中的项目只对您的账户生效。只有 launchd 确认的结果才算数：结果会说明哪些仍在运行（守护进程直到重启，代理直到注销）或未能载入。作为符号链接的 plist 会逐个文件夹地追踪，绝不进入 macOS 保护的文件夹、其他磁盘或 `~/Library/CloudStorage`。最后一行会打开系统设置中的登录项。
 - **撤销**：Lightspot 第一次更改某项设置之前，会把读到的值保存到 `~/Library/Application Support/Lightspot/tweaks-journal.json`，保存成功后才进行更改。勾选状态为 On 的行即可撤销它：按计划所示恢复为保存的值，若 Lightspot 没有保存任何值则恢复为 macOS 的默认值。**Undo everything Lightspot changed** 会恢复所有记录的更改，并在一次管理员授权后移除描述文件。它还会重新开启 Lightspot 关闭的后台项目（关闭之前已记入日志），并且只重新启动之前在运行的项目，其中的守护进程在同一次授权中恢复。plist 已不存在的条目不运行任何命令，直接从日志中删除，launchd 的开关保持关闭。只完成了一部分的设置属于您自己，只会被补全，绝不会被撤销。废纸篓中的文件和 Clear Dock Icons 的备份不在撤销范围内。
 - **只在需要管理员时才要求密码**：删除快照、移动属于其他用户或因文件夹权限您自己无法移动的项目（该行会显示 **May ask for password**）、关闭或开启守护进程，以及移除 Lightspot 的描述文件。一次执行中需要管理员权限的部分都放进一个脚本，只运行一次，通过 sudo 的 Touch ID 或密码对话框授权。安装描述文件则由您自己在系统设置中点击完成。
-- **按键**：`↑↓` 选择（选中的行会显示其项目、模型或命令），`Space` 勾选（在预设上勾选其所有行，在 Background Items 中勾选该行的更改），`⇥` / `⇧⇥` 切换部分，`↵` 显示逐项计划，再按一次 `↵` 执行，`⌥↵` 在访达中显示 Free Up Space 某一行的第一个项目或某个后台项目的 plist，`Esc` 返回、停止等待系统设置，再按则关闭。
-- **结果**：每次执行都以结果收尾，完成了所要求的操作时显示绿色勾号。面板隐藏后执行仍会继续（例如密码提示或系统设置切到前台时），重新打开 Mac Tweaks 会先显示进度，再显示结果。每次执行都会记录到 `~/Library/Application Support/Lightspot/mac-tweaks.log`。某个部分的扫描结果因另一个部分的执行而过时后，会重新扫描：Apple Intelligence 和 Settings 共用描述文件，Settings 和 Background Items 共用撤销日志。
+- **按键**：`↑↓` 选择（选中的行会显示其项目、模型或命令），`Space` 勾选（在预设上勾选其所有行，在 Background Items 中勾选该行的更改），`⇥` / `⇧⇥` 切换部分，`↵` 显示逐项计划，再按一次 `↵` 执行，`⌥↵` 在访达中显示 Free Up Space 某一行的第一个项目或某个后台项目的 plist，`Esc` 退出计划或停止等待系统设置，两者都没有时则像 `⌘W` 一样关闭窗口。
+- **结果**：每次执行都以结果收尾，完成了所要求的操作时显示绿色勾号。即使关闭窗口，执行仍会继续，重新打开 Mac Tweaks 会先显示进度，再显示结果。每次执行都会记录到 `~/Library/Application Support/Lightspot/mac-tweaks.log`。某个部分的扫描结果因另一个部分的执行而过时后，会重新扫描：Apple Intelligence 和 Settings 共用描述文件，Settings 和 Background Items 共用撤销日志。
 - **绝不触碰**：Free Up Space 绝不触碰 `/System` 下的任何内容，`~/Desktop`、`~/Documents`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music`、iCloud 云盘、`~/Library/Containers`、`~/Library/Group Containers`、邮件、信息和 iPhone 备份（`MobileSync`），也绝不改动应用包内部：每个路径都必须直接位于该行固定的文件夹中（按原样以及解析符号链接后都要满足），自身不能是符号链接，并在移动前再检查一次。Apple Intelligence 和 Settings 不会改动其他配置描述文件设定的任何内容。Background Items 从不列出 macOS 自己的项目，也不改动它那三个文件夹以外的任何内容；它直接运行 `launchctl`，从不经过 shell，以 root 身份时只对扫描找到的标签和 plist 操作。Mac Tweaks 在您打开它之前什么都不读取，也不发出任何网络请求。
 - **致谢**：Free Up Space、Apple Intelligence、Settings 和 Background Items 移植了 omlahore 的 [RemoveMacAI](https://github.com/omlahore/RemoveMacAI)（MIT 许可证）中的逻辑。其中 Apple Intelligence 的部分基于 4evy 的 [pared](https://github.com/4evy/pared)（MIT 许可证），Lightspot 的资源服务桥接、模型目录和下载拦截也遵循了它的做法。详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
@@ -265,7 +265,7 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 `./build.sh` 会以完整的链接时优化（LTO）编译每个架构，并去掉本地符号名（保留在 `build/Lightspot.app.dSYM` 中）：1.4.0 的通用二进制文件为 5.1 MB，比 1.3.9 的 8.8 MB 小 42%；仅 Apple 芯片版本为 2.2 MB（Intel 版本为 2.9 MB）。
 
 ### 4. 测试与验证
-Lightspot没有XCTest目标。`scripts/` 下有三个独立脚本，会随源码一起即时编译，并需在仓库根目录下运行：逻辑与引擎测试运行器（83个测试块）、实时系统验证器（15个部分，在开发者的 Mac（macOS 27.2）上共204项检查；例如没有zsh历史记录、未安装VS Code或无法访问GitHub时，部分检查会被跳过），以及一项检查：它在屏幕外承载真实的 Mac Tweaks 浮层，使用只读扫描，并让每个部分经历重新扫描和部分切换：
+Lightspot没有XCTest目标。`scripts/` 下有三个独立脚本，会随源码一起即时编译，并需在仓库根目录下运行：逻辑与引擎测试运行器（83个测试块）、实时系统验证器（15个部分，在开发者的 Mac（macOS 27.2）上共204项检查；例如没有zsh历史记录、未安装VS Code或无法访问GitHub时，部分检查会被跳过），以及一项检查：它在屏幕外创建真实的 Mac Tweaks 窗口，使用只读扫描，并让每个部分经历重新扫描、部分切换和窗口的按键：
 ```bash
 # 核心逻辑与引擎测试 (83个测试块)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
@@ -273,7 +273,7 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 # 实时系统检查 (15个部分，macOS 27.2 上共204项检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 
-# 在屏幕外检查 Mac Tweaks 浮层 (约一分钟)
+# 在屏幕外检查 Mac Tweaks 窗口 (约一分钟)
 swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(find Sources/Lightspot -name '*.swift' ! -name AppMain.swift) && /tmp/overlay_check
 ```
 
@@ -294,7 +294,8 @@ swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(fin
 | **`Space`** | 在 Clean Dev Mac 中勾选或取消勾选类别，或在 Mac Tweaks 中勾选或取消勾选行 |
 | **`Tab` (`⇥`)** | 在 Clean Dev Mac 中同时扫描代码库 / 在 Mac Tweaks 中切换到下一个部分（`⇧⇥` 上一个） |
 | **`⌘Y` / `⌘⇧H`** | 打开搜索历史记录管理器浮层 |
-| **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot |
+| **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot；在 Mac Tweaks 窗口中返回，再按则关闭窗口 |
+| **`⌘W`** | 关闭 Mac Tweaks 窗口 |
 | **点击外部** | 自动关闭悬浮面板 |
 
 呼出所用的快捷键可在菜单栏的 **Shortcut** 中从四者里选择。macOS 将 `⌃Space` 指定为「选择上一个输入源」，因此选用它时，该按键也会切换输入源；**Shortcut** 子菜单会指出哪个系统快捷键已占用所选的组合。

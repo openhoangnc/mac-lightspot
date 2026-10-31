@@ -1,30 +1,30 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Mac Tweaks Overlay
+// MARK: - Mac Tweaks
 
-/// Mac Tweaks inside the panel: one tab per built section; in each, what it offers with the
-/// safe ones ticked, an itemized plan to confirm, the steps while it applies, then the
-/// receipt. Drawn like Clean Dev Mac, as an overlay over the results, so the search field
-/// keeps focus and routes every key here.
+/// Mac Tweaks in its own window (`MacTweaksWindowController`): one tab per built section; in
+/// each, what it offers with the safe ones ticked, an itemized plan to confirm, the steps while
+/// it applies, then the receipt. The window takes every key (`MacTweaksWindow.onKey`); clicks
+/// reach the views. Dark in both appearances, filling the window under its transparent title bar.
 ///
 /// Built from small view structs that take plain values: SwiftUI spells a view's whole type
 /// out in every symbol name it generates, and one nested `body` of a few hundred lines made
 /// names of 2,000 characters by the hundred (most of the binary's growth).
 struct MacTweaksView: View {
     @ObservedObject var model: MacTweaksModel
-    let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            MacTweaksHeader(section: model.section, sections: model.sections, onSelect: model.select, onClose: onClose)
+            MacTweaksHeader(section: model.section, sections: model.sections, onSelect: model.select)
             OverlayDivider()
             MacTweaksContent(model: model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             OverlayDivider()
             MacTweaksFooter(hints: model.hints)
         }
-        .background(OverlayCardBackground())
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: MacTweaksWindowController.background))
     }
 }
 
@@ -58,19 +58,12 @@ struct MacTweaksHeader: View {
     let section: MacTweaksSection
     let sections: [MacTweaksSection]
     let onSelect: (MacTweaksSection) -> Void
-    let onClose: () -> Void
 
     var body: some View {
-        // Four tabs on one line in the overlay's 740 × 450 pt: 700 pt wide with the 18 pt sides at
-        // this spacing and the tabs' 8 pt padding, measured offscreen with the widest tab selected
-        // (722 pt at 10 and 9).
+        // The section tabs; the window's title bar names Mac Tweaks and holds the close button.
+        // Four tabs fit on one line at the window's 740 pt minimum: they were measured offscreen
+        // at 700 pt with the title before them and the widest tab selected.
         HStack(spacing: 8) {
-            Image(systemName: MacTweaksProvider.symbol)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white.opacity(0.85))
-            Text(MacTweaksProvider.title)
-                .font(.system(size: 14.5, weight: .semibold))
-                .foregroundColor(.white)
             ForEach(sections, id: \.self) { tab in
                 Button(action: { onSelect(tab) }) {
                     MacTweaksTab(section: tab, selected: tab == section)
@@ -78,16 +71,10 @@ struct MacTweaksHeader: View {
                 .buttonStyle(.plain)
             }
             Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 15))
-                    .foregroundColor(.white.opacity(0.55))
-            }
-            .buttonStyle(.plain)
-            .help(MacTweaksProvider.closeHelp)
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 12)
     }
 }
 
@@ -148,7 +135,7 @@ struct MacTweaksMessage: View {
             Text(title)
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundColor(.white.opacity(0.6))
-            Text("This keeps running if you close the panel.")
+            Text("This keeps running if you close the window.")
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.35))
             Spacer()

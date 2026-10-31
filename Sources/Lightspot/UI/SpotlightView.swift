@@ -8,9 +8,7 @@ struct SpotlightView: View {
     var body: some View {
         mainContent
             .overlay {
-                if viewModel.isTweaksPresented {
-                    tweaksLayer
-                } else if viewModel.isCleanerPresented {
+                if viewModel.isCleanerPresented {
                     cleanerLayer
                 } else if viewModel.isCustomCommandManagerPresented {
                     customCommandManagerLayer
@@ -51,26 +49,6 @@ struct SpotlightView: View {
                 model: viewModel.cleaner,
                 onClose: { viewModel.hideCleaner() },
                 onOpenInTerminal: { viewModel.openCdmInTerminal() }
-            )
-            .frame(height: 450)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-    }
-
-    // MARK: - Mac Tweaks Layer
-
-    /// Placed exactly as the cleaner is: over the results panel, the field above it keeping
-    /// focus and routing every key to the overlay.
-    private var tweaksLayer: some View {
-        VStack(spacing: 0) {
-            Color.clear
-                .frame(height: 76)
-
-            MacTweaksView(
-                model: viewModel.tweaks,
-                onClose: { viewModel.hideTweaks() }
             )
             .frame(height: 450)
 

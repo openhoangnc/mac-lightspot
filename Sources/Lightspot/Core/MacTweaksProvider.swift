@@ -72,7 +72,8 @@ enum MacTweaksSection: String, CaseIterable, Sendable {
     }
 }
 
-/// Where a link row's ↵ goes. The overlay hands it to the view model, which owns the panel.
+/// Where a link row's ↵ goes. A section switch stays in the Mac Tweaks window; the window
+/// controller hands the others to the app.
 enum MacTweaksLink: Sendable, Equatable {
     /// The Clean Dev Mac overlay.
     case cleanDevMac
@@ -237,7 +238,7 @@ final class MacTweaksProvider: @unchecked Sendable {
 
     static let resultID = "action-mac-tweaks"
     /// The row's action. A sentinel like the cleaner's: `SearchAction` is persisted in search
-    /// history, and the view model opens the overlay on it.
+    /// history, and the app opens the Mac Tweaks window on it.
     static let openScript = "internal:mac-tweaks"
     static let title = "Mac Tweaks"
     /// The subtitle before a scan, and the one search history stores.
@@ -405,9 +406,10 @@ final class MacTweaksProvider: @unchecked Sendable {
     // MARK: Overlay copy that depends on where a section stands
 
     /// The steps view's line while an apply runs, and while it waits for System Settings.
-    static let workingNote = "This keeps running if you close the panel. Reopen Mac Tweaks to see the result."
+    static let workingNote = "This keeps running if you close the window. Reopen Mac Tweaks to see the result."
     static let waitNote = "Lightspot checks every second for 10 minutes. Esc stops waiting; the profile stays in System Settings."
-    /// The overlay's close button: it closes the panel and leaves a running apply or wait going.
+    /// The window's close button (its tooltip): it closes the window and leaves a running apply or
+    /// wait going.
     static let closeHelp = "Close. A running apply, or a wait for System Settings, keeps going."
 
     /// The footer's Esc while an apply runs: it stops a wait for System Settings, else closes.
