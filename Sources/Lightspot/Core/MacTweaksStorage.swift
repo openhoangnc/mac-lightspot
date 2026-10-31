@@ -767,7 +767,7 @@ enum MacTweaksStorage {
                     continue
                 }
                 do {
-                    try environment.moveToTrash(URL(fileURLWithPath: path))
+                    _ = try environment.moveToTrash(URL(fileURLWithPath: path))
                     trashed.append(item)
                     log.append("trashed: \(shown(path))")
                 } catch {

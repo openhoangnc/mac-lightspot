@@ -147,8 +147,8 @@ final class MacTweaksWindowController: NSObject, NSWindowDelegate {
 
     // MARK: Keys
 
-    /// The overlay's keys, now the window's: ↑↓ select, Space ticks, ↵ reviews, applies or opens
-    /// a link, ⌥↵ shows the row in Finder, ⇥ / ⇧⇥ switch sections, Esc backs out of the plan or
+    /// The overlay's keys, now the window's: ↑↓ select, Space ticks, ⌫ marks a row for deletion
+    /// (Background Items), ↵ reviews, applies or opens a link, ⌥↵ shows the row in Finder, ⇥ / ⇧⇥ switch sections, Esc backs out of the plan or
     /// stops a wait for System Settings, else closes, as ⌘W does. True when the key was taken.
     func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -186,6 +186,8 @@ final class MacTweaksWindowController: NSObject, NSWindowDelegate {
             model.moveUp()
         case 49 where flags.isEmpty: // Space
             model.toggleCursor()
+        case 51 where flags.isEmpty, 117 where flags.isEmpty: // ⌫, ⌦
+            model.toggleDeletion()
         default:
             return false
         }

@@ -5247,6 +5247,8 @@ final class MacTweaksFixture: @unchecked Sendable {
             var taken = Set<String>()
             let name = MacTweaksStorage.uniqueTrashName(url.lastPathComponent, in: home + "/.Trash", taken: &taken)
             try FileManager.default.moveItem(atPath: url.path, toPath: home + "/.Trash/" + name)
+            // Where it went, as trashItem's resultingItemURL says.
+            return URL(fileURLWithPath: home + "/.Trash/" + name)
         }
         environment.runAdmin = { [self] script in
             lock.lock()
@@ -9052,6 +9054,14 @@ final class BackgroundFixture: @unchecked Sendable {
                 note("journal remove " + keys.sorted().joined(separator: ","))
                 locked { for key in keys { stored[key] = nil } }
                 return nil
+            },
+            update: { [self] entries in
+                note("journal update " + entries.map(\.key).sorted().joined(separator: ","))
+                return locked { () -> MacTweaksBackground.JournalWrite in
+                    if let recordFailure { return .failed(recordFailure) }
+                    for entry in entries { stored[entry.key] = entry.json }
+                    return .saved(added: Set(entries.map(\.key)))
+                }
             })
     }
 
@@ -9146,6 +9156,7 @@ extension TestRunner {
         testBackgroundTurnOffAndOn()
         testBackgroundAdminBatch()
         testBackgroundLeftovers()
+        testBackgroundDelete()
         testBackgroundUndo()
         testBackgroundProvider()
         testBackgroundEdgeCases()
@@ -9388,8 +9399,12 @@ extension TestRunner {
         let goneRow = row("com.example.gone")
         assertTrue(goneRow.tags == [B.leftoverTag] && goneRow.isDefault && goneRow.symbol == "questionmark.folder", "A leftover is tagged and ticked")
         assertEqual(goneRow.caveat, "What it runs is gone, so it can't run.", "...says what it runs is gone, and carries no warning")
-        assertEqual(goneRow.outcome, B.trashOutcome, "...and goes to the Trash")
-        assertEqual(goneRow.items.map(\.target).last, "launchctl bootout \(gui)/com.example.gone", "...stopped first while loaded")
+        assertEqual(goneRow.outcome, B.deleteOutcome, "...and is deleted: its file goes to the Trash")
+        assertEqual(goneRow.items.map(\.target), [agents + "/com.example.gone.plist", "launchctl bootout \(gui)/com.example.gone",
+                                                  "launchctl disable \(gui)/com.example.gone", "mv ~/Library/LaunchAgents/com.example.gone.plist ~/.Trash/"],
+                    "...stopped first while loaded, switched off, then moved, as the plan shows it")
+        assertTrue(goneRow.deletes && goneRow.deletion == nil && MacTweaksTicks.canDelete(goneRow),
+                   "A leftover's own change is the delete: one action, which ⌫ ticks as Space does")
         let script = row("com.example.script")
         assertTrue(script.title == "sync.sh" && script.tags == [B.leftoverTag], "A deleted script is a leftover named after itself")
         assertEqual(script.detail, "com.example.script · /bin/bash " + fx.mac.base + "/gone/sync.sh", "...shown with its interpreter")
@@ -9437,12 +9452,12 @@ extension TestRunner {
         assertEqual(B.planNotes([agent]), [turnedOffNote], "Turning an agent off needs no password, and the plan says how to undo it")
         assertEqual(B.planNotes([daemonRow]), [turnedOffNote, "Items for all users change for every account on this Mac.", MacTweaksStorage.passwordNote],
                     "A daemon changes for every account and asks for the password")
-        assertEqual(B.planNotes([goneRow]), ["Leftover files go to the Trash."], "A leftover goes to the Trash")
+        assertEqual(B.planNotes([goneRow]), [B.deletedNote], "A leftover's delete says where its file goes and how it comes back, with no app warning")
         assertEqual(B.planNotes([ownoffRow]), [MacTweaksSettings.enabledRecordPlanNote],
                     "Turning one back on says launchd keeps an \"enabled\" record for it")
         assertEqual(B.applyTitle(ticked: [agent, updater]), "Turn off 2 items", "The plan's title: turning off")
         assertEqual(B.applyTitle(ticked: [ownoffRow]), "Turn 1 item back on", "...back on")
-        assertEqual(B.applyTitle(ticked: [goneRow, script]), "Move 2 leftovers to the Trash", "...leftovers")
+        assertEqual(B.applyTitle(ticked: [goneRow, script]), "Delete 2 items", "...deletes")
         assertEqual(B.applyTitle(ticked: [agent, ownoffRow]), "Apply 2 changes", "...or a mix")
 
         // The journal: what Lightspot turned off; unreadable, the old file kept aside; blocked, read-only.
@@ -9615,7 +9630,7 @@ extension TestRunner {
         fx.mac.setDenied([dupAgent])
         let env = fx.environment
         let rows = B.scan(env).filter { !$0.isLink }
-        assertEqual(rows.map { B.change(of: $0) }, [.trash, .turnOff, .turnOn, .trash], "(a root-owned agent leftover, then three daemons)")
+        assertEqual(rows.map { B.change(of: $0) }, [.delete, .turnOff, .turnOn, .delete], "(a root-owned agent leftover, then three daemons)")
         assertTrue(rows[0].tags.contains(MacTweaksStorage.passwordTag) && B.needsAdministrator(rows[0]),
                    "A leftover this user can't move may ask for the password")
         let result = B.apply(rows, env: env)
@@ -9636,8 +9651,9 @@ extension TestRunner {
                    "...for Trash names unique within the batch")
         assertEqual(fx.entry(bgKey("com.example.s1", system: true))?.wasLoaded, true, "The daemon's turn-off was journaled")
         assertEqual(result.receipt.headline, "Changed 4 background items.", "The receipt sums it up")
-        assertEqual(result.receipt.lines, ["Turned off: s1.", "Turned back on: s2.", "Moved to the Trash: dupagent, dupdaemon."],
-                    "...one line per kind")
+        assertEqual(result.receipt.lines, ["Turned off: s1.", "Turned back on: s2.",
+                                           "Deleted, moved to the Trash: dupagent (~/.Trash/dup 2.plist), dupdaemon (~/.Trash/dup.plist)."],
+                    "...one line per kind, each deleted plist with where it went")
         assertTrue(result.receipt.problems.isEmpty, "...with nothing left over")
 
         // Hostile labels reach launchctl exactly, through /bin/sh -c and do shell script.
@@ -9723,17 +9739,25 @@ extension TestRunner {
         let result = B.apply(rows.filter { !$0.isLink }, env: env)
         assertTrue(!fm.fileExists(atPath: l1) && fm.fileExists(atPath: fx.trash + "/com.example.l1.plist") && !fx.loaded.contains(gui + "/com.example.l1"),
                    "A leftover is stopped, then moved to the Trash")
-        assertTrue(fx.entry(bgKey("com.example.l1")) == nil, "...and its journal entry goes with it")
+        let l1Entry = fx.entry(bgKey("com.example.l1"))
+        assertTrue(l1Entry?.deleted == true && l1Entry?.trash == fx.trash + "/com.example.l1.plist" && l1Entry?.wasLoaded == true
+                   && l1Entry?.wasDisabled == false && fx.overrides(gui)["com.example.l1"] == true,
+                   "...switched off, and its entry, the first previous state kept, says where its plist went")
         assertTrue([l2, l3, l4, l5, l7].allSatisfy { fm.fileExists(atPath: $0) }, "Nothing else moved")
         let full = CocoaError(.fileWriteOutOfSpace).localizedDescription
         assertEqual(result.receipt.problems, [
             "l3 stays: what it runs is back.",
             "l2 stays: it was still running after Lightspot stopped it.",
-            "l4 stays: macOS didn't let Lightspot move it (\(CocoaError(.fileWriteNoPermission).localizedDescription)).",
-            "l5 stays: " + full + (full.hasSuffix(".") ? "" : "."),
+            "l4 is off, but its file stays: macOS didn't let Lightspot move it (\(CocoaError(.fileWriteNoPermission).localizedDescription)).",
+            "l5 is off, but its file stays: " + full + (full.hasSuffix(".") ? "" : "."),
             "l7 stays (still running after bootout).",
-        ], "One still loaded after bootout stays, as does one whose program came back; refusals in macOS's words, one period")
-        assertEqual(result.receipt.headline, "Moved 1 leftover to the Trash.", "Only the moved one counts")
+        ], "One still loaded after bootout stays, as does one whose program came back; one switched off whose move macOS refused says so, "
+           + "in macOS's words, one period")
+        assertEqual(result.receipt.headline, "Deleted 1 item.", "Only the moved one counts")
+        assertTrue(fx.entry(bgKey("com.example.l2")) == nil && fx.entry(bgKey("com.example.l7", system: true)) == nil,
+                   "A delete that changed nothing (a refused bootout keeps the plist) takes its entry back")
+        assertTrue(["l4", "l5"].allSatisfy { fx.entry(bgKey("com.example." + $0)).map { !$0.deleted && !$0.wasDisabled } == true },
+                   "...one that switched the item off before its move failed keeps a turn-off's entry, so Undo everything switches it back on")
         assertTrue(!fx.writes.contains("bootout \(gui)/com.example.l3"), "An item no longer left over isn't even stopped")
 
         // The folder swapped for a symlink during the prompt: the guard keeps root out of it.
@@ -9755,8 +9779,234 @@ extension TestRunner {
         let swapResult = B.apply(swapRows, env: swapEnv)
         assertTrue(fm.fileExists(atPath: elsewhere + "/com.example.swapped.plist") && fm.fileExists(atPath: realFolder + "/com.example.swapped.plist")
                    && !fm.fileExists(atPath: swap.trash + "/com.example.swapped.plist"), "A folder swapped for a symlink keeps root out of it")
-        assertEqual(swapResult.receipt.problems, ["swapped stays (the item or the Trash changed before the move)."], "...and says so")
+        assertEqual(swapResult.receipt.problems, ["swapped is off, but its file stays (the item or the Trash changed before the move)."], "...and says so")
         print("✅ Background Items leftovers passed!\n")
+    }
+
+    // MARK: Background Items: delete, and Undo everything putting it back
+
+    static func testBackgroundDelete() {
+        print("Testing Background Items delete...")
+        typealias B = MacTweaksBackground
+        let fm = FileManager.default
+        let fx = BackgroundFixture("delete")
+        let gui = fx.gui
+        func shown(_ path: String) -> String { CleanDevMacEngine.displayPath(path, home: fx.mac.home) }
+        let agent = fx.item(fx.userAgents, "com.example.helper")
+        fx.load(gui + "/com.example.helper")
+        let left = fx.item(fx.userAgents, "com.example.left", present: false)
+        let shared = fx.item(fx.allUsersAgents, "com.example.shared")
+        fx.setForeign(shared)
+        let daemon = fx.item(fx.daemons, "com.example.daemon")
+        fx.setForeign(daemon)
+        fx.load("system/com.example.daemon")
+        let env = fx.environment
+        let rows = B.scan(env)
+        func row(_ label: String, system: Bool = false) -> MacTweaksRow { bgRow(rows, label, system: system)! }
+
+        // The rows: ⌫'s delete on every changeable item; a leftover's own change is the delete.
+        let helper = row("com.example.helper")
+        assertTrue(helper.deletion?.outcome == B.deleteOutcome && B.change(of: helper) == .turnOff && !helper.deletes,
+                   "An item Space turns off can be deleted with ⌫")
+        assertEqual(helper.deletion?.items.map(\.target), [agent, "launchctl bootout \(gui)/com.example.helper",
+                                                           "launchctl disable \(gui)/com.example.helper",
+                                                           "mv ~/Library/LaunchAgents/com.example.helper.plist ~/.Trash/"],
+                    "...its plist first, then the commands a delete equals")
+        assertEqual(helper.deletion?.caveat, B.deleteWarning("helper"), "...warning that its app may stop working and put it back")
+        assertEqual(helper.deletion?.tags, [], "...and, this account's own, it needs no password")
+        let sharedRow = row("com.example.shared"), daemonRow = row("com.example.daemon", system: true), leftRow = row("com.example.left")
+        assertEqual(sharedRow.deletion?.tags, [B.allUsersTag, MacTweaksStorage.passwordTag],
+                    "One in /Library/LaunchAgents is for all users and may ask for the password")
+        assertTrue(sharedRow.deletion?.caveat?.hasPrefix(B.allUsersDeleteNote) == true, "...and says its file goes for every account")
+        assertEqual(daemonRow.deletion?.tags, [B.allUsersTag, MacTweaksStorage.passwordTag], "...as a daemon is")
+        assertTrue(leftRow.deletes && leftRow.deletion == nil && leftRow.isDefault, "A leftover's own tick is its delete, ticked after a scan")
+
+        // Marking: ⌫ marks and unmarks; it and Space are exclusive on a row; a leftover's ⌫ is Space.
+        var ticks = MacTweaksTicks.defaults(rows)
+        assertEqual(ticks, [leftRow.id], "Only the leftover starts ticked")
+        ticks = MacTweaksTicks.toggled(ticks, helper.id, in: rows)
+        ticks = MacTweaksTicks.toggledDeletion(ticks, helper.id, in: rows)
+        assertEqual(ticks, [leftRow.id, MacTweaksTicks.deletionKey(helper.id)], "⌫ replaces Space's tick with a delete mark")
+        assertEqual(MacTweaksTicks.box(helper, ticks, in: rows), .delete, "...drawn as a trash box")
+        assertEqual(MacTweaksTicks.box(leftRow, ticks, in: rows), .delete, "...as a ticked leftover is")
+        assertEqual(MacTweaksTicks.toggled(ticks, helper.id, in: rows), [leftRow.id, helper.id], "Space replaces the mark with its own tick")
+        assertEqual(MacTweaksTicks.toggledDeletion(ticks, helper.id, in: rows), [leftRow.id], "⌫ again unmarks it")
+        assertEqual(MacTweaksTicks.toggledDeletion(ticks, leftRow.id, in: rows), [MacTweaksTicks.deletionKey(helper.id)],
+                    "A leftover's ⌫ unticks its delete, as Space would")
+        if let link = rows.last { assertEqual(MacTweaksTicks.toggledDeletion(ticks, link.id, in: rows), ticks, "A link can't be deleted") }
+        for id in [sharedRow.id, daemonRow.id] { ticks = MacTweaksTicks.toggledDeletion(ticks, id, in: rows) }
+        let marked = MacTweaksTicks.ticked(rows, ticks)
+        assertEqual(marked.map(\.id), [helper.id, leftRow.id, sharedRow.id, daemonRow.id], "(the rows in scan order)")
+        assertEqual(marked.map { B.change(of: $0) }, [.delete, .delete, .delete, .delete], "Every marked row reaches the plan as a delete")
+        assertEqual(B.applyTitle(ticked: marked), "Delete 4 items", "The plan's title")
+        assertEqual(B.planNotes(marked), ["Items for all users change for every account on this Mac.", MacTweaksStorage.passwordNote,
+                                          B.deletedNote, B.deleteAppNote],
+                    "The plan: for all users, the password, where the files go and how they come back, and the app's warning")
+
+        // Apply: this account's agents as this user; the shared agent stopped and switched off as
+        // this user, its file moved by root; the daemon whole by root; one prompt.
+        fx.mac.setDenied([shared])
+        let result = B.apply(marked, env: env)
+        assertEqual(fx.mac.adminScripts.count, 1, "Every move only root can make, and the daemon, share one prompt")
+        let script = fx.mac.adminScripts.first ?? ""
+        let quoted = "'" + fx.launchctl + "'"
+        assertTrue(script.contains("\(quoted) disable 'system/com.example.daemon' || exit 1; "), "Root stops the daemon, switches it off, then moves it")
+        assertTrue(!script.contains("disable '\(gui)/com.example.shared'") && fx.calls.contains("disable \(gui)/com.example.shared"),
+                   "...the shared agent was switched off by this user, so root only moves it")
+        let moved = [(agent, "com.example.helper.plist"), (left, "com.example.left.plist"), (shared, "com.example.shared.plist"),
+                     (daemon, "com.example.daemon.plist")]
+        assertTrue(moved.allSatisfy { !fm.fileExists(atPath: $0.0) && fm.fileExists(atPath: fx.trash + "/" + $0.1) }, "Each plist is in the Trash")
+        assertTrue(fx.overrides(gui)["com.example.helper"] == true && fx.overrides(gui)["com.example.left"] == true
+                   && fx.overrides(gui)["com.example.shared"] == true && fx.overrides("system")["com.example.daemon"] == true,
+                   "...each label switched off, so a copy its app writes again won't load")
+        assertTrue(!fx.loaded.contains(gui + "/com.example.helper") && !fx.loaded.contains("system/com.example.daemon"), "...and nothing runs")
+        let keys = [helper.id, leftRow.id, sharedRow.id, daemonRow.id]
+        let entries = keys.compactMap { fx.entry($0) }
+        assertEqual(entries.map(\.deleted), [true, true, true, true], "Each delete is journaled")
+        assertEqual(entries.map(\.trash), moved.map { Optional(fx.trash + "/" + $0.1) }, "...with where its plist went")
+        assertEqual(entries.map(\.plist), moved.map(\.0), "...where it was")
+        assertEqual(entries.map(\.wasLoaded), [true, false, false, true], "...and whether it ran")
+        assertEqual(result.receipt.headline, "Deleted 4 items.", "The receipt")
+        let owners = ["helper", "left", "shared", "daemon"]
+        assertEqual(result.receipt.lines, ["Deleted, moved to the Trash: "
+                                           + zip(owners, moved).map { "\($0.0) (\(shown(fx.trash + "/" + $0.1.1)))" }.joined(separator: ", ") + "."],
+                    "...says where each plist went")
+        assertTrue(result.receipt.problems.isEmpty && result.receipt.notes.contains(B.putBackNote(4)), "...and how they come back")
+        let calls = fx.calls
+        if let recorded = calls.firstIndex(where: { $0.hasPrefix("journal update") }), let stopped = calls.firstIndex(of: "bootout \(gui)/com.example.helper") {
+            assertTrue(recorded < stopped, "The journal is written before anything changes")
+        } else {
+            assertTrue(false, "The delete was journaled and the agent stopped")
+        }
+
+        // Undo everything's hook puts each back where it was, as it was. Root's files stay root's
+        // in the Trash.
+        for name in ["com.example.shared.plist", "com.example.daemon.plist"] { fx.setForeign(fx.trash + "/" + name) }
+        let lines = B.undoPlanLines(entries.map { ($0.key, $0.json) }, environment: env)
+        assertEqual(lines[helper.id], "helper: its file goes back from the Trash (~/.Trash/com.example.helper.plist) to "
+                    + "~/Library/LaunchAgents/com.example.helper.plist, then launchctl enable \(gui)/com.example.helper and launchctl bootstrap.",
+                    "The plan line says where the file comes back from and to")
+        assertEqual(lines[leftRow.id], "left: its file goes back from the Trash (~/.Trash/com.example.left.plist) to "
+                    + "~/Library/LaunchAgents/com.example.left.plist, then launchctl enable \(gui)/com.example.left.",
+                    "...and starts only what ran before")
+        fx.clearCalls()
+        let undo = B.undo(entries, environment: env)
+        assertTrue(fx.writes.isEmpty, "Building the hook changes nothing")
+        assertEqual(undo.adminKeys, [sharedRow.id, daemonRow.id], "Root puts back root's files, in the one batch")
+        assertTrue(undo.adminCommands.allSatisfy { $0.contains("[ -O ") && $0.contains("/usr/bin/stat -f %l") && $0.contains("/bin/mv -n ") },
+                   "...a regular file root owns, with one link, never over a file")
+        let tag = "__LS_DEL"
+        guard case .ran(_, let output) = fx.mac.environment.runAdmin(MacTweaksStorage.adminScript(undo.adminCommands, tag: tag)) else {
+            assertTrue(false, "The batch runs")
+            return
+        }
+        let steps = MacTweaksStorage.batchResults(output, tag: tag)
+        assertEqual(undo.userSteps(), [], "This account's own come back as this user")
+        assertTrue(moved.allSatisfy { fm.fileExists(atPath: $0.0) && !fm.fileExists(atPath: fx.trash + "/" + $0.1) }, "Every plist is back where it was")
+        assertTrue([fx.overrides(gui)["com.example.helper"], fx.overrides(gui)["com.example.left"], fx.overrides(gui)["com.example.shared"],
+                    fx.overrides("system")["com.example.daemon"]].allSatisfy { $0 == false }, "...switched back on")
+        assertEqual(fx.loaded, [gui + "/com.example.helper", "system/com.example.daemon"], "...and started only if it ran before")
+        for (index, key) in keys.enumerated() {
+            let step = undo.adminKeys.firstIndex(of: key).flatMap { steps[$0 + 1] }
+            assertEqual(undo.outcome(key, step), .undone(line: "\(entries[index].owner): its file is back at \(shown(moved[index].0))."),
+                        "\(entries[index].owner) is back, so its entry goes")
+        }
+
+        // Emptied from the Trash before Undo everything: said and dropped. A file back at its place:
+        // never overwritten, switched back on, the Trash copy left. A copy that isn't the file
+        // Lightspot moved, or isn't owned as it left it, stays. A path outside the fixed folders too.
+        let again = BackgroundFixture("delete-again")
+        let againGUI = again.gui
+        var plists: [String: String] = [:]
+        for name in ["emptied", "back", "swapped", "linked"] {
+            plists[name] = again.item(again.userAgents, "com.example." + name)
+            again.load(againGUI + "/com.example." + name)
+        }
+        let rootOwned = again.item(again.daemons, "com.example.mine")
+        again.setForeign(rootOwned)
+        let againEnv = again.environment
+        let againRows = B.scan(againEnv)
+        var againTicks = Set<String>()
+        for row in againRows where row.deletion != nil { againTicks = MacTweaksTicks.toggledDeletion(againTicks, row.id, in: againRows) }
+        let againResult = B.apply(MacTweaksTicks.ticked(againRows, againTicks), env: againEnv)
+        assertEqual(againResult.receipt.headline, "Deleted 5 items.", "(five more deleted)")
+        let trashOf = { (name: String) in again.trash + "/com.example.\(name).plist" }
+        try? fm.removeItem(atPath: trashOf("emptied"))
+        again.item(again.userAgents, "com.example.back", extra: ["Note": "written again by its app"])
+        try? fm.removeItem(atPath: trashOf("swapped"))
+        again.plist(again.trash, "com.example.swapped.plist", ["Label": "com.example.other"])
+        let hardLink = again.mac.base + "/elsewhere-linked.plist"
+        try? fm.linkItem(atPath: trashOf("linked"), toPath: hardLink)
+        // com.example.mine's copy is left this user's: root never puts back a file it doesn't own.
+        let evil = B.Entry(item: B.Item(label: "com.example.evil", plist: "/private/tmp/evil.plist", place: .userAgents, program: "", arguments: [],
+                                        associatedIDs: [], plistDisabled: false, isLink: false, ownerUID: nil),
+                           owner: "evil", wasDisabled: false, wasLoaded: true, date: Date(), deleted: true, trash: again.trash + "/evil.plist")
+        let againEntries = ["emptied", "back", "swapped", "linked"].compactMap { again.entry(bgKey("com.example." + $0)) }
+            + [again.entry(bgKey("com.example.mine", system: true)), evil].compactMap { $0 }
+        assertEqual(againEntries.count, 6, "(every delete journaled)")
+        let againLines = B.undoPlanLines(againEntries.map { ($0.key, $0.json) }, environment: againEnv)
+        assertEqual(againLines[bgKey("com.example.emptied")],
+                    "emptied: its file is no longer in the Trash, so Lightspot can't put it back and drops its entry; launchd keeps its switch off.",
+                    "The plan says a file emptied from the Trash can't come back")
+        assertEqual(againLines[bgKey("com.example.back")],
+                    "back: a file is back at ~/Library/LaunchAgents/com.example.back.plist, so its Trash copy stays; "
+                    + "launchd's switch goes back on (launchctl enable \(againGUI)/com.example.back).",
+                    "...and one whose place has a file again keeps its Trash copy")
+        assertEqual(againLines[evil.key], "evil: kept: Lightspot can't tell where its file was.", "...and one the journal puts elsewhere stays")
+        again.clearCalls()
+        let againUndo = B.undo(againEntries, environment: againEnv)
+        assertTrue(againUndo.adminCommands.isEmpty && againUndo.adminKeys.isEmpty, "Root puts back nothing it doesn't own, nor anything outside its folders")
+        assertEqual(againUndo.userSteps(), [], "(this account's steps)")
+        assertEqual(againUndo.outcome(bgKey("com.example.emptied"), nil),
+                    .dropped(line: "emptied: its file is no longer in the Trash (~/.Trash/com.example.emptied.plist), so Lightspot can't put it back, "
+                             + "and dropped its entry. launchd keeps its switch off."),
+                    "Emptied from the Trash: said, and its entry dropped")
+        assertEqual(againUndo.outcome(bgKey("com.example.back"), nil),
+                    .undone(line: "back: a file is back at ~/Library/LaunchAgents/com.example.back.plist, so Lightspot switched it back on. "
+                            + "Its Trash copy stays at ~/.Trash/com.example.back.plist."),
+                    "A file back at its place is switched back on, and its Trash copy left")
+        let backDict = NSDictionary(contentsOfFile: plists["back"] ?? "")
+        assertTrue(backDict?["Note"] as? String == "written again by its app" && fm.fileExists(atPath: trashOf("back"))
+                   && again.loaded.contains(againGUI + "/com.example.back"), "...never overwritten, and started as it ran before")
+        assertEqual(againUndo.outcome(bgKey("com.example.swapped"), nil),
+                    .kept(problem: "swapped: the file at ~/.Trash/com.example.swapped.plist isn't the one Lightspot moved there, so Lightspot leaves it."),
+                    "A Trash copy with another label stays")
+        assertEqual(againUndo.outcome(bgKey("com.example.linked"), nil),
+                    .kept(problem: "linked: the file at ~/.Trash/com.example.linked.plist isn't the one Lightspot moved there, so Lightspot leaves it."),
+                    "...as does one with a second link")
+        assertEqual(againUndo.outcome(bgKey("com.example.mine", system: true), nil),
+                    .kept(problem: "mine: its file in the Trash (~/.Trash/com.example.mine.plist) isn't owned as Lightspot left it, "
+                          + "so Lightspot doesn't put it back. Move it back yourself."),
+                    "...and a daemon's copy root doesn't own")
+        assertEqual(againUndo.outcome(evil.key, nil), .kept(problem: "evil: Lightspot can't tell where its file was, so it keeps its entry."),
+                    "...and a journal entry naming a place outside the fixed folders")
+        assertTrue(!fm.fileExists(atPath: plists["emptied"] ?? "") && !fm.fileExists(atPath: plists["swapped"] ?? "")
+                   && !fm.fileExists(atPath: "/private/tmp/evil.plist"), "Nothing it keeps or drops is put anywhere")
+
+        // A refused bootout keeps the plist, and takes the entry back.
+        let refused = BackgroundFixture("delete-refused")
+        let stuck = refused.item(refused.userAgents, "com.example.stuck")
+        refused.load(refused.gui + "/com.example.stuck")
+        refused.refuse("bootout", "com.example.stuck")
+        let refusedEnv = refused.environment
+        let refusedRows = B.scan(refusedEnv)
+        let stuckRow = bgRow(refusedRows, "com.example.stuck")!
+        let refusedResult = B.apply(MacTweaksTicks.ticked(refusedRows, [MacTweaksTicks.deletionKey(stuckRow.id)]), env: refusedEnv)
+        assertTrue(fm.fileExists(atPath: stuck) && refused.loaded.contains(refused.gui + "/com.example.stuck")
+                   && refused.overrides(refused.gui)["com.example.stuck"] == nil, "A refused bootout keeps the plist, running and switched on")
+        assertEqual(refusedResult.receipt.problems, ["stuck stays: it was still running after Lightspot stopped it."], "...and says so")
+        assertTrue(refused.journalKeys.isEmpty, "...its entry taken back")
+
+        // A delete's entry: its JSON adds deleted and trash; a turn-off's stays as it was.
+        if let first = entries.first {
+            assertEqual(B.Entry(key: first.key, json: first.json), first, "A delete's entry round-trips")
+            let object = (try? JSONSerialization.jsonObject(with: first.json)) as? [String: Any] ?? [:]
+            assertTrue(object["deleted"] as? Bool == true && object["trash"] as? String == first.trash, "...holding deleted and trash")
+            let off = first.notDeleted()
+            let offObject = (try? JSONSerialization.jsonObject(with: off.json)) as? [String: Any] ?? [:]
+            assertTrue(offObject["deleted"] == nil && offObject["trash"] == nil, "...a turn-off's JSON has neither")
+        }
+        print("✅ Background Items delete passed!\n")
     }
 
     // MARK: Background Items: Undo everything's hook, and the journal's entries
@@ -9892,14 +10142,15 @@ extension TestRunner {
         fx.clearCalls()
         let notes = provider.planNotes(.backgroundItems, rows: Array(ready.rows.prefix(2)))
         assertTrue(fx.calls.isEmpty, "The plan reads nothing")
-        assertEqual(notes, [B.turnedOffNote, "Leftover files go to the Trash."], "...and says where things go")
+        assertEqual(notes, [B.turnedOffNote, B.deletedNote], "...and says where things go")
         assertEqual(B.summary(rows: ready.rows, ticked: [ready.rows[1]]),
                     "Found 2 background items from other apps: 1 on, 1 not loaded, 1 leftover · 1 ticked. macOS's own aren't listed.",
                     "The summary")
         provider.apply(.backgroundItems, ids: [p1, p2, B.loginItemsRowID])
         let finished = wait { $0.phase == .finished }
         assertEqual(finished.receipt?.headline, "Changed 2 background items.", "Applying ends on a receipt")
-        assertEqual(finished.receipt?.lines, ["Turned off: p1.", "Moved to the Trash: p2."], "...one line per kind")
+        assertEqual(finished.receipt?.lines, ["Turned off: p1.", "Deleted, moved to the Trash: p2 (~/.Trash/com.example.p2.plist)."],
+                    "...one line per kind")
         assertTrue(provider.snapshot[.settings].scannedAt == nil,
                    "Settings' scan no longer stands: its Undo everything row lists what Background Items journals")
         assertEqual(finished.rows.map(\.id), [p1, B.loginItemsRowID], "...the leftover's row gone, the link kept")
@@ -9992,7 +10243,7 @@ extension TestRunner {
                 assertTrue(false, "(four agents for every account)")
                 return
             }
-            assertTrue(leftRow.caveat?.contains("Installed for every account: its file goes to the Trash for all of them.") == true
+            assertTrue(leftRow.caveat?.contains(B.allUsersDeleteNote) == true
                        && leftRow.tags == [B.leftoverTag, B.allUsersTag, MacTweaksStorage.passwordTag], "A leftover for every account is for all users")
             assertTrue(mineRow.tags == [B.leftoverTag, B.allUsersTag, MacTweaksStorage.passwordTag] && B.needsAdministrator(mineRow)
                        && B.planNotes([mineRow]).contains(MacTweaksStorage.passwordNote),
@@ -10004,7 +10255,7 @@ extension TestRunner {
             assertTrue(B.planNotes([leftRow]).contains("Items for all users change for every account on this Mac."),
                        "The plan says the leftover's move is for every account")
             let result = B.apply([leftRow], env: env)
-            assertTrue(result.receipt.headline == "Moved 1 leftover to the Trash." && fx.mac.adminScripts.count == 1 && !fm.fileExists(atPath: left),
+            assertTrue(result.receipt.headline == "Deleted 1 item." && fx.mac.adminScripts.count == 1 && !fm.fileExists(atPath: left),
                        "...and root moves it, behind one prompt")
         }
 
@@ -10032,7 +10283,7 @@ extension TestRunner {
             let rows = B.scan(fx.environment).filter { !$0.isLink }
             assertEqual(rows.map(\.id), [bgKey("com.example.backup"), bgKey("com.example.cloud"), bgKey("com.example.docsrun")],
                         "A link into ~/documents is never read, whatever its case")
-            assertTrue(rows.allSatisfy { !$0.tags.contains(B.leftoverTag) && !$0.isDefault && B.change(of: $0) != .trash },
+            assertTrue(rows.allSatisfy { !$0.tags.contains(B.leftoverTag) && !$0.isDefault && B.change(of: $0) != .delete },
                        "What runs from ~/DOCUMENTS, a disk that isn't mounted or a cloud folder is never judged gone, so never ticked for the Trash")
         }
 
@@ -10296,6 +10547,20 @@ extension TestRunner {
         assertEqual(journal.recordAhead([later]), .saved(added: []), "An entry already there is kept")
         assertTrue(fm.contents(atPath: url.path) == bytes && journal.entries().first == ea, "...as it was, the file untouched")
 
+        // A delete's entry is written over the one there, in the journal's canonical form (which
+        // uninstall.sh greps for "deleted":true), the rest byte for byte; writing it again writes nothing.
+        let deleted = ea.deleting(plist: a.plist, trash: fx.trash + "/com.example.ja.plist")
+        let firmware = MacTweaksJournal.load(url: url).journal?.json("firmware:x")
+        assertEqual(journal.update([deleted]), .saved(added: [ea.key]), "A delete's entry replaces the turn-off's")
+        assertTrue(journal.entries().first == deleted && MacTweaksJournal.load(url: url).journal?.json("firmware:x") == firmware,
+                   "...the first previous state kept in it, the other entries byte for byte")
+        let stored = MacTweaksJournal.load(url: url).journal?.json(ea.key).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        assertTrue(stored.contains("\"deleted\":true") && !stored.contains("\\/"), "...stored compact and canonical, slashes unescaped")
+        let unchanged = fm.contents(atPath: url.path)
+        assertEqual(journal.update([deleted]), .saved(added: []), "Writing it again adds nothing")
+        assertTrue(fm.contents(atPath: url.path) == unchanged, "...and leaves the file untouched")
+        _ = journal.update([ea])
+
         // Removing takes out those keys only; the last entry takes the file with it.
         assertEqual(journal.remove([ea.key]), nil, "An entry is removed")
         assertTrue(journal.entries() == [eb] && MacTweaksJournal.load(url: url).journal?.json("firmware:x") != nil,
@@ -10453,7 +10718,7 @@ extension TestRunner {
                    && plan.contains("ud: back on and started again (launchctl enable system/com.example.ud, then launchctl bootstrap)."),
                    "Through the provider's engine, its plan lines are Background Items' own")
         let notes = provider.planNotes(.settings, rows: [undoRow])
-        assertTrue(notes.contains("Puts back 3 background items Lightspot turned off.") && notes.contains(MacTweaksStorage.passwordNote)
+        assertTrue(notes.contains("Puts back 3 background items Lightspot turned off or deleted.") && notes.contains(MacTweaksStorage.passwordNote)
                    && notes.contains(MacTweaksSettings.backgroundForEveryoneNote),
                    "With daemons journaled and no profile, the plan says macOS may ask for a password, for every account")
         // With the profile installed too, one sentence covers the profile and the daemons; with

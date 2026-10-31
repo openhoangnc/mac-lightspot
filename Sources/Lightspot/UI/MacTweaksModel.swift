@@ -101,6 +101,7 @@ final class MacTweaksModel: ObservableObject {
                 hints.append(("⏎", "Open"))
             } else {
                 if MacTweaksTicks.isTickable(selectedRow) { hints.append(("Space", "Tick")) }
+                if MacTweaksTicks.canDelete(selectedRow) { hints.append(("⌫", "Delete")) }
                 if hasTickable { hints.append(("⏎", "Review")) }
             }
             if revealPath != nil { hints.append(("⌥⏎", "Finder")) }
@@ -207,8 +208,24 @@ final class MacTweaksModel: ObservableObject {
         checked[section.index] = MacTweaksTicks.toggled(checked[section.index], id, in: rows)
     }
 
-    /// How a row's box is drawn: ticked, an undo arrow, a preset partly ticked, a lock or a link.
+    /// How a row's box is drawn: ticked, an undo arrow, a trash for a deletion, a preset partly
+    /// ticked, a lock or a link.
     func box(_ row: Row) -> MacTweaksTicks.Box { MacTweaksTicks.box(row, checkedIDs, in: rows) }
+
+    /// The row as the list draws it: marked for deletion, with the deletion's items and caveat and
+    /// the Delete tag.
+    func shown(_ row: Row) -> Row {
+        guard MacTweaksTicks.isMarkedForDeletion(row, checkedIDs) else { return row }
+        var marked = row.markedForDeletion()
+        if !marked.tags.contains(MacTweaksTicks.deleteTag) { marked.tags.insert(MacTweaksTicks.deleteTag, at: 0) }
+        return marked
+    }
+
+    /// ⌫: marks the selected row for deletion, or unmarks it (`MacTweaksTicks.toggledDeletion`).
+    func toggleDeletion() {
+        guard let row = selectedRow, !isConfirming, state.phase == .ready else { return }
+        checked[section.index] = MacTweaksTicks.toggledDeletion(checked[section.index], row.id, in: rows)
+    }
 
     /// Whether any row starts ticked, so "Defaults" means something.
     var hasDefaults: Bool { rows.contains { $0.isDefault } }
@@ -251,7 +268,8 @@ final class MacTweaksModel: ObservableObject {
     func confirm() {
         guard isConfirming else { return }
         isConfirming = false
-        provider.apply(section, ids: Set(checkedRows.map(\.id)))
+        // The ticks as they are: a delete mark is a key of its own, which the provider reads.
+        provider.apply(section, ids: checkedIDs)
     }
 
     /// Esc while the plan shows goes back to the list. False when there was no plan.

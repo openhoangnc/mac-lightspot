@@ -10,7 +10,8 @@ import SwiftUI
 // rescan first, once with the switches first, since the first shrink is where a bad row view
 // traps. Up to 1.4.0's QA, a row view reading `model.rows[index]` trapped there. The keys go
 // through the window as AppKit delivers them (`sendEvent`): ↓ to the last row, ⇥ and ⇧⇥, Space,
-// ↵ for the plan, Esc back out of it, Esc to close, and ⌘W after a reopen.
+// ⌫ to mark a row for deletion and unmark it, ↵ for the plan, Esc back out of it, Esc to close,
+// and ⌘W after a reopen.
 //
 // Each run is a child process of its own, so a trap ends only that one and the report says
 // which. Nothing is applied, written, moved, asked for or opened (a link's ↵ goes nowhere);
@@ -205,6 +206,17 @@ final class SectionRun {
             if links != before + 1 || !controller.isOpen { fail("↵ on a link row didn't hand it over: \(state)") }
         }
         for _ in model.rows where model.selectedRow?.isLink == true { press(126, "\u{F700}", [.numericPad, .function]) }
+        // ⌫ marks the row for deletion (Background Items) and unmarks it; on a leftover it is Space.
+        if let row = model.selectedRow, MacTweaksTicks.canDelete(row) {
+            let before = model.box(row)
+            press(51, "\u{7F}")
+            let marked = model.box(row)
+            press(51, "\u{7F}")
+            if marked == before || model.box(row) != before || (marked != .delete && before != .delete) {
+                fail("⌫ didn't mark and unmark \(row.title): \(before) → \(marked) → \(model.box(row))")
+            }
+            log("⌫ on \(row.title): \(before) → \(marked) → \(model.box(row))")
+        }
         // Something to review: Space ticks the row when nothing is ticked yet.
         if model.checkedRows.isEmpty, MacTweaksTicks.isTickable(model.selectedRow) { press(49, " ") }
         if model.selectedRow?.isLink == false, !model.checkedRows.isEmpty {
@@ -315,6 +327,7 @@ final class SectionRun {
         var journal = MacTweaksBackground.journal(env)
         journal.recordAhead = { _ in .failed("overlay_check never writes the journal") }
         journal.remove = { _ in "overlay_check never writes the journal" }
+        journal.update = { _ in .failed("overlay_check never writes the journal") }
         env.backgroundItems.journal = journal
         return env
     }
@@ -339,8 +352,10 @@ final class Render {
             let run = SectionRun(section)
             run.controller.show(section)
             run.waitReady()
-            // The second row selected, so its items show.
+            // The second row selected, so its items show; in Background Items marked for deletion
+            // with ⌫, so the trash box, the Delete tag and the delete's commands show.
             if run.model.rows.count > 1 { run.press(125, "\u{F701}", [.numericPad, .function]) }
+            if let row = run.model.selectedRow, MacTweaksTicks.canDelete(row), !row.deletes { run.press(51, "\u{7F}") }
             run.pump(0.5)
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 app.appearance = NSAppearance(named: appearance)

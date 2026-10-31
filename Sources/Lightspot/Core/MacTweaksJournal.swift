@@ -400,6 +400,16 @@ struct MacTweaksJournal: Sendable, Equatable {
         return true
     }
 
+    /// Replaces or adds a raw JSON object (a Background Items delete, which gains where its plist
+    /// went), in canonical form as `recordIfAbsent` keeps one. False when the JSON isn't an object.
+    @discardableResult
+    mutating func replace(_ key: String, _ json: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: json), object is [String: Any],
+              let data = Self.canonical(object) else { return false }
+        stored[key] = data
+        return true
+    }
+
     /// Replaces a typed entry (the Dock's, which gains tiles).
     mutating func replace(_ key: String, _ entry: Entry) {
         if let data = try? Self.encoder.encode(entry) { stored[key] = data }

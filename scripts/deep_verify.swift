@@ -738,6 +738,10 @@ extension DeepVerifier {
             record.forbidden("journal remove")
             return "deep_verify never writes the journal"
         }
+        journal.update = { _ in
+            record.forbidden("journal update")
+            return .failed("deep_verify never writes the journal")
+        }
         env.backgroundItems.journal = journal
         let journalPath = MacTweaksJournal.url(home: env.home).path
         let journalBefore = FileManager.default.contents(atPath: journalPath)
@@ -839,12 +843,29 @@ extension DeepVerifier {
             return row.tags.contains(B.updaterTag) == isUpdater && (isUpdater ? !warned : (warned || row.tags.contains(B.leftoverTag)))
         }
         check("Updaters carry the Updater tag and no warning; every other item the warning, unless it is a leftover", updatersRight)
-        check("Daemons, and leftovers moved out of /Library/LaunchAgents, are For all users and may ask for the password; nothing else is For all users",
+        check("Daemons, and leftovers deleted out of /Library/LaunchAgents, are For all users and may ask for the password; nothing else is For all users",
               rows.allSatisfy { row in
                   let system = row.id.hasPrefix("background:system/")
-                  let shared = system || (sharedAgents[row.id] == true && B.change(of: row) == .trash)
+                  let shared = system || (sharedAgents[row.id] == true && B.change(of: row) == .delete)
                   return row.tags.contains(B.allUsersTag) == shared && (!shared || row.tags.contains(MacTweaksStorage.passwordTag))
               })
+        // ⌫'s delete: offered on every changeable item whose own change isn't one, its plist
+        // first, then the commands; For all users and the password exactly for daemons and
+        // /Library/LaunchAgents.
+        let deletable = rows.filter { $0.deletion != nil }
+        print("     Deletable with ⌫: \(deletable.count) of \(rows.filter { !$0.isLink }.count)")
+        check("Every item ⌫ can delete is changeable, shows its plist first and the delete's commands, and is For all users and may ask "
+              + "for the password exactly as a daemon or an item in /Library/LaunchAgents",
+              rows.allSatisfy { row in
+                  guard let deletion = row.deletion else { return true }
+                  let shared = row.id.hasPrefix("background:system/") || sharedAgents[row.id] == true
+                  let marked = row.markedForDeletion()
+                  return !row.readOnly && B.change(of: row) != .delete && B.change(of: marked) == .delete
+                      && deletion.items.first == row.items.first
+                      && deletion.items.dropFirst().map(\.target).last?.hasSuffix(" ~/.Trash/") == true
+                      && marked.tags.contains(B.allUsersTag) == shared && marked.tags.contains(MacTweaksStorage.passwordTag) == (shared || row.items.first?.isForeign == true)
+              })
+        check("No read-only row can be deleted", rows.allSatisfy { !$0.readOnly || $0.deletion == nil })
         let guarded = B.guardedFolders(env)
         let leftoversRight = rows.allSatisfy { row in
             let (run, arguments) = program(row.id)
@@ -885,9 +906,16 @@ extension DeepVerifier {
         let ranBefore = record.programs.count
         let notes = B.planNotes(ticked)
         print("     Plan for all \(ticked.count): \(B.applyTitle(ticked: ticked)). \(notes.joined(separator: " "))")
+        let deleted = rows.compactMap { $0.deletion != nil ? $0.markedForDeletion() : nil }
+        let deleteNotes = B.planNotes(deleted)
+        if !deleted.isEmpty { print("     Plan with every ⌫ delete: \(B.applyTitle(ticked: deleted)). \(deleteNotes.joined(separator: " "))") }
         check("Building the plan runs nothing", record.programs.count == ranBefore)
-        check("The plan asks for the password exactly when a daemon, or a leftover only root can move, is ticked",
-              notes.contains(MacTweaksStorage.passwordNote) == ticked.contains(where: B.needsAdministrator))
+        check("The plan asks for the password exactly when a daemon, or a plist only root can move, is ticked",
+              notes.contains(MacTweaksStorage.passwordNote) == ticked.contains(where: B.needsAdministrator)
+                  && deleteNotes.contains(MacTweaksStorage.passwordNote) == deleted.contains(where: B.needsAdministrator))
+        check("...and a delete's plan says where the files go and how they come back, and warns when an app is still installed",
+              deleted.isEmpty || (deleteNotes.contains(B.deletedNote)
+                                  && deleteNotes.contains(B.deleteAppNote) == deleted.contains { !$0.tags.contains(B.leftoverTag) }))
         let items = B.items(env)
         let entries = items.map { B.Entry(item: $0, owner: $0.label, wasDisabled: false, wasLoaded: true, date: Date()) }
         let undo = B.undo(entries, environment: env)

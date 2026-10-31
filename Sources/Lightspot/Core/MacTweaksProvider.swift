@@ -130,6 +130,12 @@ struct MacTweaksRow: Sendable, Equatable, Identifiable {
     var undoes = false
     /// A preset: Space ticks these rows, or unticks them when they all are. Never applied itself.
     var ticks: [String]?
+    /// Its own change deletes it (a Background Items leftover): ⌫ ticks it as Space does, and a
+    /// tick shows the Delete tag and a trash box.
+    var deletes = false
+    /// ⌫ marks it for this instead of its own change (Background Items' delete): the plan and the
+    /// apply get the row as `markedForDeletion()` makes it. nil when it can't be deleted.
+    var deletion: MacTweaksDeletion?
 
     var isLink: Bool { link != nil }
     var isPreset: Bool { ticks != nil }
@@ -139,6 +145,30 @@ struct MacTweaksRow: Sendable, Equatable, Identifiable {
         if let countLabel { return countLabel }
         return bytes.map(MacTweaksProvider.size) ?? ""
     }
+
+    /// The row as a delete mark makes it: its deletion's outcome, items (the plist, then the
+    /// commands), tags and caveat, in place of its own change's.
+    func markedForDeletion() -> MacTweaksRow {
+        guard let deletion else { return self }
+        var row = self
+        row.outcome = deletion.outcome
+        row.items = deletion.items
+        row.tags = deletion.tags
+        row.caveat = deletion.caveat
+        row.deletes = true
+        row.deletion = nil
+        row.isDefault = false
+        row.undoes = false
+        return row
+    }
+}
+
+/// A row's other change, ⌫'s instead of Space's (Background Items' delete).
+struct MacTweaksDeletion: Sendable, Equatable {
+    var outcome: String
+    var items: [MacTweaksItem]
+    var tags: [String]
+    var caveat: String?
 }
 
 /// What an apply did, as the overlay shows it and the log records it.
@@ -157,6 +187,34 @@ struct MacTweaksReceipt: Sendable, Equatable {
 /// Which rows are ticked: each row's default after a scan, and Space's change. Pure, so it is
 /// tested; the overlay's model applies it.
 enum MacTweaksTicks {
+    /// The tag a row marked for deletion shows.
+    static let deleteTag = "Delete"
+
+    /// A delete mark in the ticks: kept apart from the row's own tick, so a row is marked for one
+    /// change or the other, never both.
+    static func deletionKey(_ id: String) -> String { "delete:" + id }
+
+    /// A row ⌫ can mark: tickable, with a deletion, or whose own change deletes it.
+    static func canDelete(_ row: MacTweaksRow?) -> Bool {
+        guard let row, isTickable(row) else { return false }
+        return row.deletes || row.deletion != nil
+    }
+
+    /// Ticked for deletion: by ⌫'s mark, or by its own tick when that change deletes it.
+    static func isMarkedForDeletion(_ row: MacTweaksRow, _ ticks: Set<String>) -> Bool {
+        (row.deletion != nil && ticks.contains(deletionKey(row.id))) || (row.deletes && ticks.contains(row.id))
+    }
+
+    /// ⌫ on `id`: marks or unmarks it for deletion, which replaces its own tick (and Space's
+    /// replaces the mark). A row whose own change deletes it ticks as Space does.
+    static func toggledDeletion(_ ticks: Set<String>, _ id: String, in rows: [MacTweaksRow]) -> Set<String> {
+        guard let row = rows.first(where: { $0.id == id }), canDelete(row) else { return ticks }
+        if row.deletes { return toggled(ticks, id, in: rows) }
+        let key = deletionKey(id)
+        if ticks.contains(key) { return ticks.subtracting([key]) }
+        return ticks.subtracting(rows.filter(\.exclusive).map(\.id) + [id]).union([key])
+    }
+
     /// A row Space can tick: not a link, not read-only.
     static func isTickable(_ row: MacTweaksRow?) -> Bool {
         guard let row else { return false }
@@ -186,7 +244,7 @@ enum MacTweaksTicks {
         }
         if ticks.contains(id) { return ticks.subtracting([id]) }
         if row.exclusive { return [id] }
-        return ticks.subtracting(rows.filter(\.exclusive).map(\.id)).union([id])
+        return ticks.subtracting(rows.filter(\.exclusive).map(\.id) + [deletionKey(id)]).union([id])
     }
 
     /// The rows a preset can tick: those it names that are tickable, neither presets nor exclusive.
@@ -194,14 +252,22 @@ enum MacTweaksTicks {
         named.filter { id in rows.first { $0.id == id }.map { isTickable($0) && !$0.isPreset && !$0.exclusive } ?? false }
     }
 
-    /// The rows an apply gets: ticked, and neither links nor presets.
+    /// The rows an apply gets: ticked, and neither links nor presets; a row marked for deletion
+    /// as `markedForDeletion()` makes it.
     static func ticked(_ rows: [MacTweaksRow], _ ticks: Set<String>) -> [MacTweaksRow] {
-        rows.filter { !$0.isLink && !$0.isPreset && ticks.contains($0.id) }
+        rows.compactMap { row in
+            guard !row.isLink, !row.isPreset else { return nil }
+            if ticks.contains(row.id) { return row }
+            if row.deletion != nil, ticks.contains(deletionKey(row.id)) { return row.markedForDeletion() }
+            return nil
+        }
     }
 
     /// How a row's box is drawn.
     enum Box: Sendable, Equatable {
         case link, locked, unticked, ticked, undo
+        /// Ticked for deletion.
+        case delete
         /// A preset with some, not all, of its rows ticked.
         case mixed
     }
@@ -214,6 +280,7 @@ enum MacTweaksTicks {
             let on = targets.filter(ticks.contains).count
             return targets.isEmpty || on == 0 ? .unticked : (on == targets.count ? .ticked : .mixed)
         }
+        if isMarkedForDeletion(row, ticks) { return .delete }
         guard ticks.contains(row.id) else { return .unticked }
         return row.undoes ? .undo : .ticked
     }
@@ -507,7 +574,13 @@ final class MacTweaksProvider: @unchecked Sendable {
         }
         var xcodeSelect = "/usr/bin/xcode-select"
         var tmutil = "/usr/bin/tmutil"
-        var moveToTrash: @Sendable (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
+        /// Where the item went, when macOS says (Background Items journals it, so Undo everything
+        /// can put a deleted plist back).
+        var moveToTrash: @Sendable (URL) throws -> URL? = { url in
+            var resulting: NSURL?
+            try FileManager.default.trashItem(at: url, resultingItemURL: &resulting)
+            return resulting as URL?
+        }
         /// Runs one script Lightspot built as root, after at most one prompt, never twice.
         var runAdmin: @Sendable (String) -> QuickActionsProvider.PrivilegedRun = { QuickActionsProvider.runPrivilegedScript($0) }
         /// Clean Dev Mac's rules, whose caches App caches leaves to the cleaner: the ones it

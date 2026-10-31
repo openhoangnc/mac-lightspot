@@ -196,6 +196,8 @@ extension MacTweaksSettings {
         var journalStatus = MacTweaksJournal.Status.ready
         var rcdPlistExists = false
         var dockBackupExists = false
+        /// The home folder: which deleted background plists go back into this user's own folder.
+        var home = NSHomeDirectory()
 
         static func slot(_ domain: String, _ key: String) -> String { domain + "|" + key }
         func value(_ domain: String, _ key: String) -> PreferenceValue? { values[Self.slot(domain, key)] }
@@ -223,6 +225,7 @@ extension MacTweaksSettings {
         var r = Reading()
         r.os = settings.osVersion()
         r.userID = env.userID
+        r.home = env.home
         r.installed = env.intelligence.profileInstalled()
         let url = journalURL(env)
         if let journal {
@@ -812,14 +815,16 @@ extension MacTweaksSettings {
         if !entries.isEmpty {
             notes.append("Puts back \(entries.count) \(entries.count == 1 ? "setting" : "settings") as \(entries.count == 1 ? "it was" : "they were") before Lightspot changed \(entries.count == 1 ? "it" : "them").")
         }
-        let background = r.journal.entries(kind: "background").map(\.key)
+        let backgroundPairs = r.journal.entries(kind: "background")
+        let background = backgroundPairs.map(\.key)
         if !background.isEmpty {
-            notes.append("Puts back \(background.count) background \(background.count == 1 ? "item" : "items") Lightspot turned off.")
+            notes.append("Puts back \(background.count) background \(background.count == 1 ? "item" : "items") Lightspot turned off or deleted.")
         }
         let restarts = restartOrder.filter { name in entries.contains { $0.entry.restart?.contains(name) == true } }
         if let restart = restartSentence(restarts) { notes.append(restart) }
-        // Daemons go back on in the administrator batch, with the profile's removal or alone.
-        let daemons = background.contains { $0.hasPrefix("background:system/") }
+        // Daemons go back on, and root's deleted plists back in place, in the administrator batch,
+        // with the profile's removal or alone.
+        let daemons = MacTweaksBackground.undoNeedsAdministrator(backgroundPairs, home: r.home)
         if r.installed.on {
             notes.append(daemons ? "Lightspot asks for your administrator password to remove its profile and turn background items "
                                    + "for every account back on."

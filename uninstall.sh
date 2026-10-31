@@ -279,10 +279,14 @@ mac_tweaks_notice() {
     fi
     echo "--> Mac Tweaks' changes stay on this Mac:"
     if [ -f "${TWEAKS_JOURNAL}" ]; then
-        echo "    - the settings Lightspot changed and the background items it turned off; what each"
-        echo "      was before is kept in ~/Library/Application Support/${APP_NAME}/tweaks-journal.json"
+        echo "    - the settings Lightspot changed and the background items it turned off or deleted; what"
+        echo "      each was before is kept in ~/Library/Application Support/${APP_NAME}/tweaks-journal.json"
         if /usr/bin/grep -q '"background:system/' "${TWEAKS_JOURNAL}" 2>/dev/null; then
             echo "      (background items for all users among them stay off for every account)"
+        fi
+        if /usr/bin/grep -q '"deleted":true' "${TWEAKS_JOURNAL}" 2>/dev/null; then
+            echo "      (the files of the background items it deleted are in the Trash: Undo everything puts"
+            echo "      them back only while they are still there)"
         fi
     fi
     if [ "${UNREADABLE_JOURNALS}" -eq 1 ]; then

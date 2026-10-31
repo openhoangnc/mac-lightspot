@@ -192,7 +192,7 @@ struct MacTweaksList: View {
                                 if let header = headers[row.id] {
                                     MacTweaksGroupHeader(title: header)
                                 }
-                                MacTweaksRowView(row: row, box: model.box(row), selected: index == cursor, home: model.home,
+                                MacTweaksRowView(row: model.shown(row), box: model.box(row), selected: index == cursor, home: model.home,
                                                  onBox: { if let link = row.link { model.open(link) } else { model.toggle(row.id) } },
                                                  onSelect: { model.setCursor(id: row.id) })
                             }
@@ -263,6 +263,15 @@ struct MacTweaksRowView: View {
         case .ticked: return "checkmark.square.fill"
         case .undo: return "arrow.uturn.backward.square.fill"
         case .mixed: return "minus.square.fill"
+        case .delete: return "trash.square.fill"
+        }
+    }
+
+    static func boxColor(_ box: MacTweaksTicks.Box) -> Color {
+        switch box {
+        case .delete: return Color.red.opacity(0.85)
+        case .link, .ticked, .undo, .mixed: return Color.white.opacity(0.9)
+        case .locked, .unticked: return Color.white.opacity(0.45)
         }
     }
 
@@ -272,7 +281,7 @@ struct MacTweaksRowView: View {
                 Button(action: onBox) {
                     Image(systemName: Self.boxSymbol(box))
                         .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(box == .link || box == .ticked || box == .undo || box == .mixed ? 0.9 : 0.45))
+                        .foregroundColor(Self.boxColor(box))
                 }
                 .buttonStyle(.plain)
                 Image(systemName: row.symbol)
@@ -290,7 +299,7 @@ struct MacTweaksRowView: View {
                 }
                 Spacer(minLength: 8)
                 ForEach(row.tags, id: \.self) { tag in
-                    OverlayTag(label: tag, color: tag == "Deleted right away" ? .red : .white,
+                    OverlayTag(label: tag, color: tag == "Deleted right away" || tag == MacTweaksTicks.deleteTag ? .red : .white,
                                symbol: tag == MacTweaksSettings.profileTag ? "lock" : nil)
                 }
                 Text(row.value)

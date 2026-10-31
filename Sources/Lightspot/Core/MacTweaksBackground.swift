@@ -8,9 +8,11 @@ import Darwin
 // THIRD-PARTY-NOTICES.md): its three folders, its verdicts (owner, updater, leftover) and its
 // launchctl verbs. Lightspot's own: the state also reads whether launchd has the job loaded; user
 // agents change as the user and every daemon in one administrator batch; everything is judged by
-// reading launchd again; a turn-off is journaled before it runs; and root only ever acts on a
-// plist the scan found, never on what the journal (the user's own file) says. All of it blocks, so
-// it runs on MacTweaksProvider's queue, and only once the user opens the section.
+// reading launchd again; a turn-off or a delete is journaled before it runs; a delete moves the
+// plist to the Trash, and Undo everything puts it back; and root only ever acts on a plist the
+// scan found, or puts back a file root owns from the user's Trash, never on what the journal (the
+// user's own file) says alone. All of it blocks, so it runs on MacTweaksProvider's queue, and only
+// once the user opens the section.
 
 enum MacTweaksBackground {
     typealias ProviderEnvironment = MacTweaksProvider.Environment
@@ -398,13 +400,19 @@ enum MacTweaksBackground {
         }
     }
 
-    enum Change: Sendable, Equatable { case turnOff, turnOn, trash }
+    /// Space's changes, and ⌫'s: a delete stops the job, switches its label off (so a copy its app
+    /// writes again doesn't load) and moves its plist to the Trash, journaled first.
+    enum Change: Sendable, Equatable { case turnOff, turnOn, delete }
 
-    /// A leftover goes to the Trash, unless its file is a link or another plist has its label
-    /// (stopping this one would stop that one's job); an Off item is turned back on; anything else
-    /// is turned off.
+    /// Whether its plist can move: not a link, and no other plist with its label (stopping this one
+    /// would stop that one's job, and launchd runs only one of them).
+    static func isMovable(_ item: Item) -> Bool { !item.isLink && item.alsoAt.isEmpty }
+
+    /// A leftover is deleted (its file goes to the Trash), unless its plist can't move; an Off item
+    /// is turned back on; anything else is turned off. Any movable item can also be deleted, by ⌫
+    /// (`MacTweaksRow.deletion`).
     static func change(_ item: Item, state: State, leftover: Bool) -> Change {
-        if leftover && !item.isLink && item.alsoAt.isEmpty { return .trash }
+        if leftover && isMovable(item) { return .delete }
         return state == .off ? .turnOn : .turnOff
     }
 
@@ -412,13 +420,13 @@ enum MacTweaksBackground {
     static let turnOffOutcome = "Turns off: it stops now and stays off after a restart"
     static let turnOffIdleOutcome = "Turns off: it stays off, even if Login Items switches it on again"
     static let turnOnOutcome = "Turns back on: launchd loads it again"
-    static let trashOutcome = "Stops it, then its file goes to the Trash"
+    static let deleteOutcome = "Deletes it: stops it, switches it off, and moves its file to the Trash"
 
     static func change(of row: MacTweaksRow) -> Change? {
         switch row.outcome {
         case turnOffOutcome, turnOffIdleOutcome: return .turnOff
         case turnOnOutcome: return .turnOn
-        case trashOutcome: return .trash
+        case deleteOutcome: return .delete
         default: return nil
         }
     }
@@ -446,8 +454,15 @@ enum MacTweaksBackground {
     static func untilRestart(system: Bool) -> String { system ? "until you restart" : "until you log out or restart" }
     static let notLoadedNote = "Not loaded now. Login Items & Extensions in System Settings may have it switched off."
     static let unreadableJournalNote = "Lightspot's undo journal can't be read: turning this off keeps it aside, and starts a new one."
+    static let unreadableDeleteNote = "Lightspot's undo journal can't be read: deleting this keeps it aside, and starts a new one."
 
     static func warning(_ owner: String) -> String { "Not an updater. Turning it off can stop \(owner) working." }
+
+    /// A delete of something that isn't a leftover: its app is still there.
+    static func deleteWarning(_ owner: String) -> String {
+        "Deleting a helper of an app that's still installed can stop \(owner) working, and \(owner) may put it back the next time it runs."
+    }
+    static let allUsersDeleteNote = "Installed for every account: deleting it removes its file for all of them."
 
     /// What a row's detail says it runs: the program, or an interpreter and its script; never
     /// other arguments, which can hold tokens.
@@ -460,19 +475,25 @@ enum MacTweaksBackground {
         return shown(item.program)
     }
 
-    /// The launchctl commands a change runs, as the plan shows them.
+    /// The commands a change runs, as the plan shows them; a delete's move as the `mv` it equals.
     static func commands(_ item: Item, _ change: Change, loaded: Loaded, env: ProviderEnvironment) -> [String] {
         let target = target(item.label, system: item.system, userID: env.userID)
+        let plist = CleanDevMacEngine.displayPath(item.plist, home: env.home)
         switch change {
         case .turnOff:
             return ["launchctl disable \(target)"] + (loaded == .no ? [] : ["launchctl bootout \(target)"])
         case .turnOn:
-            let plist = CleanDevMacEngine.displayPath(item.plist, home: env.home)
             return ["launchctl enable \(target)"]
                 + (loaded == .yes ? [] : ["launchctl bootstrap \(domain(system: item.system, userID: env.userID)) \(plist)"])
-        case .trash:
-            return loaded == .no ? [] : ["launchctl bootout \(target)"]
+        case .delete:
+            return (loaded == .no ? [] : ["launchctl bootout \(target)"]) + ["launchctl disable \(target)", "mv \(plist) ~/.Trash/"]
         }
+    }
+
+    /// Who runs a delete's move: root for a daemon, a plist another account owns, or one in the
+    /// folder every account shares (root's, whoever owns the file).
+    static func deleteNeedsAdministrator(_ item: Item, foreign: Bool) -> Bool {
+        item.system || foreign || item.place == .allUsersAgents
     }
 
     static func row(_ item: Item, _ launchd: Launchd, journal: JournalStatus, recorded: Set<String>,
@@ -517,7 +538,7 @@ enum MacTweaksBackground {
             switch change {
             case .turnOff: notes.append("Installed for every account. Turning it off here is for your account only.")
             case .turnOn: notes.append("Installed for every account. Turning it back on here is for your account only.")
-            case .trash: notes.append("Installed for every account: its file goes to the Trash for all of them.")
+            case .delete: notes.append(allUsersDeleteNote)
             }
         }
         if !item.alsoAt.isEmpty {
@@ -526,6 +547,7 @@ enum MacTweaksBackground {
                          + (verdict.isLeftover ? ", so Lightspot moves neither file." : "."))
         }
         if change == .turnOff, case .unreadable = journal { notes.append(unreadableJournalNote) }
+        if change == .delete, case .unreadable = journal { notes.append(unreadableDeleteNote) }
         if verdict.isLeftover {
             if !item.alsoAt.isEmpty {
                 notes.append("What this copy runs is gone.")
@@ -537,17 +559,21 @@ enum MacTweaksBackground {
             notes.append(warning(verdict.owner))
         }
 
-        var tags: [String] = []
-        if verdict.isUpdater { tags.append(updaterTag) }
-        if verdict.isLeftover { tags.append(leftoverTag) }
-        // Moving a file out of /Library/LaunchAgents removes it for every account, as a daemon's
-        // change is for every account.
-        if item.system || (item.place == .allUsersAgents && change == .trash) { tags.append(allUsersTag) }
+        var verdictTags: [String] = []
+        if verdict.isUpdater { verdictTags.append(updaterTag) }
+        if verdict.isLeftover { verdictTags.append(leftoverTag) }
         let foreign = item.ownerUID != env.userID
-        // Root moves a leftover another account owns, or one out of the folder every account
-        // shares (root's, whoever owns the file).
-        if item.system || (change == .trash && (foreign || item.place == .allUsersAgents)) {
-            tags.append(MacTweaksStorage.passwordTag)
+        func tags(_ change: Change) -> [String] {
+            var tags = verdictTags
+            // Moving a file out of /Library/LaunchAgents removes it for every account, as a
+            // daemon's change is for every account.
+            if item.system || (item.place == .allUsersAgents && change == .delete) { tags.append(allUsersTag) }
+            // Root moves a plist another account owns, or one out of the folder every account
+            // shares (root's, whoever owns the file).
+            if item.system || (change == .delete && deleteNeedsAdministrator(item, foreign: foreign)) {
+                tags.append(MacTweaksStorage.passwordTag)
+            }
+            return tags
         }
 
         let symbol = verdict.isLeftover ? "questionmark.folder" : verdict.isUpdater ? "arrow.triangle.2.circlepath"
@@ -557,21 +583,37 @@ enum MacTweaksBackground {
         switch change {
         case .turnOff: outcome = loaded == .yes ? turnOffOutcome : turnOffIdleOutcome
         case .turnOn: outcome = turnOnOutcome
-        case .trash: outcome = trashOutcome
+        case .delete: outcome = deleteOutcome
+        }
+        let plistItem = MacTweaksItem(target: item.plist, isForeign: foreign)
+        // ⌫'s delete, for an item whose own change isn't one: what the plan and the row show once
+        // it is marked.
+        var deletion: MacTweaksDeletion?
+        if change != .delete && !readOnly && isMovable(item) {
+            var deleteNotes: [String] = []
+            if case .unreadable = journal { deleteNotes.append(unreadableDeleteNote) }
+            if item.place == .allUsersAgents { deleteNotes.append(allUsersDeleteNote) }
+            deleteNotes.append(verdict.appMissing ? "The app it came with (\(item.associatedIDs.joined(separator: ", "))) isn't installed."
+                                                  : deleteWarning(verdict.owner))
+            deletion = MacTweaksDeletion(
+                outcome: deleteOutcome,
+                items: [plistItem] + commands(item, .delete, loaded: loaded, env: env).map { MacTweaksItem(target: $0) },
+                tags: tags(.delete), caveat: deleteNotes.joined(separator: " "))
         }
         return MacTweaksRow(
             id: item.id, symbol: symbol, title: verdict.owner,
             detail: program.isEmpty ? item.label : item.label + " · " + program,
             caveat: notes.isEmpty ? nil : notes.joined(separator: " "),
             // A read-only row runs nothing, so it lists no commands.
-            items: [MacTweaksItem(target: item.plist, isForeign: foreign)]
-                + (readOnly ? [] : commands(item, change, loaded: loaded, env: env).map { MacTweaksItem(target: $0) }),
+            items: [plistItem] + (readOnly ? [] : commands(item, change, loaded: loaded, env: env).map { MacTweaksItem(target: $0) }),
             countLabel: state.label,
-            isDefault: change == .trash,
-            tags: tags,
+            isDefault: change == .delete,
+            tags: tags(change),
             outcome: outcome,
             revealsInFinder: true,
-            readOnly: readOnly)
+            readOnly: readOnly,
+            deletes: change == .delete,
+            deletion: deletion)
     }
 
     /// The last row: Login Items & Extensions, where macOS keeps its own switches for these.
@@ -630,20 +672,25 @@ enum MacTweaksBackground {
         switch Set(changes) {
         case [.turnOff]: return "Turn off " + count(number, "item", "items")
         case [.turnOn]: return "Turn " + count(number, "item", "items") + " back on"
-        case [.trash]: return "Move " + count(number, "leftover", "leftovers") + " to the Trash"
+        case [.delete]: return "Delete " + count(number, "item", "items")
         default: return "Apply " + count(number, "change", "changes")
         }
     }
 
-    /// The administrator runs a daemon's change, and the move of a leftover the user can't move:
-    /// another account's, or one in `/Library/LaunchAgents` (For all users on a leftover).
+    /// The administrator runs a daemon's change, and the move of a deleted plist the user can't
+    /// move: another account's, or one in `/Library/LaunchAgents` (For all users on a delete).
     static func needsAdministrator(_ row: MacTweaksRow) -> Bool {
         row.id.hasPrefix("background:system/")
-            || (change(of: row) == .trash && (row.items.first?.isForeign == true || row.tags.contains(allUsersTag)))
+            || (change(of: row) == .delete && (row.items.first?.isForeign == true || row.tags.contains(allUsersTag)))
     }
 
     static let turnedOffNote = "Turned-off items stay off after a restart, until you turn them back on here "
         + "or with Undo everything Lightspot changed, in Settings."
+
+    static let deletedNote = "Deleted items are switched off too, so a copy their app writes again doesn't load, and their files go to the Trash. "
+        + "Undo everything Lightspot changed, in Settings, puts them back while they're still in the Trash."
+    static let deleteAppNote = "Deleting a helper of an app that's still installed can stop the app working, "
+        + "and the app may put it back the next time it runs."
 
     static func planNotes(_ rows: [MacTweaksRow]) -> [String] {
         let changes = rows.compactMap(change(of:))
@@ -652,7 +699,9 @@ enum MacTweaksBackground {
         if changes.contains(.turnOn) { notes.append(MacTweaksSettings.enabledRecordPlanNote) }
         if rows.contains(where: { $0.tags.contains(allUsersTag) }) { notes.append("Items for all users change for every account on this Mac.") }
         if rows.contains(where: needsAdministrator) { notes.append(MacTweaksStorage.passwordNote) }
-        if changes.contains(.trash) { notes.append("Leftover files go to the Trash.") }
+        if changes.contains(.delete) { notes.append(deletedNote) }
+        // A leftover's app is gone; anything else deleted still has one.
+        if rows.contains(where: { change(of: $0) == .delete && !$0.tags.contains(leftoverTag) }) { notes.append(deleteAppNote) }
         return notes
     }
 
@@ -674,11 +723,36 @@ enum MacTweaksBackground {
             + "\(MacTweaksStorage.shellQuote(domain)) \(MacTweaksStorage.shellQuote(plist)); fi"
     }
 
-    /// A leftover root moves: stopped if loaded, refused if still loaded, then the guarded move.
-    static func stopAndTrashCommand(_ launchctl: String, _ target: String, move: String) -> String {
+    /// A delete root runs whole (a daemon): stopped if loaded, refused if still loaded, switched
+    /// off (refused if that fails), then the guarded move. `disable` is left out for an agent this
+    /// user already stopped and switched off, whose file only root can move.
+    static func deleteCommand(_ launchctl: String, _ target: String, move: String, disable: Bool = true) -> String {
         let (l, t) = (MacTweaksStorage.shellQuote(launchctl), MacTweaksStorage.shellQuote(target))
         return "if \(l) print \(t) >/dev/null 2>&1; then \(l) bootout \(t); fi; "
-            + "if \(l) print \(t) >/dev/null 2>&1; then echo 'Lightspot: still running after bootout'; exit 1; fi; " + move
+            + "if \(l) print \(t) >/dev/null 2>&1; then echo 'Lightspot: still running after bootout'; exit 1; fi; "
+            + (disable ? "\(l) disable \(t) || exit 1; " : "") + move
+    }
+
+    /// Undo everything's root step for a deleted plist root owns, from the user's Trash back to
+    /// its folder, checked as it runs, as `guardedMove` checks a move in: from inside the Trash
+    /// (`cd -P`, on only if `pwd -P` is where the Trash must be), the copy a regular file root
+    /// owns (`-O`: the batch runs as root, and only root's file can come back into a folder every
+    /// account loads), not a link, one link to it (`stat -f %l`, no hard link to another file),
+    /// its folder resolving to where it must, and nothing at the name it goes back to (never
+    /// overwritten). Then the switch back on, and the job started, only as they were before.
+    static func restoreCommand(_ launchctl: String, trashCopy: String, trash: String, trashPhysical: String,
+                               folder: String, folderPhysical: String, name: String,
+                               target: String, domain: String, plist: String, enable: Bool, bootstrap: Bool) -> String {
+        let q = MacTweaksStorage.shellQuote
+        let item = q("./" + (trashCopy as NSString).lastPathComponent)
+        let destination = q(folderPhysical + "/" + name)
+        let move = "if cd -P -- \(q(trash)) 2>/dev/null && [ \"$(pwd -P)\" = \(q(trashPhysical)) ] "
+            + "&& [ -f \(item) ] && [ ! -L \(item) ] && [ -O \(item) ] && [ \"$(/usr/bin/stat -f %l \(item))\" = 1 ] "
+            + "&& [ \"$(cd -P -- \(q(folder)) 2>/dev/null && pwd -P)\" = \(q(folderPhysical)) ] "
+            + "&& [ ! -e \(destination) ] && [ ! -L \(destination) ]; then /bin/mv -n \(item) \(destination) && [ ! -e \(item) ]; "
+            + "else echo 'Lightspot: the file in the Trash or its folder changed before the move'; exit 1; fi"
+        guard enable else { return move }
+        return move + " && " + turnOnCommand(launchctl, target, domain: domain, plist: plist, bootstrap: bootstrap)
     }
 
     // MARK: Applying
@@ -694,16 +768,21 @@ enum MacTweaksBackground {
         var said = ""
         /// Its administrator step, by 1-based position in the batch.
         var adminStep: Int?
-        /// For a leftover: moved by the user, or where root moves it to.
+        /// For a delete: moved by the user (to where `trashItem` said, when it did), or where root
+        /// moves it to.
         var trashedByUser = false
         var trashDestination: String?
         var stillRunning = false
+        /// A delete's `disable`, as this user, was refused, so nothing moved.
+        var notSwitchedOff = false
         var refusedMove: String?
     }
 
     /// Blocking: changes `rows` and looks again. User agents first, as this user; then every
-    /// daemon's change, and every leftover root must move, in one administrator batch; then launchd
-    /// is read again and only what it confirms counts. A turn-off is journaled before anything runs.
+    /// daemon's change, and every plist only root can move, in one administrator batch; then
+    /// launchd is read again and only what it confirms counts. A turn-off or a delete is journaled
+    /// before anything runs, and a delete's Trash name before its move (root's) or right after it
+    /// (`trashItem`'s, which only macOS chooses).
     static func apply(_ rows: [MacTweaksRow], env: ProviderEnvironment,
                       progress: (@Sendable (String) -> Void)? = nil) -> (receipt: MacTweaksReceipt, rescanned: [MacTweaksRow]) {
         let started = env.now()
@@ -719,7 +798,7 @@ enum MacTweaksBackground {
         // 1. Read again: the plist still there, through the gate, with the same label; launchd now.
         progress?("Reading launchd again…")
         let current = items(env)
-        var found: [(item: Item, change: Change, owner: String)] = []
+        var found: [(item: Item, change: Change, owner: String, leftover: Bool)] = []
         for row in ticked {
             guard let change = change(of: row) else { continue }
             let plist = row.items.first?.target ?? ""
@@ -729,7 +808,7 @@ enum MacTweaksBackground {
                     log.append("folder resolves elsewhere: \(shown(plist))")
                     continue
                 }
-                found.append((item, change, row.title))
+                found.append((item, change, row.title, row.tags.contains(leftoverTag)))
             } else if !MacTweaksStorage.exists(plist) {
                 tally.gone.append(row.title)
                 log.append("gone already: \(shown(plist))")
@@ -741,7 +820,7 @@ enum MacTweaksBackground {
         let before = read(found.map(\.item), env)
         let guarded = guardedFolders(env)
         var steps: [Step] = []
-        for (item, change, owner) in found {
+        for (item, change, owner, leftover) in found {
             guard isActionable(item.label) else {
                 problems.append("\(owner) stays as it is: its label can't be passed to launchctl safely.")
                 continue
@@ -758,14 +837,15 @@ enum MacTweaksBackground {
             case .turnOn where !disabled && loaded == .yes:
                 tally.alreadyOn.append(owner)
                 continue
-            case .trash where !isLeftover(item, guarded: guarded):
+            case .delete where leftover && !isLeftover(item, guarded: guarded):
+                // Ticked as a leftover, by default: its app is back, so the plan no longer holds.
                 problems.append("\(owner) stays: what it runs is back.")
                 log.append("not a leftover any more: \(shown(item.plist))")
                 continue
-            case .trash where item.isLink:
+            case .delete where item.isLink:
                 problems.append("\(owner) stays: its file is a link now, and Lightspot doesn't move links.")
                 continue
-            case .trash where !item.alsoAt.isEmpty:
+            case .delete where !item.alsoAt.isEmpty:
                 problems.append("\(owner) stays: another copy has its label now, and launchd runs only one of them.")
                 continue
             default:
@@ -774,7 +854,7 @@ enum MacTweaksBackground {
             steps.append(Step(item: item, change: change, owner: owner, disabled: disabled, loaded: loaded))
         }
 
-        // 2. The journal: nothing changes when it is blocked; turn-offs are recorded first.
+        // 2. The journal: nothing changes when it is blocked; turn-offs and deletes are recorded first.
         let journal = Self.journal(env)
         if case .blocked(let reason) = journal.status() {
             let receipt = MacTweaksReceipt(headline: "Nothing changed.", lines: tally.lines, problems: problems + [reason], isSuccess: false)
@@ -782,26 +862,63 @@ enum MacTweaksBackground {
                                             environment: env, started: started)
             return (receipt, scan(env, only: Set(ticked.map(\.id))))
         }
+        var asideNoted = false
+        func noteAside(_ aside: String?) {
+            guard let aside, !asideNoted else { return }
+            asideNoted = true
+            // Settings' words, for the same thing.
+            notes.append("Lightspot couldn't read its undo journal, so it kept it as \(aside). Undo can't put back what that file recorded.")
+            log.append("unreadable journal kept as \(aside)")
+        }
         var recordedNow = Set<String>()
         let offs = steps.filter { $0.change == .turnOff }
         if !offs.isEmpty {
             let entries = offs.map { Entry(item: $0.item, owner: $0.owner, wasDisabled: $0.disabled, wasLoaded: $0.loaded == .yes, date: started) }
-            let aside: String?
             switch journal.recordAhead(entries) {
             case .saved(let added, let movedAside):
                 recordedNow = added
-                aside = movedAside
+                noteAside(movedAside)
             case .failed(let reason, let movedAside):
                 for step in offs { problems.append("Lightspot couldn't record what \(step.owner) was, so it left it on: \(reason)") }
                 log.append("journal not saved: \(reason)")
                 steps.removeAll { $0.change == .turnOff }
-                aside = movedAside
+                noteAside(movedAside)
             }
-            if let aside {
-                // Settings' words, for the same thing.
-                notes.append("Lightspot couldn't read its undo journal, so it kept it as \(aside). Undo can't put back what that file recorded.")
-                log.append("unreadable journal kept as \(aside)")
+        }
+        // A delete's entry: the first previous state (a turn-off's entry, when there is one) and
+        // where the plist was; where it goes follows once known.
+        var previous: [String: Entry] = [:]
+        var deleting: [String: Entry] = [:]
+        let deletes = steps.filter { $0.change == .delete }
+        if !deletes.isEmpty {
+            let existing = Dictionary(journal.entries().map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+            for step in deletes {
+                let key = step.item.id
+                previous[key] = existing[key]
+                deleting[key] = (existing[key] ?? Entry(item: step.item, owner: step.owner, wasDisabled: step.disabled,
+                                                        wasLoaded: step.loaded == .yes, date: started))
+                    .deleting(plist: step.item.plist, trash: nil)
             }
+            switch journal.update(deletes.compactMap { deleting[$0.item.id] }) {
+            case .saved(_, let movedAside):
+                noteAside(movedAside)
+            case .failed(let reason, let movedAside):
+                for step in deletes { problems.append("Lightspot couldn't record what \(step.owner) was, so it didn't delete it: \(reason)") }
+                log.append("journal not saved: \(reason)")
+                steps.removeAll { $0.change == .delete }
+                deleting = [:]
+                noteAside(movedAside)
+            }
+        }
+        /// Writes delete entries with where their plists go; nil, or why it couldn't.
+        func locate(_ indices: [Int]) -> String? {
+            let located = indices.compactMap { index -> Entry? in
+                deleting[steps[index].item.id]?.deleting(plist: steps[index].item.plist, trash: steps[index].trashDestination)
+            }
+            guard !located.isEmpty else { return nil }
+            if case .failed(let reason, _) = journal.update(located) { return reason }
+            for entry in located { deleting[entry.key] = entry }
+            return nil
         }
 
         // 3. User agents, as this user.
@@ -824,10 +941,14 @@ enum MacTweaksBackground {
                 if run(["enable", target]), launchctl(["print", target]).status != 0 {
                     _ = run(["bootstrap", domain(system: false, userID: uid), item.plist])
                 }
-            case .trash:
+            case .delete:
                 if launchctl(["print", target]).status == 0 { _ = run(["bootout", target]) }
                 guard launchctl(["print", target]).status != 0 else {
                     steps[index].stillRunning = true
+                    continue
+                }
+                guard run(["disable", target]) else {
+                    steps[index].notSwitchedOff = true
                     continue
                 }
                 guard isAllowed(item.plist, item.place, env), isRegularFile(item.plist) else {
@@ -835,9 +956,10 @@ enum MacTweaksBackground {
                     continue
                 }
                 do {
-                    try env.moveToTrash(URL(fileURLWithPath: item.plist))
+                    let resulting = try env.moveToTrash(URL(fileURLWithPath: item.plist))
                     steps[index].trashedByUser = true
-                    log.append("trashed: \(shown(item.plist))")
+                    steps[index].trashDestination = resulting?.path
+                    log.append("trashed: \(shown(item.plist))" + (resulting.map { " as " + shown($0.path) } ?? ""))
                 } catch {
                     // Phase 1's rules: a folder's permissions (EACCES) or another owner, the
                     // administrator; macOS refusing the user's own file, or any other error, stays.
@@ -854,14 +976,21 @@ enum MacTweaksBackground {
                 }
             }
         }
+        // Where this user's moves went: recorded at once, so Undo everything can put them back.
+        let movedByUser = steps.indices.filter { steps[$0].change == .delete && steps[$0].trashedByUser }
+        if let failure = locate(movedByUser) {
+            let names = movedByUser.map { steps[$0].owner }
+            problems.append("Lightspot couldn't record where \(names.joined(separator: ", ")) went in the Trash (\(failure)), "
+                            + "so Undo everything can't put \(names.count == 1 ? "it" : "them") back.")
+        }
 
-        // 4. The administrator batch: daemons, and leftovers only root can move. Trash names are
-        //    reserved only now, after every move of the user's own.
+        // 4. The administrator batch: daemons, and plists only root can move. Trash names are
+        //    reserved only now, after every move of the user's own, and journaled before the prompt.
         let roots = MacTweaksStorage.Roots(env)
         let path = background.launchctlPath
-        var commands: [String] = []
+        var pending: [(index: Int, command: String)] = []
         var taken = Set<String>()
-        func rootMove(_ index: Int) {
+        func rootDelete(_ index: Int, whole: Bool) {
             let item = steps[index].item
             guard isAllowed(item.plist, item.place, env), isRegularFile(item.plist),
                   let physical = MacTweaksStorage.resolved((item.plist as NSString).deletingLastPathComponent) else {
@@ -871,25 +1000,36 @@ enum MacTweaksBackground {
             let destination = roots.trash + "/" + MacTweaksStorage.uniqueTrashName((item.plist as NSString).lastPathComponent,
                                                                                  in: roots.trash, taken: &taken)
             let move = MacTweaksStorage.guardedMove(item.plist, to: destination, trash: roots.trash, physicalParent: physical)
-            commands.append(stopAndTrashCommand(path, target(item.label, system: item.system, userID: uid), move: move))
             steps[index].trashDestination = destination
-            steps[index].adminStep = commands.count
+            pending.append((index, deleteCommand(path, target(item.label, system: item.system, userID: uid), move: move, disable: whole)))
         }
         for index in steps.indices where steps[index].item.system {
             let item = steps[index].item
             let target = target(item.label, system: true, userID: uid)
             switch steps[index].change {
             case .turnOff:
-                commands.append(turnOffCommand(path, target))
-                steps[index].adminStep = commands.count
+                pending.append((index, turnOffCommand(path, target)))
             case .turnOn:
-                commands.append(turnOnCommand(path, target, domain: "system", plist: item.plist))
-                steps[index].adminStep = commands.count
-            case .trash:
-                rootMove(index)
+                pending.append((index, turnOnCommand(path, target, domain: "system", plist: item.plist)))
+            case .delete:
+                rootDelete(index, whole: true)
             }
         }
-        for index in forAdministrator { rootMove(index) }
+        // This user already stopped these and switched them off; only the move is root's.
+        for index in forAdministrator { rootDelete(index, whole: false) }
+        let rootDeletes = pending.map(\.index).filter { steps[$0].change == .delete }
+        if let failure = locate(rootDeletes) {
+            for index in rootDeletes {
+                steps[index].refusedMove = "Lightspot couldn't record where its file would go (\(failure)), so it left it"
+                steps[index].trashDestination = nil
+            }
+            pending.removeAll { steps[$0.index].change == .delete }
+        }
+        var commands: [String] = []
+        for (index, command) in pending {
+            commands.append(command)
+            steps[index].adminStep = commands.count
+        }
         var adminRun: QuickActionsProvider.PrivilegedRun?
         var results: [Int: (status: Int32, output: String)] = [:]
         if !commands.isEmpty {
@@ -928,6 +1068,7 @@ enum MacTweaksBackground {
         let after = read(steps.map(\.item), env)
         var unconfirmed = 0
         var forget = Set<String>()
+        var putBack: [Entry] = []
         for step in steps {
             let item = step.item
             switch step.change {
@@ -964,27 +1105,59 @@ enum MacTweaksBackground {
                     unconfirmed += 1
                     problems.append("\(step.owner): launchd didn't say whether it's on now. Lightspot kept its record.")
                 }
-            case .trash:
+            case .delete:
                 let gone = !MacTweaksStorage.exists(item.plist)
-                var batchMoved = false
-                if let destination = step.trashDestination, let index = step.adminStep, case .ran? = adminRun {
-                    batchMoved = gone && MacTweaksStorage.exists(destination) && (results[index]?.status ?? 0) == 0
+                var moved = false
+                if step.trashedByUser {
+                    moved = gone && (step.trashDestination.map(MacTweaksStorage.exists) ?? true)
+                } else if let destination = step.trashDestination, let index = step.adminStep, case .ran? = adminRun {
+                    moved = gone && MacTweaksStorage.exists(destination) && (results[index]?.status ?? 0) == 0
                 }
-                if gone && (step.trashedByUser || batchMoved) {
-                    tally.trashed.append(step.owner)
-                    forget.insert(item.id)
-                } else if gone {
-                    forget.insert(item.id)
+                let off = after.isDisabled(item)
+                let running = after.isLoaded(item) == .yes
+                if moved {
+                    // Its entry stays, with where the plist went: Undo everything puts it back.
+                    tally.deleted.append(step.owner + (step.trashDestination.map { " (\(shown($0)))" } ?? ""))
+                    if step.trashDestination == nil {
+                        notes.append("macOS didn't say where \(step.owner)'s file went in the Trash, so Undo everything can't put it back.")
+                    }
+                    if off != true || running {
+                        problems.append("\(step.owner)'s file is in the Trash, but launchd "
+                                        + (running ? "still has it running" : "didn't switch it off") + " (\(why(step))).")
+                    }
+                    continue
+                }
+                // Nothing moved. Its entry goes back to what it was, unless launchd's state
+                // changed: then it is a turn-off's entry, so Undo everything puts that back.
+                let changed = off != step.disabled || (step.loaded == .yes && !running)
+                if gone {
                     problems.append("\(step.owner): it was gone before Lightspot moved it.")
                 } else if step.stillRunning {
                     problems.append("\(step.owner) stays: it was still running after Lightspot stopped it.")
-                } else if let refused = step.refusedMove {
-                    // macOS's own words may already end the sentence.
-                    problems.append("\(step.owner) stays: \(refused)" + (refused.hasSuffix(".") ? "" : "."))
+                } else if step.notSwitchedOff {
+                    problems.append("\(step.owner) stays: launchd didn't switch it off (\(why(step))).")
                 } else {
-                    problems.append("\(step.owner) stays (\(why(step))).")
+                    // Switched off before the move failed: it stays off, and its entry says how to
+                    // undo that.
+                    let stays = off == true && !step.disabled ? "\(step.owner) is off, but its file stays" : "\(step.owner) stays"
+                    if let refused = step.refusedMove {
+                        // macOS's own words may already end the sentence.
+                        problems.append(stays + ": " + refused + (refused.hasSuffix(".") ? "" : "."))
+                    } else {
+                        problems.append(stays + " (\(why(step))).")
+                    }
+                }
+                if changed && !gone, let entry = previous[item.id] ?? deleting[item.id]?.notDeleted() {
+                    putBack.append(entry)
+                } else if let entry = previous[item.id] {
+                    putBack.append(entry)
+                } else {
+                    forget.insert(item.id)
                 }
             }
+        }
+        if !putBack.isEmpty, case .failed(let reason, _) = journal.update(putBack) {
+            problems.append("Lightspot couldn't update its journal: \(reason)")
         }
         if !forget.isEmpty, let failure = journal.remove(forget) {
             problems.append("Lightspot couldn't update its journal: \(failure)")
@@ -992,6 +1165,7 @@ enum MacTweaksBackground {
 
         if !tally.turnedOff.isEmpty { notes.append(turnBackOnNote(tally.turnedOff.count)) }
         if !tally.turnedOn.isEmpty { notes.append(MacTweaksSettings.enabledRecordReceiptNote) }
+        if !tally.deleted.isEmpty { notes.append(putBackNote(tally.deleted.count)) }
         let receipt = MacTweaksReceipt(headline: tally.headline(unconfirmed: unconfirmed), lines: tally.lines, problems: problems,
                                        notes: notes, isSuccess: problems.isEmpty && tally.changed > 0)
         MacTweaksProvider.appendReceipt(section: .backgroundItems, lines: log + [receipt.headline] + receipt.lines + problems,
@@ -1003,39 +1177,45 @@ enum MacTweaksBackground {
         "Turn \(number == 1 ? "it" : "them") back on here, or with Undo everything Lightspot changed, in Settings."
     }
 
+    static func putBackNote(_ number: Int) -> String {
+        "Undo everything Lightspot changed, in Settings, puts \(number == 1 ? "its file" : "their files") back while "
+            + "\(number == 1 ? "it's" : "they're") still in the Trash."
+    }
+
     /// What an apply did, by kind: the receipt has one wrapped line per kind, as Settings' does
     /// ("Turned off: Docker, GoogleUpdater."), under a headline short enough for one line.
     struct Tally: Sendable, Equatable {
         var turnedOff: [String] = []
         var turnedOn: [String] = []
-        var trashed: [String] = []
+        /// Each with where its plist went: "GoogleUpdater (~/.Trash/com.google.….plist)".
+        var deleted: [String] = []
         var alreadyOff: [String] = []
         var alreadyOn: [String] = []
         /// Their files were gone before the apply.
         var gone: [String] = []
 
-        var changed: Int { turnedOff.count + turnedOn.count + trashed.count }
+        var changed: Int { turnedOff.count + turnedOn.count + deleted.count }
 
         var lines: [String] {
-            [("Turned off", turnedOff), ("Turned back on", turnedOn), ("Moved to the Trash", trashed),
+            [("Turned off", turnedOff), ("Turned back on", turnedOn), ("Deleted, moved to the Trash", deleted),
              ("Already off", alreadyOff), ("Already on", alreadyOn), ("Already gone", gone)]
                 .filter { !$0.1.isEmpty }
                 .map { $0.0 + ": " + $0.1.joined(separator: ", ") + "." }
         }
 
         func headline(unconfirmed: Int) -> String {
-            let kinds = [turnedOff, turnedOn, trashed].filter { !$0.isEmpty }.count
+            let kinds = [turnedOff, turnedOn, deleted].filter { !$0.isEmpty }.count
             switch kinds {
             case 0: return unconfirmed > 0 ? "launchd didn't confirm what changed." : "Nothing changed."
             case 1 where !turnedOff.isEmpty: return "Turned off " + MacTweaksBackground.count(changed, "item", "items") + "."
             case 1 where !turnedOn.isEmpty: return "Turned " + MacTweaksBackground.count(changed, "item", "items") + " back on."
-            case 1: return "Moved " + MacTweaksBackground.count(changed, "leftover", "leftovers") + " to the Trash."
+            case 1: return "Deleted " + MacTweaksBackground.count(changed, "item", "items") + "."
             default: return "Changed " + MacTweaksBackground.count(changed, "background item", "background items") + "."
             }
         }
     }
 
-    /// A regular file, not a link: the only thing a leftover's move takes.
+    /// A regular file, not a link: the only thing a delete's move takes.
     static func isRegularFile(_ path: String) -> Bool {
         var info = stat()
         return lstat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG
@@ -1069,6 +1249,10 @@ enum MacTweaksBackground {
         var recordAhead: @Sendable ([Entry]) -> JournalWrite
         /// Removes these keys and saves; nil, or why it couldn't.
         var remove: @Sendable (Set<String>) -> String?
+        /// Writes these entries as they are, adding or replacing, keeping an unreadable file aside
+        /// first, and saves before the caller changes anything (a delete records where its plist
+        /// will go, then where it went). `added` names the keys written.
+        var update: @Sendable ([Entry]) -> JournalWrite = { _ in .failed("this journal can't record deletions") }
 
         /// The journal file through `MacTweaksJournal`, its rules and all: a scan reads its
         /// status and entries and moves nothing; a write starts from `loadForWriting` (an
@@ -1109,6 +1293,22 @@ enum MacTweaksBackground {
                         return error.localizedDescription
                     }
                     return nil
+                },
+                update: { entries in
+                    let access = MacTweaksJournal.loadForWriting(url: url, now: now(), home: home, fileSystem: fileSystem)
+                    guard var journal = access.journal else { return .failed(access.blockedReason ?? "it can't be read") }
+                    var written = Set<String>()
+                    for entry in entries {
+                        let before = journal.json(entry.key)
+                        if journal.replace(entry.key, entry.json), journal.json(entry.key) != before { written.insert(entry.key) }
+                    }
+                    guard !written.isEmpty || access.movedAside != nil else { return .saved(added: []) }
+                    do {
+                        try journal.saveAhead(url: url, fileSystem: fileSystem)
+                    } catch {
+                        return .failed(error.localizedDescription, movedAside: access.movedAside)
+                    }
+                    return .saved(added: written, movedAside: access.movedAside)
                 })
         }
     }
@@ -1120,13 +1320,15 @@ enum MacTweaksBackground {
                                              fileSystem: env.settings.fileSystem, now: env.now)
     }
 
-    /// One entry: what an item was before Lightspot first turned it off. Its JSON is this type's
-    /// own; `MacTweaksJournal` keeps the object as it is.
+    /// One entry: what an item was before Lightspot first turned it off or deleted it. Its JSON is
+    /// this type's own; `MacTweaksJournal` keeps the object as it is.
     struct Entry: Sendable, Equatable {
         static let kind = "background"
         let key: String
         let label: String
         let system: Bool
+        /// Where the plist is, or for a deleted one where it was: Undo everything puts it back
+        /// there, only when that is a direct child of its fixed folder and nothing is there.
         let plist: String
         /// For the plan and the receipt, when the file is gone.
         let owner: String
@@ -1134,8 +1336,13 @@ enum MacTweaksBackground {
         /// Lightspot's: Undo everything starts only what was loaded before.
         let wasLoaded: Bool
         let date: Date
+        /// Lightspot deleted it: its plist went to the Trash.
+        var deleted = false
+        /// Where in the Trash: the name root's move reserved, or the one `trashItem` reported. nil
+        /// until the move (an entry is written before it), or when macOS didn't say.
+        var trash: String?
 
-        init(item: Item, owner: String, wasDisabled: Bool, wasLoaded: Bool, date: Date) {
+        init(item: Item, owner: String, wasDisabled: Bool, wasLoaded: Bool, date: Date, deleted: Bool = false, trash: String? = nil) {
             key = item.id
             label = item.label
             system = item.system
@@ -1145,6 +1352,33 @@ enum MacTweaksBackground {
             self.wasLoaded = wasLoaded
             // ISO 8601 keeps whole seconds; so does the entry, so it round-trips equal.
             self.date = Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded(.down))
+            self.deleted = deleted
+            self.trash = trash
+        }
+
+        /// This entry, its first previous state kept, for a delete of the plist at `plist`.
+        func deleting(plist path: String, trash: String?) -> Entry {
+            var entry = Entry(key: key, label: label, system: system, plist: path, owner: owner, wasDisabled: wasDisabled,
+                              wasLoaded: wasLoaded, date: date)
+            entry.deleted = true
+            entry.trash = trash
+            return entry
+        }
+
+        /// The same state without the delete: what a delete that didn't move the file leaves.
+        func notDeleted() -> Entry {
+            Entry(key: key, label: label, system: system, plist: plist, owner: owner, wasDisabled: wasDisabled, wasLoaded: wasLoaded, date: date)
+        }
+
+        private init(key: String, label: String, system: Bool, plist: String, owner: String, wasDisabled: Bool, wasLoaded: Bool, date: Date) {
+            self.key = key
+            self.label = label
+            self.system = system
+            self.plist = plist
+            self.owner = owner
+            self.wasDisabled = wasDisabled
+            self.wasLoaded = wasLoaded
+            self.date = date
         }
 
         private struct Stored: Codable {
@@ -1157,6 +1391,9 @@ enum MacTweaksBackground {
             var wasDisabled: Bool
             var wasLoaded: Bool?
             var date: Date?
+            // Only a delete's entry has these: a turn-off's JSON stays as it was.
+            var deleted: Bool?
+            var trash: String?
         }
 
         /// From the journal: nil for another kind, or fields that contradict the key. Fields an
@@ -1177,16 +1414,20 @@ enum MacTweaksBackground {
             wasDisabled = stored.wasDisabled
             wasLoaded = stored.wasLoaded ?? true
             date = stored.date ?? Date(timeIntervalSince1970: 0)
+            deleted = stored.deleted ?? false
+            trash = stored.trash
         }
 
         /// The object the journal stores: kind, tweak (the key), label, domain, plist, owner,
-        /// wasDisabled, wasLoaded and date, ISO 8601 as the rest of the file.
+        /// wasDisabled, wasLoaded and date, ISO 8601 as the rest of the file; a delete adds
+        /// `deleted` and, once known, `trash`.
         var json: Data {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.sortedKeys]
             let stored = Stored(kind: Self.kind, tweak: key, label: label, domain: system ? "system" : "gui", plist: plist,
-                                owner: owner, wasDisabled: wasDisabled, wasLoaded: wasLoaded, date: date)
+                                owner: owner, wasDisabled: wasDisabled, wasLoaded: wasLoaded, date: date,
+                                deleted: deleted ? true : nil, trash: deleted ? trash : nil)
             return (try? encoder.encode(stored)) ?? Data()
         }
     }
@@ -1213,47 +1454,82 @@ enum MacTweaksBackground {
         }
     }
 
-    /// What the agents' steps did: each refused `enable`'s output, and the log's lines.
+    /// What the agents' steps did: each refused `enable`'s output, each move back that didn't
+    /// happen and why, and the log's lines.
     private final class UndoRecord: @unchecked Sendable {
         private let lock = NSLock()
         private var refusals: [String: String] = [:]
+        private var moves: [String: String] = [:]
         private var lines: [String] = []
         func refused(_ key: String, _ output: String) { lock.lock(); refusals[key] = output; lock.unlock() }
         func refusal(_ key: String) -> String? { lock.lock(); defer { lock.unlock() }; return refusals[key] }
+        func notMoved(_ key: String, _ reason: String) { lock.lock(); moves[key] = reason; lock.unlock() }
+        func moveFailure(_ key: String) -> String? { lock.lock(); defer { lock.unlock() }; return moves[key] }
         func log(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
         var log: [String] { lock.lock(); defer { lock.unlock() }; return lines }
     }
 
-    /// Each entry by its own fields, checked against what is on disk now. The plist used is always
-    /// the scan's: the journal is the user's own file, so nothing it says alone makes root act.
-    /// Only what was loaded before is started again; an entry whose plist is gone has nothing to
-    /// turn back on, so nothing runs and it is dropped; one that contradicts itself, or names a
-    /// label Lightspot never changes, stays (`refused`), as do the keys in `unreadable`.
+    /// Where a deleted entry's plist was, when that is somewhere Lightspot puts one back: a direct
+    /// child of the fixed folder of its domain (`isAllowed`; a daemon's is `/Library/LaunchDaemons`,
+    /// an agent's either agent folder). nil for anywhere else the journal (the user's own file) says.
+    static func originalPlace(_ entry: Entry, _ env: ProviderEnvironment) -> Place? {
+        let places: [Place] = entry.system ? [.daemons] : [.userAgents, .allUsersAgents]
+        return places.first { isAllowed(entry.plist, $0, env) }
+    }
+
+    /// A deleted plist's copy in the Trash, when it is the file Lightspot moved there: directly in
+    /// this user's Trash (as written and resolved), a regular file, not a link, one link to it,
+    /// and its `Label` the entry's when it can be read. Its owner decides who puts it back: this
+    /// user their own, root only root's.
+    static func trashCopy(_ path: String, label: String, _ env: ProviderEnvironment) -> (owner: uid_t, plist: [String: Any]?)? {
+        let trash = MacTweaksStorage.Roots(env).trash
+        let parent = (path as NSString).deletingLastPathComponent
+        var info = stat()
+        guard MacTweaksStorage.isPlainAbsolute(path), parent == trash,
+              let physical = MacTweaksStorage.resolved(trash), MacTweaksStorage.resolved(parent) == physical,
+              lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
+              let owner = env.ownerOf(path) else { return nil }
+        let plist = readPlist(path)
+        if let plist, plist["Label"] as? String != label { return nil }
+        return (owner, plist)
+    }
+
+    /// The item a deleted plist will be once it is back where it was, from its Trash copy.
+    static func restoredItem(_ entry: Entry, plist dict: [String: Any]?, place: Place, owner: uid_t) -> Item {
+        let arguments = dict?["ProgramArguments"] as? [String] ?? []
+        let associated = dict?["AssociatedBundleIdentifiers"]
+        return Item(label: entry.label, plist: entry.plist, place: place,
+                    program: dict?["Program"] as? String ?? arguments.first ?? "", arguments: arguments,
+                    associatedIDs: (associated as? [String]) ?? (associated as? String).map { [$0] } ?? [],
+                    plistDisabled: dict?["Disabled"] as? Bool ?? false, isLink: false, ownerUID: owner)
+    }
+
+    /// Each entry by its own fields, checked against what is on disk now. For a turned-off item the
+    /// plist used is always the scan's: the journal is the user's own file, so nothing it says
+    /// alone makes root act. Only what was loaded before is started again; an entry whose plist is
+    /// gone has nothing to turn back on, so nothing runs and it is dropped; one that contradicts
+    /// itself, or names a label Lightspot never changes, stays (`refused`), as do the keys in
+    /// `unreadable`. A deleted item's plist comes back from the Trash to where it was (a direct
+    /// child of its fixed folder, never over a file there), as this user for their own file and
+    /// through the batch for root's (`restoreCommand`), then is switched on and started only as it
+    /// was; a copy gone from the Trash is said and dropped, a file back at its place left alone.
     static func undo(_ entries: [Entry], unreadable: [String] = [], environment env: ProviderEnvironment) -> Undo {
         let found = Dictionary(items(env).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let uid = env.userID
         let path = env.backgroundItems.launchctlPath
+        let home = env.home
+        @Sendable func shown(_ path: String) -> String { CleanDevMacEngine.displayPath(path, home: home) }
         var admin: [String] = []
         var adminKeys: [String] = []
         var agents: [(key: String, item: Item, owner: String, bootstrap: Bool)] = []
+        var restores: [(key: String, trash: String, item: Item, enable: Bool, bootstrap: Bool)] = []
         var decided: [String: MacTweaksSettings.BackgroundOutcome] = [:]
         var refused: [String] = []
         var watchedItems: [String: (item: Item, owner: String)] = [:]
-        for entry in entries {
-            guard entry.key == key(label: entry.label, system: entry.system), isActionable(entry.label),
-                  !entry.label.hasPrefix("com.apple.") else {
-                refused.append(entry.key)
-                continue
-            }
-            if entry.wasDisabled {
-                decided[entry.key] = .undone(line: "\(entry.owner): left off, as it was before Lightspot.")
-                continue
-            }
-            guard let item = found[entry.key] else {
-                decided[entry.key] = .dropped(line: "\(entry.owner): its plist is gone, so Lightspot ran nothing and dropped its entry; "
-                                                  + "launchd keeps its switch off.")
-                continue
-            }
+        var returningItems: [String: (trash: String, entry: Entry)] = [:]
+        var backLines: [String: String] = [:]
+
+        func turnBackOn(_ entry: Entry, _ item: Item) {
             watchedItems[entry.key] = (item, entry.owner)
             if item.system {
                 admin.append(turnOnCommand(path, target(item.label, system: true, userID: uid), domain: "system",
@@ -1263,18 +1539,131 @@ enum MacTweaksBackground {
                 agents.append((entry.key, item, entry.owner, entry.wasLoaded))
             }
         }
+        let roots = MacTweaksStorage.Roots(env)
+        let trashPhysical = MacTweaksStorage.resolved(roots.trash) ?? roots.trash
+        for entry in entries {
+            guard entry.key == key(label: entry.label, system: entry.system), isActionable(entry.label),
+                  !entry.label.hasPrefix("com.apple.") else {
+                refused.append(entry.key)
+                continue
+            }
+            guard entry.deleted else {
+                if entry.wasDisabled {
+                    decided[entry.key] = .undone(line: "\(entry.owner): left off, as it was before Lightspot.")
+                    continue
+                }
+                guard let item = found[entry.key] else {
+                    decided[entry.key] = .dropped(line: "\(entry.owner): its plist is gone, so Lightspot ran nothing and dropped its entry; "
+                                                      + "launchd keeps its switch off.")
+                    continue
+                }
+                turnBackOn(entry, item)
+                continue
+            }
+            // Deleted: its plist goes back from the Trash.
+            guard let place = originalPlace(entry, env) else {
+                decided[entry.key] = .kept(problem: "\(entry.owner): Lightspot can't tell where its file was, so it keeps its entry.")
+                continue
+            }
+            if MacTweaksStorage.exists(entry.plist) {
+                // Never overwritten: a file is back (its app wrote it again, or it was put back).
+                let copy = entry.trash.flatMap { MacTweaksStorage.exists($0) ? " Its Trash copy stays at \(shown($0))." : nil } ?? ""
+                guard let item = found[entry.key], item.plist == entry.plist else {
+                    decided[entry.key] = .dropped(line: "\(entry.owner): another file is at \(shown(entry.plist)) now, so Lightspot "
+                                                      + "left its Trash copy where it is and dropped its entry.")
+                    continue
+                }
+                if entry.wasDisabled {
+                    decided[entry.key] = .undone(line: "\(entry.owner): a file is back at \(shown(entry.plist)), and it stays off, "
+                                                     + "as it was before Lightspot." + copy)
+                    continue
+                }
+                backLines[entry.key] = "\(entry.owner): a file is back at \(shown(entry.plist)), so Lightspot switched it back on." + copy
+                turnBackOn(entry, item)
+                continue
+            }
+            guard let trash = entry.trash else {
+                decided[entry.key] = .dropped(line: "\(entry.owner): Lightspot doesn't know where its file went in the Trash, "
+                                                  + "so it can't put it back, and dropped its entry.")
+                continue
+            }
+            guard MacTweaksStorage.exists(trash) else {
+                decided[entry.key] = .dropped(line: "\(entry.owner): its file is no longer in the Trash (\(shown(trash))), so Lightspot "
+                                                  + "can't put it back, and dropped its entry. launchd keeps its switch off.")
+                continue
+            }
+            guard let copy = trashCopy(trash, label: entry.label, env) else {
+                decided[entry.key] = .kept(problem: "\(entry.owner): the file at \(shown(trash)) isn't the one Lightspot moved there, "
+                                                  + "so Lightspot leaves it.")
+                continue
+            }
+            let item = restoredItem(entry, plist: copy.plist, place: place, owner: copy.owner)
+            let enable = !entry.wasDisabled
+            if copy.owner == uid && place == .userAgents {
+                restores.append((entry.key, trash, item, enable, enable && entry.wasLoaded))
+            } else if copy.owner == 0 && place != .userAgents, let folder = folders(env).first(where: { $0.place == place }) {
+                admin.append(restoreCommand(path, trashCopy: trash, trash: roots.trash, trashPhysical: trashPhysical,
+                                            folder: folder.lexical, folderPhysical: folder.physical,
+                                            name: (entry.plist as NSString).lastPathComponent,
+                                            target: target(entry.label, system: place.isSystem, userID: uid),
+                                            domain: domain(system: place.isSystem, userID: uid), plist: entry.plist,
+                                            enable: enable, bootstrap: entry.wasLoaded))
+                adminKeys.append(entry.key)
+            } else {
+                decided[entry.key] = .kept(problem: "\(entry.owner): its file in the Trash (\(shown(trash))) isn't owned as Lightspot "
+                                                  + "left it, so Lightspot doesn't put it back. Move it back yourself.")
+                continue
+            }
+            watchedItems[entry.key] = (item, entry.owner)
+            returningItems[entry.key] = (trash, entry)
+        }
         let launchctl = env.backgroundItems.launchctl
-        let home = env.home
         let record = UndoRecord()
         let toStart = agents
+        let toRestore = restores
         let settled = decided
         let watched = watchedItems
+        let returning = returningItems
+        let lines = backLines
         let reading = OnceReading { read(watched.values.map(\.item), env) }
         return Undo(
             adminCommands: admin,
             adminKeys: adminKeys,
             userSteps: {
                 var problems: [String] = []
+                // This user's own plists back from the Trash, each checked again just before.
+                for restore in toRestore {
+                    let plist = restore.item.plist
+                    guard isAllowed(plist, .userAgents, env), !MacTweaksStorage.exists(plist), isRegularFile(restore.trash) else {
+                        record.notMoved(restore.key, "it or its place changed before the move")
+                        continue
+                    }
+                    do {
+                        // moveItem never replaces a file at its place.
+                        try FileManager.default.moveItem(atPath: restore.trash, toPath: plist)
+                        record.log("moved back: \(CleanDevMacEngine.displayPath(restore.trash, home: home)) → \(CleanDevMacEngine.displayPath(plist, home: home))")
+                    } catch {
+                        record.notMoved(restore.key, error.localizedDescription)
+                        record.log("not moved back: \(CleanDevMacEngine.displayPath(restore.trash, home: home)) (\(error.localizedDescription))")
+                        continue
+                    }
+                    guard restore.enable else { continue }
+                    let target = target(restore.item.label, system: false, userID: uid)
+                    let enabled = launchctl(["enable", target])
+                    record.log("launchctl enable \(target): status \(enabled.status)")
+                    guard enabled.status == 0 else {
+                        record.refused(restore.key, enabled.output)
+                        continue
+                    }
+                    guard restore.bootstrap, launchctl(["print", target]).status != 0 else { continue }
+                    let gui = domain(system: false, userID: uid)
+                    let loaded = launchctl(["bootstrap", gui, plist])
+                    record.log("launchctl bootstrap \(gui) \(CleanDevMacEngine.displayPath(plist, home: home)): status \(loaded.status)")
+                    if loaded.status != 0 {
+                        problems.append("\(restore.item.label) is back and on, but it didn't load\(because(loaded.output)). "
+                                        + "Login Items & Extensions in System Settings may have it switched off.")
+                    }
+                }
                 for agent in toStart {
                     let target = target(agent.item.label, system: false, userID: uid)
                     let enabled = launchctl(["enable", target])
@@ -1298,9 +1687,33 @@ enum MacTweaksBackground {
                 if let outcome = settled[key] { return outcome }
                 guard let watchedItem = watched[key] else { return .kept(problem: nil) }
                 let owner = watchedItem.owner
+                if let back = returning[key] {
+                    let plist = back.entry.plist
+                    guard MacTweaksStorage.exists(plist) && !MacTweaksStorage.exists(back.trash) else {
+                        // Root's step didn't run: the receipt says why, once, for the whole batch.
+                        if watchedItem.item.ownerUID == 0 && step == nil { return .kept(problem: nil) }
+                        let reason = step.map { MacTweaksStorage.reason($0.output) } ?? record.moveFailure(key) ?? ""
+                        return .kept(problem: "\(owner): its file is still in the Trash (\(shown(back.trash)))"
+                                     + (reason.isEmpty ? "." : " (\(reason))."))
+                    }
+                    if back.entry.wasDisabled {
+                        return .undone(line: "\(owner): its file is back at \(shown(plist)), and it stays off, as it was before Lightspot.")
+                    }
+                    switch reading.value.isDisabled(watchedItem.item) {
+                    case false?:
+                        return .undone(line: "\(owner): its file is back at \(shown(plist)).")
+                    case nil:
+                        return .kept(problem: "\(owner): its file is back, but launchd didn't say whether it's on now, so Lightspot keeps its record.")
+                    case true?:
+                        // The next Undo everything finds the file back and only switches it on.
+                        let said = record.refusal(key) ?? step.flatMap { $0.status != 0 ? $0.output : nil } ?? ""
+                        let reason = MacTweaksStorage.reason(said)
+                        return .kept(problem: "\(owner): its file is back, but it's still off" + (reason.isEmpty ? "." : " (\(reason))."))
+                    }
+                }
                 switch reading.value.isDisabled(watchedItem.item) {
                 case false?:
-                    return .undone(line: nil)
+                    return .undone(line: lines[key])
                 case nil:
                     return .kept(problem: "\(owner): launchd didn't say whether it's on now, so Lightspot keeps its record.")
                 case true?:
@@ -1335,6 +1748,7 @@ enum MacTweaksBackground {
     /// Undo everything's plan line for an entry, from its own fields and whether a scan finds its
     /// plist (`found`). It promises only what `undo` would do: an entry `undo` keeps or drops
     /// says so, and the journal's plist path is never shown (`undo` uses the one the scan finds).
+    /// A deleted one's line is `deletedPlanLine`'s.
     static func undoPlanLine(_ entry: Entry, userID: uid_t, found: Bool = true) -> String {
         guard entry.key == key(label: entry.label, system: entry.system), isActionable(entry.label),
               !entry.label.hasPrefix("com.apple.") else {
@@ -1349,21 +1763,62 @@ enum MacTweaksBackground {
         return "\(entry.owner): launchd's switch back on; it wasn't loaded before (launchctl enable \(target))."
     }
 
+    /// A deleted entry's plan line, from what is on disk now, promising only what `undo` does: its
+    /// file back from the Trash, a file back at its place left alone, a copy gone from the Trash
+    /// dropped. Its paths are shown: `undo` puts the file back exactly there, once checked.
+    static func deletedPlanLine(_ entry: Entry, found: Bool, _ env: ProviderEnvironment) -> String {
+        guard entry.key == key(label: entry.label, system: entry.system), isActionable(entry.label),
+              !entry.label.hasPrefix("com.apple.") else {
+            return "\(entry.label): kept: Lightspot can't undo this entry."
+        }
+        func shown(_ path: String) -> String { CleanDevMacEngine.displayPath(path, home: env.home) }
+        guard originalPlace(entry, env) != nil else { return "\(entry.owner): kept: Lightspot can't tell where its file was." }
+        let target = target(entry.label, system: entry.system, userID: env.userID)
+        let switchBack = entry.wasLoaded ? "then launchctl enable \(target) and launchctl bootstrap" : "then launchctl enable \(target)"
+        if MacTweaksStorage.exists(entry.plist) {
+            guard found else {
+                return "\(entry.owner): another file is at \(shown(entry.plist)) now, so Lightspot leaves its Trash copy and drops its entry."
+            }
+            return "\(entry.owner): a file is back at \(shown(entry.plist)), so its Trash copy stays; "
+                + (entry.wasDisabled ? "it stays off, as it was before Lightspot." : "launchd's switch goes back on (launchctl enable \(target)).")
+        }
+        guard let trash = entry.trash else {
+            return "\(entry.owner): Lightspot doesn't know where its file went in the Trash, so it drops its entry."
+        }
+        guard MacTweaksStorage.exists(trash) else {
+            return "\(entry.owner): its file is no longer in the Trash, so Lightspot can't put it back and drops its entry; launchd keeps its switch off."
+        }
+        return "\(entry.owner): its file goes back from the Trash (\(shown(trash))) to \(shown(entry.plist))"
+            + (entry.wasDisabled ? "; it stays off, as it was before Lightspot." : ", " + switchBack + ".")
+    }
+
     /// The plan lines for every entry at once, by key: one look for the plists (`items`), and
     /// only when an entry needs it. An entry that doesn't decode is kept, and its line says so.
     static func undoPlanLines(_ pairs: [(key: String, json: Data)], environment env: ProviderEnvironment) -> [String: String] {
         let entries = pairs.map { (key: $0.key, entry: Entry(key: $0.key, json: $0.json)) }
-        let needsScan = entries.contains { $0.entry.map { !$0.wasDisabled && isActionable($0.label) } ?? false }
-        let found = needsScan ? Set(items(env).map(\.id)) : []
+        let needsScan = entries.contains { $0.entry.map { (!$0.wasDisabled || $0.deleted) && isActionable($0.label) } ?? false }
+        let found = needsScan ? Dictionary(items(env).map { ($0.id, $0.plist) }, uniquingKeysWith: { first, _ in first }) : [:]
         var lines: [String: String] = [:]
         for (key, entry) in entries {
             guard let entry else {
                 lines[key] = "\(key): kept, its journal entry can't be read, so Lightspot can't tell what to put back"
                 continue
             }
-            lines[key] = undoPlanLine(entry, userID: env.userID, found: found.contains(entry.key))
+            lines[key] = entry.deleted ? deletedPlanLine(entry, found: found[entry.key] == entry.plist, env)
+                                       : undoPlanLine(entry, userID: env.userID, found: found[entry.key] != nil)
         }
         return lines
+    }
+
+    /// Whether Undo everything needs the administrator for these entries: a daemon's, or a deleted
+    /// plist that goes back into `/Library/LaunchAgents` (anything but this user's own folder).
+    static func undoNeedsAdministrator(_ pairs: [(key: String, json: Data)], home: String) -> Bool {
+        let own = home + "/Library/LaunchAgents/"
+        return pairs.contains { pair in
+            if pair.key.hasPrefix("background:system/") { return true }
+            guard let entry = Entry(key: pair.key, json: pair.json), entry.deleted else { return false }
+            return !entry.plist.hasPrefix(own)
+        }
     }
 
     /// Connects Settings' Undo everything to this section (`MacTweaksProvider.settingsEnvironment`):
