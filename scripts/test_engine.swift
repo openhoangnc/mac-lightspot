@@ -6665,7 +6665,7 @@ extension TestRunner {
         assertTrue(row("spatial-photos") == nil, "Spatial Photos is hidden: the service no longer knows its set")
         assertTrue(row("siri")?.countLabel == "Off", "Siri is listed, showing off")
         assertEqual(row("siri")?.outcome, "Stays off, now locked off", "...and the plan says it stays off, now locked")
-        assertEqual(row("writing-tools")?.outcome, "Turned off", "An on feature is turned off")
+        assertEqual(row("writing-tools")?.outcome, "Turns off", "An on feature is turned off")
         assertTrue(rows.allSatisfy { !$0.readOnly && $0.isDefault }, "With no managing profile every feature is changeable and starts ticked")
         assertTrue(!rows.contains { MacTweaksIntelligence.isActionRow($0.id) }, "No action row while Apple Intelligence is on")
         assertEqual(fx.profileFileRemovals, 0, "Without the profile installed, its file is left alone")
@@ -6806,7 +6806,15 @@ extension TestRunner {
         assertEqual(MacTweaksIntelligence.planNotes(ticked: [finish], shown: shown, context: finishContext),
                     ["Apple Intelligence stays off.", "Deletes 4.0 GB of models and stops macOS downloading them again."], "The finish plan")
         assertEqual(MacTweaksIntelligence.applyTitle(ticked: [finish]), MacTweaksIntelligence.finishRemovalTitle, "The finish row's button")
-        assertEqual(MacTweaksIntelligence.applyTitle(ticked: ticked), "Turn off \(ticked.count) features", "The turn-off button")
+        // The button counts what apply turns off; features already off are only locked off.
+        let alreadyOff = ticked.filter { $0.outcome == "Stays off, now locked off" }
+        assertTrue(alreadyOff.count == 2 && ticked.count == 13, "The fixture ticks 13 features, 2 of them already off")
+        assertEqual(MacTweaksIntelligence.applyTitle(ticked: ticked), "Turn off 11 features, lock 2 already off",
+                    "The turn-off button counts the features it turns off, and the ones it only locks off")
+        let turningOff = ticked.filter { $0.outcome != "Stays off, now locked off" }
+        assertEqual(MacTweaksIntelligence.applyTitle(ticked: turningOff), "Turn off 11 features", "...only what it turns off when nothing else is ticked")
+        assertEqual(MacTweaksIntelligence.applyTitle(ticked: alreadyOff), "Lock 2 features off", "...and only a lock for features already off")
+        assertEqual(MacTweaksIntelligence.applyTitle(ticked: [turningOff[0], alreadyOff[0]]), "Turn off 1 feature, lock 1 already off", "...in the singular too")
 
         // m8: an action row is applied alone; ticking anything else unticks it.
         let rows = [finish.with(exclusive: true, isDefault: true), turnOn.with(exclusive: true, isDefault: false),
@@ -7332,6 +7340,10 @@ final class SettingsFixture: @unchecked Sendable {
         }
         if let inode { settings.inode = inode }
         settings.restart = { [self] name in killed.append(name); events.append("killall " + name); return true }
+        // No Dock process to look at: nothing waits for one (`FakeDock` drives that), and a pause
+        // moves the fake clock.
+        settings.runningDock = nil
+        settings.pause = { [self] seconds in clock = clock.addingTimeInterval(seconds) }
         settings.fileSystem = fileSystem
         settings.osVersion = { [self] in os }
         settings.background = background
@@ -7354,6 +7366,56 @@ final class SettingsFixture: @unchecked Sendable {
     }
 }
 
+
+/// A Dock for the restart checks, on the fixture's clock: launchd starts a new one 0.3 s after
+/// each kill, and a Dock killed within `writesWhenKilled` of its start (or one of the next
+/// `clobberNext` kills) writes the icons it started with over the change, as 1.4.0's QA saw.
+final class FakeDock: @unchecked Sendable {
+    let fx: SettingsFixture
+    var pid: Int32 = 400
+    var started: Date
+    var loaded: PreferenceValue?
+    var writesWhenKilled: ClosedRange<TimeInterval>?
+    var clobberNext = 0
+    var comesBack = true
+    var alive = true
+    var kills = 0
+    var clobbers = 0
+    var agesAtKill: [TimeInterval] = []
+    var backupURL: URL?
+    var backupAtKill: [Bool] = []
+    private let slot = SettingsFixture.slot("com.apple.dock", "persistent-apps")
+
+    init(_ fx: SettingsFixture) {
+        self.fx = fx
+        started = fx.clock
+        loaded = fx.user[slot]
+    }
+
+    var running: MacTweaksDock.Running? { alive && fx.clock >= started ? MacTweaksDock.Running(pid: pid, started: started) : nil }
+
+    func pause(_ seconds: TimeInterval) { fx.clock = fx.clock.addingTimeInterval(seconds) }
+
+    func kill() {
+        kills += 1
+        if let backupURL { backupAtKill.append(FileManager.default.fileExists(atPath: backupURL.path)) }
+        if alive {
+            let age = fx.clock.timeIntervalSince(started)
+            agesAtKill.append(age)
+            if clobberNext > 0 || writesWhenKilled?.contains(age) == true {
+                clobberNext = max(clobberNext - 1, 0)
+                clobbers += 1
+                fx.user[slot] = loaded
+            }
+        }
+        alive = comesBack
+        guard comesBack else { return }
+        pid += 1
+        started = fx.clock.addingTimeInterval(0.3)
+        loaded = fx.user[slot]
+    }
+}
+
 extension TestRunner {
     static func runSettingsTests() {
         testSettingsCatalog()
@@ -7365,6 +7427,7 @@ extension TestRunner {
         testSettingsScratchDomains()
         testSettingsMusicAndKeys()
         testSettingsDockAndLibrary()
+        testDockRestartChecked()
         testSettingsProfile()
         testSettingsUndoEverything()
         testSettingsTicksAndProvider()
@@ -7808,6 +7871,12 @@ extension TestRunner {
                     "...or deletes the key when Lightspot recorded nothing")
         assertTrue(MacTweaksSettings.outcome(MacTweaksSettings.tweak("path-bar")!, .on, r).contains("Lightspot didn't make this change"),
                    "...and the plan says the setting wasn't Lightspot's")
+        // The plan shows before anything runs: what each tick will do, never "Applied".
+        assertEqual(MacTweaksSettings.outcome(MacTweaksSettings.tweak("path-bar")!, .off, r), "Turns on", "An Off row's plan says it turns on")
+        assertEqual(MacTweaksSettings.outcome(MacTweaksSettings.tweak("path-bar")!, .partly, r), "Finishes", "...a Partly one that it finishes")
+        assertTrue(MacTweaksSettings.outcome(MacTweaksSettings.tweak("path-bar")!, .on, r).hasPrefix("Undoes"), "...an On one that it undoes")
+        assertTrue(fx.rows.allSatisfy { !$0.outcome.hasPrefix("Applied") && !$0.outcome.hasPrefix("Undone") && !$0.outcome.hasPrefix("Finished") },
+                   "No plan row speaks of a change as made: \(Set(fx.rows.map(\.outcome)))")
         print("✅ Settings plan passed!\n")
     }
 
@@ -7980,9 +8049,15 @@ extension TestRunner {
         fx.launchctlCalls = []
         let rcdRows = fx.rows.filter { $0.id == "media-keys" }
         assertTrue(rcdRows.first?.undoes == true, "rcd off: its tick undoes")
+        // launchctl enable leaves an "enabled" override where there was none: the plan and the
+        // receipt say so, and the undo still runs as it did.
+        assertTrue(MacTweaksSettings.planNotes(ticked: rcdRows, context: fx.reading).contains(MacTweaksSettings.enabledRecordPlanNote),
+                   "The undo's plan says launchd keeps an \"enabled\" record")
         result = MacTweaksSettings.apply(rcdRows, env: fx.environment)
         assertTrue(!fx.disabled.contains("com.apple.rcd") && fx.launchctlCalls.contains(["bootstrap", "gui/501", "/System/Library/LaunchAgents/com.apple.rcd.plist"]),
                    "Restoring enables rcd and bootstraps its plist")
+        assertTrue(result.receipt.notes.contains(MacTweaksSettings.enabledRecordReceiptNote) && fx.launchctlCalls.contains(["enable", "gui/501/com.apple.rcd"]),
+                   "...and its receipt says launchd keeps that record: \(result.receipt.notes)")
         assertTrue(fx.journal.isEmpty, "...and its entry goes")
         // A bootstrap macOS refuses: enabled, back from the next login, counted as undone.
         fx.apply(["media-keys"])
@@ -8001,12 +8076,13 @@ extension TestRunner {
         try? offBefore.saveAhead(url: fx.journalURL)
         fx.disabled = ["com.apple.rcd"]
         let keptRow = fx.row("media-keys")
-        assertTrue(keptRow?.outcome == "Left as it was: it was off before Lightspot" && keptRow?.items.map(\.target) == ["com.apple.rcd was off before Lightspot: it stays off"],
+        assertTrue(keptRow?.outcome == "Leaves it as it was: it was off before Lightspot" && keptRow?.items.map(\.target) == ["com.apple.rcd was off before Lightspot: it stays off"],
                    "The plan says undoing it leaves it as it was: \(String(describing: keptRow?.outcome))")
         result = MacTweaksSettings.apply([keptRow!], env: fx.environment)
         assertTrue(result.receipt.headline == "Nothing changed." && result.receipt.isSuccess && result.receipt.problems.isEmpty
-                   && result.receipt.lines.contains { $0.contains("left as it was") } && fx.disabled.contains("com.apple.rcd") && fx.journal.isEmpty,
-                   "...and the receipt says so, never 'still on': \(result.receipt.headline) \(result.receipt.lines) \(result.receipt.problems)")
+                   && result.receipt.lines.contains { $0.contains("left as it was") } && fx.disabled.contains("com.apple.rcd") && fx.journal.isEmpty
+                   && !result.receipt.notes.contains(MacTweaksSettings.enabledRecordReceiptNote),
+                   "...and the receipt says so, never 'still on', and no \"enabled\" record since nothing was enabled: \(result.receipt.headline) \(result.receipt.lines) \(result.receipt.problems)")
         // An entry that says it was off before is left off.
         var journal = MacTweaksJournal()
         journal.recordIfAbsent("service:com.apple.rcd", .service(tweak: "media-keys", date: fx.clock, label: "com.apple.rcd", wasDisabled: true, plist: nil))
@@ -8146,6 +8222,184 @@ extension TestRunner {
         result = MacTweaksSettings.apply(tweak.rows.filter { $0.id == "show-library" }, env: tweak.environment)
         assertTrue(live.isHidden(library) == true && tweak.journal.entry("library") == nil, "...and undo hides it again")
         print("✅ The Dock and the Library folder passed!\n")
+    }
+
+
+    // MARK: The Dock's restart, checked (1.4.0 QA: Restore 4 s after Clear emptied the Dock)
+
+    static func testDockRestartChecked() {
+        print("Testing the Dock's restart, checked in the Dock that comes up...")
+        let apps: [(String?, String)] = [("com.google.Chrome", "Chrome"), (nil, "spacer"), ("com.apple.Music", "Music"),
+                                         ("com.apple.TV", "TV"), ("com.example.editor", "Editor")]
+        let fx = SettingsFixture("dock-restart")
+        fx.setDock(apps)
+        let original = fx.value("com.apple.dock", "persistent-apps")
+        let dock = FakeDock(fx)
+        var env = MacTweaksDock.Environment(preferences: fx.store, fileSystem: .live, backupURL: MacTweaksDock.backupURL(home: fx.home),
+                                            restartDock: { dock.kill() })
+        env.now = { fx.clock }
+        env.runningDock = { dock.running }
+        env.pause = { dock.pause($0) }
+        dock.backupURL = env.backupURL
+        let exact = { (fx.value("com.apple.dock", "persistent-apps")?.object as? NSArray) == (original?.object as? NSArray) }
+
+        // The signature a check compares: apps, or a tile's kind, in order.
+        assertEqual(MacTweaksDock.signature(MacTweaksDock.tiles(original)),
+                    ["com.google.Chrome", "(spacer-tile)", "com.apple.Music", "com.apple.TV", "com.example.editor"], "A check compares apps and spacers in order")
+
+        // Clear on a Dock that has long run: written, one restart, checked in the new Dock.
+        dock.started = fx.clock.addingTimeInterval(-600)
+        assertEqual(MacTweaksDock.clear(env), .cleared(5), "Clear on a settled Dock")
+        assertTrue(fx.dockIDs.isEmpty && dock.kills == 1 && dock.clobbers == 0, "...one restart, the new Dock empty")
+        assertTrue(fx.clock.timeIntervalSince(dock.started) >= MacTweaksDock.checkAge, "...checked once the new Dock has run a moment")
+
+        // QA's Restore 4 s after Clear: the Dock killed while it starts writes its icons back. Here
+        // Restore waits until the Dock has run settleAge, so it isn't killed in that window.
+        dock.writesWhenKilled = 3.5...4.5
+        fx.clock = dock.started.addingTimeInterval(4)
+        assertEqual(MacTweaksDock.restore(env), .restored(5), "Restore right after Clear")
+        assertTrue(dock.agesAtKill.last.map { $0 >= MacTweaksDock.settleAge } == true && dock.clobbers == 0,
+                   "...waits until the Dock that just restarted has run \(MacTweaksDock.settleAge) s before writing: \(dock.agesAtKill)")
+        assertTrue(exact() && !FileManager.default.fileExists(atPath: env.backupURL.path), "...the icons back exactly, then the backup goes")
+
+        // Clear then Restore at once, each waiting its turn.
+        assertEqual(MacTweaksDock.clear(env), .cleared(5), "Clear again")
+        assertEqual(MacTweaksDock.restore(env), .restored(5), "...and Restore at once")
+        assertTrue(exact() && dock.clobbers == 0 && dock.agesAtKill.allSatisfy { $0 >= MacTweaksDock.settleAge }, "...never killing a Dock that is starting")
+
+        // A restart that loses the change once: the Dock comes back with its old icons, Restore
+        // writes them again and checks again; the backup stays until the second check.
+        dock.writesWhenKilled = nil
+        assertEqual(MacTweaksDock.clear(env), .cleared(5), "Cleared for the lost restart")
+        dock.clobberNext = 1
+        dock.backupAtKill = []
+        let kills = dock.kills
+        assertEqual(MacTweaksDock.restore(env), .restored(5), "A Restore whose first restart was lost tries once more")
+        assertTrue(dock.kills == kills + 2 && dock.backupAtKill == [true, true] && exact() && !FileManager.default.fileExists(atPath: env.backupURL.path),
+                   "...two restarts, the backup there through both, gone once the icons check out: \(dock.backupAtKill)")
+
+        // Lost twice: Restore says so and keeps the backup.
+        assertEqual(MacTweaksDock.clear(env), .cleared(5), "Cleared for the twice-lost restart")
+        dock.clobberNext = 2
+        assertEqual(MacTweaksDock.restore(env), .overwritten, "A Restore lost twice says so")
+        assertTrue(fx.dockIDs.isEmpty && FileManager.default.fileExists(atPath: env.backupURL.path), "...the backup kept for the next one")
+        assertTrue(MacTweaksDock.problem(.overwritten, for: .restore)?.contains("The backup is kept") == true, "...and the row says so")
+        assertEqual(MacTweaksDock.restore(env), .restored(5), "The next Restore puts them back")
+        assertTrue(exact(), "...exactly")
+
+        // Clear lost twice: the icons stay and so does the backup.
+        dock.clobberNext = 2
+        assertEqual(MacTweaksDock.clear(env), .overwritten, "A Clear the Dock lost twice says so")
+        assertTrue(exact() && FileManager.default.fileExists(atPath: env.backupURL.path), "...the icons stay, the backup with them")
+        assertEqual(MacTweaksDock.restore(env), .restored(0), "Restore then finds every icon there: nothing written, the backup gone")
+        assertTrue(!FileManager.default.fileExists(atPath: env.backupURL.path), "...gone")
+
+        // No Dock comes back after the restart: Restore can't check, so the backup stays.
+        assertEqual(MacTweaksDock.clear(env), .cleared(5), "Cleared for the Dock that doesn't come back")
+        dock.comesBack = false
+        let before = fx.clock
+        assertEqual(MacTweaksDock.restore(env), .noDock, "No Dock after the restart: Restore can't check it")
+        assertTrue(FileManager.default.fileExists(atPath: env.backupURL.path), "...and keeps the backup")
+        assertTrue(fx.clock.timeIntervalSince(before) <= MacTweaksDock.settleAge + MacTweaksDock.upTimeout + 2,
+                   "...after bounded waits: \(fx.clock.timeIntervalSince(before)) s")
+        assertTrue(MacTweaksDock.problem(.noDock, for: .restore)?.contains("The backup is kept") == true, "...as the row says")
+        // No Dock before the write: nothing is written or restarted.
+        fx.setDock([])
+        let killsBefore = dock.kills
+        let icons = fx.value("com.apple.dock", "persistent-apps")
+        assertEqual(MacTweaksDock.restore(env), .noDock, "No Dock running: Restore writes nothing")
+        assertTrue(dock.kills == killsBefore && fx.value("com.apple.dock", "persistent-apps") == icons, "...and restarts nothing")
+        dock.comesBack = true
+        dock.kill()
+        dock.started = fx.clock.addingTimeInterval(-600)
+        assertEqual(MacTweaksDock.restore(env), .restored(5), "With a Dock again, the backup puts everything back")
+
+        // Settings' Dock-removal tweak and its undo: checked in the Dock its restart brings up.
+        testSettingsDockRestartChecked()
+        print("✅ The Dock's restart, checked passed!\n")
+    }
+
+    static func testSettingsDockRestartChecked() {
+        let apps: [(String?, String)] = [("com.apple.finder.notes", "Notes"), ("com.apple.Music", "Music"), (nil, "spacer"),
+                                         ("com.apple.TV", "TV"), ("com.example.editor", "Editor")]
+        let key = "dock:" + MacTweaksSettings.unusedDockApps.joined(separator: ",")
+        func setUp(_ name: String) -> (SettingsFixture, FakeDock, MacTweaksProvider.Environment) {
+            let fx = SettingsFixture(name)
+            fx.setDock(apps)
+            let dock = FakeDock(fx)
+            dock.started = fx.clock.addingTimeInterval(-600)
+            var env = fx.environment
+            let record = env.settings.restart
+            env.settings.restart = { name in
+                let ok = record(name)
+                if name == "Dock" { dock.kill() }
+                return ok
+            }
+            env.settings.runningDock = { dock.running }
+            env.settings.pause = { dock.pause($0) }
+            return (fx, dock, env)
+        }
+        func apply(_ fx: SettingsFixture, _ env: MacTweaksProvider.Environment, _ id: String) -> MacTweaksSettings.ApplyResult {
+            MacTweaksSettings.apply(MacTweaksSettings.rows(MacTweaksSettings.read(env)).filter { $0.id == id }, env: env)
+        }
+
+        // A Dock that just restarted settles first: the removal's restart never kills it starting.
+        var (fx, dock, env) = setUp("dock-settle")
+        dock.started = fx.clock.addingTimeInterval(-1)
+        dock.writesWhenKilled = 0...7
+        final class Lines: @unchecked Sendable { var all: [String] = [] }
+        let lines = Lines()
+        var result = MacTweaksSettings.apply(MacTweaksSettings.rows(MacTweaksSettings.read(env)).filter { $0.id == "dock-apple-apps" }, env: env,
+                                             progress: { lines.all.append($0) })
+        assertTrue(dock.clobbers == 0 && fx.dockIDs == ["com.apple.finder.notes", nil, "com.example.editor"] && result.receipt.problems.isEmpty,
+                   "The removal waits for a Dock that just restarted: \(dock.agesAtKill) \(result.receipt.problems)")
+        assertTrue(lines.all.contains("Waiting for the Dock to finish starting…"), "...and says so while it waits: \(lines.all)")
+
+        // The restart loses the removal once: removed again, restarted again, journaled once.
+        (fx, dock, env) = setUp("dock-lost-once")
+        dock.clobberNext = 1
+        result = apply(fx, env, "dock-apple-apps")
+        assertTrue(fx.dockIDs == ["com.apple.finder.notes", nil, "com.example.editor"] && fx.killed == ["Dock", "Dock"]
+                   && fx.journal.entry(key)?.tiles?.map(\.index) == [1, 3] && result.receipt.problems.isEmpty
+                   && result.receipt.lines.first == "Applied: Remove unused Apple apps from the Dock.",
+                   "A removal its restart lost is made again and checked again: \(fx.killed) \(result.receipt.problems)")
+
+        // Lost twice: the apps are back, so the journal entry goes, and the receipt says so.
+        (fx, dock, env) = setUp("dock-lost-twice")
+        dock.clobberNext = 2
+        result = apply(fx, env, "dock-apple-apps")
+        assertEqual(fx.dockIDs, apps.map(\.0), "Lost twice: the Dock keeps its icons")
+        assertTrue(fx.journal.entry(key) == nil && result.receipt.headline == "Nothing changed." && !result.receipt.isSuccess
+                   && result.receipt.problems.contains { $0.contains("restarted with these icons still in it, twice") }
+                   && !result.receipt.lines.contains { $0.hasPrefix("Applied:") },
+                   "...nothing journaled for a change the Dock didn't keep, and the receipt says why: \(result.receipt.headline) \(result.receipt.problems) \(result.receipt.lines)")
+
+        // A removal that sticks, then its undo lost twice: the record stays, so undoing again retries.
+        (fx, dock, env) = setUp("dock-undo-lost")
+        _ = apply(fx, env, "dock-apple-apps")
+        let entry = fx.journal.json(key)
+        assertTrue(entry != nil && fx.dockIDs == ["com.apple.finder.notes", nil, "com.example.editor"], "Removed and journaled")
+        dock.clobberNext = 2
+        result = apply(fx, env, "dock-apple-apps")
+        assertTrue(fx.dockIDs == ["com.apple.finder.notes", nil, "com.example.editor"] && fx.journal.json(key) == entry
+                   && result.receipt.problems.contains { $0.contains("undoing again retries") } && !result.receipt.lines.contains { $0.hasPrefix("Undone:") },
+                   "An undo its restart lost twice keeps the journal entry as it was: \(result.receipt.problems)")
+        result = apply(fx, env, "dock-apple-apps")
+        assertTrue(fx.dockIDs == apps.map(\.0) && fx.journal.json(key) == nil && result.receipt.lines.first == "Undone: Remove unused Apple apps from the Dock.",
+                   "...and the next undo puts them back: \(result.receipt.lines) \(result.receipt.problems)")
+
+        // Undo everything, its Dock restart lost twice: that entry is kept and said.
+        (fx, dock, env) = setUp("dock-undo-everything")
+        _ = apply(fx, env, "dock-apple-apps")
+        dock.clobberNext = 2
+        result = apply(fx, env, MacTweaksSettings.undoEverythingID)
+        assertTrue(fx.journal.json(key) != nil && result.receipt.headline == "Nothing changed." && !result.receipt.isSuccess
+                   && result.receipt.problems.contains { $0.contains("restarted without the icons put back") },
+                   "Undo everything keeps a Dock entry its restart lost: \(result.receipt.headline) \(result.receipt.problems)")
+        dock.clobberNext = 1
+        result = apply(fx, env, MacTweaksSettings.undoEverythingID)
+        assertTrue(fx.journal.isEmpty && fx.dockIDs == apps.map(\.0) && result.receipt.headline == "Everything Lightspot changed is back.",
+                   "...and puts it back once the Dock keeps it, retrying a lost restart: \(result.receipt.headline) \(result.receipt.problems)")
     }
 
     // MARK: The profile
@@ -9015,7 +9269,8 @@ extension TestRunner {
         assertEqual(B.planNotes([daemonRow]), [turnedOffNote, "Items for all users change for every account on this Mac.", MacTweaksStorage.passwordNote],
                     "A daemon changes for every account and asks for the password")
         assertEqual(B.planNotes([goneRow]), ["Leftover files go to the Trash."], "A leftover goes to the Trash")
-        assertEqual(B.planNotes([ownoffRow]), [], "Turning one back on needs no note")
+        assertEqual(B.planNotes([ownoffRow]), [MacTweaksSettings.enabledRecordPlanNote],
+                    "Turning one back on says launchd keeps an \"enabled\" record for it")
         assertEqual(B.applyTitle(ticked: [agent, updater]), "Turn off 2 items", "The plan's title: turning off")
         assertEqual(B.applyTitle(ticked: [ownoffRow]), "Turn 1 item back on", "...back on")
         assertEqual(B.applyTitle(ticked: [goneRow, script]), "Move 2 leftovers to the Trash", "...leftovers")
@@ -9090,8 +9345,9 @@ extension TestRunner {
         assertEqual(result.receipt.headline, "Changed 4 background items.", "The receipt says what happened, on one line")
         assertEqual(result.receipt.lines, ["Turned off: a, b.", "Turned back on: c, d."], "...one wrapped line per kind, as Settings' receipts")
         assertTrue(result.receipt.problems.isEmpty && result.receipt.isSuccess, "...with the green check")
-        assertEqual(result.receipt.notes, ["Turn them back on here, or with Undo everything Lightspot changed, in Settings."],
-                    "...and how to undo it")
+        assertEqual(result.receipt.notes, ["Turn them back on here, or with Undo everything Lightspot changed, in Settings.",
+                                           MacTweaksSettings.enabledRecordReceiptNote],
+                    "...how to undo it, and that launchd keeps an \"enabled\" record for what came back on")
         assertEqual(result.rescanned.map(\.value), ["Off", "Off", "On", "On"], "The rows are scanned again")
         let log = (try? String(contentsOfFile: fx.mac.home + "/Library/Application Support/Lightspot/mac-tweaks.log", encoding: .utf8)) ?? ""
         assertTrue(log.contains("▸ Background Items") && log.contains("launchctl disable \(gui)/com.example.a: status 0"), "The receipt is logged")

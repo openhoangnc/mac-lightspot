@@ -61,8 +61,9 @@ struct MacTweaksHeader: View {
     let onClose: () -> Void
 
     var body: some View {
-        // Four tabs on one line in the overlay's 708 pt: 700 pt at this spacing and the tabs'
-        // 8 pt padding, measured with the widest tab selected (722 pt at 10 and 9).
+        // Four tabs on one line in the overlay's 740 × 450 pt: 700 pt wide with the 18 pt sides at
+        // this spacing and the tabs' 8 pt padding, measured offscreen with the widest tab selected
+        // (722 pt at 10 and 9).
         HStack(spacing: 8) {
             Image(systemName: MacTweaksProvider.symbol)
                 .font(.system(size: 13, weight: .semibold))
@@ -164,11 +165,12 @@ struct MacTweaksList: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                // Two lines when snapshots make it long, never cut short.
+                // Up to three lines when snapshots or a long button ("Turn off 11 features, lock 3
+                // already off…") leave it narrow, never cut short.
                 Text(model.summaryLine)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundColor(.white.opacity(0.6))
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(1)
                 Spacer(minLength: 4)
@@ -192,24 +194,44 @@ struct MacTweaksList: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
-                        ForEach(model.rows.indices, id: \.self) { index in
+                        // Each row's own value, never an index into `model.rows`: the rows shrink
+                        // (another section, a rescan's reset), and a row view still holding an
+                        // index past the end trapped (1.4.0 QA).
+                        let rows = model.rows
+                        let headers = Self.groupHeaders(rows)
+                        let cursor = model.cursor
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                             VStack(alignment: .leading, spacing: 3) {
-                                if let group = model.rows[index].group, index == 0 || model.rows[index - 1].group != group {
-                                    MacTweaksGroupHeader(title: group)
+                                if let header = headers[row.id] {
+                                    MacTweaksGroupHeader(title: header)
                                 }
-                                MacTweaksRowView(model: model, index: index)
+                                MacTweaksRowView(row: row, box: model.box(row), selected: index == cursor, home: model.home,
+                                                 onBox: { if let link = row.link { model.open(link) } else { model.toggle(row.id) } },
+                                                 onSelect: { model.setCursor(id: row.id) })
                             }
-                            .id(index)
+                            .id(row.id)
                         }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                 }
                 .onChange(of: model.cursor) { index in
-                    proxy.scrollTo(index, anchor: nil)
+                    let rows = model.rows
+                    if rows.indices.contains(index) { proxy.scrollTo(rows[index].id, anchor: nil) }
                 }
             }
         }
+    }
+
+    /// The group header above each row that starts a group (Settings' Privacy, Finder…), by row ID.
+    static func groupHeaders(_ rows: [MacTweaksRow]) -> [String: String] {
+        var headers: [String: String] = [:]
+        var previous: String?
+        for row in rows {
+            if let group = row.group, group != previous { headers[row.id] = group }
+            previous = row.group
+        }
+        return headers
     }
 }
 
@@ -230,9 +252,16 @@ struct MacTweaksGroupHeader: View {
 
 // MARK: - Row
 
+/// One row, from plain values: it never reads the model, so a row the list no longer has is
+/// never asked to draw itself from rows that shrank.
 struct MacTweaksRowView: View {
-    @ObservedObject var model: MacTweaksModel
-    let index: Int
+    let row: MacTweaksRow
+    let box: MacTweaksTicks.Box
+    let selected: Bool
+    let home: String
+    /// A click on the box: opens a link, else ticks or unticks the row.
+    let onBox: () -> Void
+    let onSelect: () -> Void
 
     /// Items listed under the selected row before "and N more".
     private static let shownItems = 4
@@ -251,12 +280,9 @@ struct MacTweaksRowView: View {
     }
 
     var body: some View {
-        let row = model.rows[index]
-        let selected = index == model.cursor
-        let box = model.box(row)
-        return VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
-                Button(action: { if let link = row.link { model.open(link) } else { model.toggle(row.id) } }) {
+                Button(action: onBox) {
                     Image(systemName: Self.boxSymbol(box))
                         .font(.system(size: 14))
                         .foregroundColor(.white.opacity(box == .link || box == .ticked || box == .undo || box == .mixed ? 0.9 : 0.45))
@@ -293,7 +319,7 @@ struct MacTweaksRowView: View {
                     .padding(.leading, 54)
             }
             if selected {
-                MacTweaksItems(items: row.items, home: model.home, limit: Self.shownItems, sizes: true)
+                MacTweaksItems(items: row.items, home: home, limit: Self.shownItems, sizes: true)
                     .padding(.leading, 54)
             }
         }
@@ -301,11 +327,12 @@ struct MacTweaksRowView: View {
         .padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(selected ? 0.16 : 0)))
         .contentShape(Rectangle())
-        .onTapGesture { model.setCursor(index) }
+        .onTapGesture(perform: onSelect)
     }
 }
 
-/// The first items of a row, then "and N more".
+/// The first items of a row, then "and N more". Each in full, wrapped: a command or a path cut in
+/// the middle ("defaults write NS…ain …") hides what runs.
 struct MacTweaksItems: View {
     let items: [MacTweaksItem]
     let home: String
@@ -319,12 +346,11 @@ struct MacTweaksItems: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ForEach(0..<min(limit, items.count), id: \.self) { index in
-                Text(verbatim: line(items[index]))
+            ForEach(Array(items.prefix(limit).enumerated()), id: \.offset) { _, item in
+                Text(verbatim: line(item))
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundColor(.white.opacity(0.45))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if items.count > limit {
                 Text("and \(items.count - limit) more")
@@ -504,8 +530,8 @@ struct MacTweaksFooter: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            ForEach(hints.indices, id: \.self) { index in
-                OverlayKeyHint(key: hints[index].key, label: hints[index].label)
+            ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
+                OverlayKeyHint(key: hint.key, label: hint.label)
             }
             Spacer()
         }

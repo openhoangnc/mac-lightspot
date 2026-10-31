@@ -97,6 +97,11 @@ extension MacTweaksSettings {
         /// `killall <name>` for Finder, the Dock and SystemUIServer, which read these settings
         /// only at launch.
         var restart: @Sendable (String) -> Bool = { _ in false }
+        /// This user's running Dock (`MacTweaksDock.runningDock`), so a Dock that just restarted
+        /// settles before a change it reads, and the one a restart brings up is checked
+        /// (`restartDock`). Nil where processes can't be seen: nothing waits then.
+        var runningDock: (@Sendable () -> MacTweaksDock.Running?)? = nil
+        var pause: @Sendable (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
         var fileSystem = MacTweaksJournal.FileSystem.inert
         var osVersion: @Sendable () -> (Int, Int) = { Catalog.currentOS }
         /// Background Items' part of Undo everything: nil when this build has none, and then its
@@ -127,6 +132,7 @@ extension MacTweaksSettings {
                 return (try? url.setResourceValues(values)) != nil
             }
             env.restart = { CleanDevMacEngine.run("/usr/bin/killall", [$0], timeout: 10).status == 0 }
+            env.runningDock = { MacTweaksDock.runningDock() }
             env.fileSystem = .live
             return env
         }
@@ -412,18 +418,19 @@ extension MacTweaksSettings {
         return "Part of it is already set. Ticking it finishes it."
     }
 
-    /// What the plan says applying does to the row, by its state now.
+    /// What the plan says applying will do to the row, by its state now: the plan shows it before
+    /// anything runs, so never "Applied" (the receipt's word).
     static func outcome(_ tweak: Tweak, _ state: State, _ r: Reading) -> String {
         switch state {
-        case .off: return tweak.inProfile ? "Applied, and locked by Lightspot's profile" : "Applied"
-        case .partly: return "Finished"
+        case .off: return tweak.inProfile ? "Turns on, locked by Lightspot's profile" : "Turns on"
+        case .partly: return "Finishes"
         case .on:
-            if tweak.inProfile { return "Taken out of Lightspot's profile" }
-            if keptOffOnUndo(tweak, r) { return "Left as it was: it was off before Lightspot" }
+            if tweak.inProfile { return "Turns off: it comes out of Lightspot's profile" }
+            if keptOffOnUndo(tweak, r) { return "Leaves it as it was: it was off before Lightspot" }
             let keys = journalKeys(tweak, r)
             let recorded = keys.filter { r.journal.json($0) != nil }
-            if recorded.isEmpty { return "Undone: back to macOS's default (Lightspot didn't make this change)" }
-            return recorded.count == keys.count ? "Undone: back to your setting from before Lightspot" : "Undone"
+            if recorded.isEmpty { return "Undoes: back to macOS's default (Lightspot didn't make this change)" }
+            return recorded.count == keys.count ? "Undoes: back to your setting from before Lightspot" : "Undoes"
         case .managed, .notOnThisMacOS: return ""
         }
     }
@@ -561,7 +568,7 @@ extension MacTweaksSettings {
         row.items = undoEverythingLines(r, background: backgroundLines).map { MacTweaksItem(target: $0) }
         let count = r.journal.keys.count + (profile ? 1 : 0)
         row.countLabel = "\(count) \(count == 1 ? "change" : "changes")"
-        row.outcome = "Back as it was before Lightspot"
+        row.outcome = "Puts everything back as it was before Lightspot"
         row.readOnly = r.journalStatus.isBlocked
         if case .unreadable(let reason) = r.journalStatus { row.caveat = reason }
         return row
@@ -752,6 +759,21 @@ extension MacTweaksSettings {
         return text
     }
 
+    /// What `launchctl enable` leaves behind, said wherever Lightspot runs it (a job's undo, Undo
+    /// everything, Background Items' turn-on): launchd keeps the job's override as "enabled", where
+    /// there may have been none, and no launchctl verb removes an override; only root can, in
+    /// launchd's own database. Said, not changed: the job runs as asked.
+    static let enabledRecordPlanNote = "Turning a job back on runs launchctl enable, and launchd keeps an \"enabled\" record for it "
+        + "from then on (launchctl print-disabled lists it). Only an administrator can remove that record."
+    static let enabledRecordReceiptNote = "launchd keeps an \"enabled\" record for each job Lightspot turned back on "
+        + "(launchctl print-disabled lists it). Only an administrator can remove that record."
+
+    /// Whether undoing the tweak runs `launchctl enable`: it has a job, and not every one of them
+    /// was off before Lightspot.
+    static func undoRunsEnable(_ tweak: Tweak, _ r: Reading) -> Bool {
+        tweak.changes.contains { if case .service = $0 { return true }; return $0 == .musicLaunches } && !keptOffOnUndo(tweak, r)
+    }
+
     /// The plan's closing sentences, from the scan on show. Reads nothing (invariant 0).
     static func planNotes(ticked: [MacTweaksRow], context: Reading?) -> [String] {
         guard let r = context else { return [] }
@@ -763,6 +785,7 @@ extension MacTweaksSettings {
         if local.contains(where: { $0.changes.contains { if case .pref(global, _, _) = $0 { return true }; return false } }) {
             notes.append(reopenNote)
         }
+        if plan.undo.compactMap({ tweak($0) }).contains(where: { undoRunsEnable($0, r) }) { notes.append(enabledRecordPlanNote) }
         if plan.apply.contains("music-launches") { notes.append("Music quits if it's open.") }
         if plan.apply.contains("media-keys") {
             notes.append("The play, pause and skip keys may keep working until you log out: macOS may not let Lightspot stop their service now.")
@@ -809,6 +832,9 @@ extension MacTweaksSettings {
             notes.append(MacTweaksStorage.passwordNote)
         }
         if daemons { notes.append(backgroundForEveryoneNote) }
+        if !background.isEmpty || entries.contains(where: { $0.entry.kind == "service" && $0.entry.wasDisabled != true }) {
+            notes.append(enabledRecordPlanNote)
+        }
         if case .unreadable = r.journalStatus { notes.append("Lightspot's undo journal can't be read: applying keeps it aside, so only the profile can be undone.") }
         notes.append(trashNote)
         if r.dockBackupExists { notes.append("Restore Dock Icons puts back what Clear Dock Icons removed.") }
@@ -848,6 +874,7 @@ extension MacTweaksSettings {
 
         let undoing = plan.undo.compactMap { tweak($0) }.filter { !$0.inProfile }
         let applying = plan.apply.compactMap { tweak($0) }.filter { !$0.inProfile }
+        if (undoing + applying).contains(where: { $0.restart.contains("Dock") }) { waitForDock(env, progress: progress) }
         if !undoing.isEmpty { progress?("Undoing \(undoing.count) \(undoing.count == 1 ? "setting" : "settings")…") }
         var changedLocal: [Tweak] = []
         for tweak in undoing where revert(tweak, r, journal: &journal, env: env, work: &work) { changedLocal.append(tweak) }
@@ -857,7 +884,22 @@ extension MacTweaksSettings {
         let restarts = restartOrder.filter { name in changedLocal.contains { $0.restart.contains(name) } }
         if !restarts.isEmpty {
             progress?("Restarting \(spokenList(restarts))…")
-            for name in restarts { _ = settings.restart(name); work.log.append("killall \(name)") }
+            for name in restarts {
+                if name == "Dock" {
+                    for check in restartDock(env, checks: work.dockChecks, work: &work) {
+                        rollBack(check, journal: &journal, env: env, work: &work)
+                        if let id = check.tweak {
+                            work.failed.insert(id)
+                            work.applied.removeAll { $0 == check.title }
+                            work.finished.removeAll { $0 == check.title }
+                            work.undone.removeAll { $0 == check.title }
+                        }
+                    }
+                } else {
+                    _ = settings.restart(name)
+                    work.log.append("killall \(name)")
+                }
+            }
             work.lines.append("Restarted \(spokenList(restarts)).")
         }
 
@@ -922,6 +964,7 @@ extension MacTweaksSettings {
         if changedLocal.contains(where: { $0.changes.contains { if case .pref(global, _, _) = $0 { return true }; return false } }) {
             work.notes.append(reopenNote)
         }
+        if work.enabledJobs { work.notes.append(enabledRecordReceiptNote) }
         // Only what was turned on can be undone later; an undo has nothing left to undo.
         if changed > 0 { work.notes.append(undoLaterNote) }
         let receipt = MacTweaksReceipt(headline: headline, lines: work.receiptLines, problems: work.problems, notes: work.notes,
@@ -947,6 +990,10 @@ extension MacTweaksSettings {
         var nextLogin: Set<String> = []
         /// Tweaks an undo left as they were (their jobs were off before Lightspot).
         var leftAsItWas: Set<String> = []
+        /// The Dock tiles this apply changed, checked in the Dock its restart brings up.
+        var dockChecks: [DockCheck] = []
+        /// `launchctl enable` ran: the receipt says launchd keeps an "enabled" record.
+        var enabledJobs = false
 
         /// The receipt's lines: one per kind of change, then the rest.
         var receiptLines: [String] {
@@ -1045,6 +1092,8 @@ extension MacTweaksSettings {
                 case .removed(let names):
                     changed = true
                     work.log.append("removed from the Dock: \(names.joined(separator: ", "))")
+                    work.dockChecks.append(DockCheck(kind: .removed(Set(taking.compactMap(MacTweaksDock.appID))), key: change.key,
+                                                     before: before, tweak: tweak.id, title: tweak.title))
                 case .nothingToDo: break
                 case .notSaved: return changed
                 case .failed:
@@ -1167,9 +1216,11 @@ extension MacTweaksSettings {
                 }
             case .dockRemove:
                 guard let entry = journal.entry(change.key), let tiles = entry.tiles, !tiles.isEmpty else { continue }
+                let before = journal.json(change.key)
                 if MacTweaksDock.putBack(tiles, store: store) {
                     changed = true
                     journal.remove(change.key)
+                    work.dockChecks.append(DockCheck(kind: .putBack(tiles), key: change.key, before: before, tweak: tweak.id, title: tweak.title))
                     work.log.append("put back in the Dock: \(tiles.map(\.label).joined(separator: ", "))")
                 } else {
                     problems.append("The Dock didn't take its icons back.")
@@ -1249,6 +1300,7 @@ extension MacTweaksSettings {
             return .failed
         }
         work.log.append("launchctl enable \(target)")
+        work.enabledJobs = true
         journal.remove(key)
         let plist = entry?.plist ?? (label == rcdLabel ? rcdPlistPath : nil)
         if let plist, env.settings.fileSystem.exists(URL(fileURLWithPath: label == rcdLabel ? rcdPlist(env) : plist)),
@@ -1260,6 +1312,103 @@ extension MacTweaksSettings {
         return .enabled
     }
 
+    // MARK: The Dock's restart
+
+    /// A Dock tile change this apply made, checked in the Dock its restart brings up.
+    struct DockCheck: Sendable {
+        enum Kind: Sendable {
+            /// These apps were taken out.
+            case removed(Set<String>)
+            /// These tiles were put back.
+            case putBack([MacTweaksJournal.Tile])
+        }
+        let kind: Kind
+        /// The journal key, and its entry before this apply changed it: what a rollback restores.
+        let key: String
+        let before: Data?
+        /// The tweak whose row made it; nil for Undo everything.
+        let tweak: String?
+        let title: String
+
+        /// The Dock shows the change now.
+        func holds(_ store: PreferenceStore) -> Bool {
+            let present = MacTweaksDock.appIDs(store)
+            switch kind {
+            case .removed(let ids): return present.isDisjoint(with: ids)
+            case .putBack(let tiles): return tiles.allSatisfy { MacTweaksDock.appID($0).map(present.contains) ?? true }
+            }
+        }
+
+        /// Makes it again, nothing journaled: the first try's entry stands.
+        func redo(_ store: PreferenceStore) {
+            switch kind {
+            case .removed(let ids): _ = MacTweaksDock.removeAgain(ids, store: store)
+            case .putBack(let tiles): _ = MacTweaksDock.putBack(tiles, store: store)
+            }
+        }
+    }
+
+    /// The Dock's restarts as `MacTweaksDock` checks its own: through `restart`, seen through
+    /// `runningDock`.
+    static func dockRestarter(_ env: ProviderEnvironment) -> MacTweaksDock.Restarter {
+        let settings = env.settings
+        return MacTweaksDock.Restarter(restart: { _ = settings.restart("Dock") }, running: settings.runningDock,
+                                       now: env.now, pause: settings.pause)
+    }
+
+    /// Before a change the Dock reads: a Dock that just restarted (a Clear Dock Icons a moment
+    /// ago) settles first, since one killed while it starts writes its icons over the change.
+    static func waitForDock(_ env: ProviderEnvironment, progress: (@Sendable (String) -> Void)?) {
+        let restarter = dockRestarter(env)
+        if let dock = restarter.running?(), restarter.now().timeIntervalSince(dock.started) < MacTweaksDock.settleAge {
+            progress?("Waiting for the Dock to finish starting…")
+        }
+        _ = MacTweaksDock.waitForDock(env.settings.preferences, restarter, age: MacTweaksDock.settleAge)
+    }
+
+    /// Restarts the Dock and waits for the one that comes up, so the check after it reads what
+    /// that Dock shows, then checks there the tiles this apply changed: made again and the Dock
+    /// restarted once more when the restart lost them. Returns the changes still lost after that.
+    static func restartDock(_ env: ProviderEnvironment, checks: [DockCheck], work: inout Work) -> [DockCheck] {
+        let store = env.settings.preferences
+        let restarter = dockRestarter(env)
+        func restartAndWait() {
+            let old = restarter.running?()?.pid
+            restarter.restart()
+            work.log.append("killall Dock")
+            if !MacTweaksDock.waitForDock(store, restarter, age: MacTweaksDock.checkAge, notPID: old) {
+                work.log.append("the Dock didn't come up within \(Int(MacTweaksDock.upTimeout)) s")
+            }
+        }
+        restartAndWait()
+        var lost = checks.filter { !$0.holds(store) }
+        guard !lost.isEmpty else { return [] }
+        work.log.append("the Dock restarted without the change to " + lost.map(\.title).joined(separator: ", ") + ": once more")
+        _ = MacTweaksDock.waitForDock(store, restarter, age: MacTweaksDock.settleAge)
+        for check in lost { check.redo(store) }
+        restartAndWait()
+        lost = checks.filter { !$0.holds(store) }
+        return lost
+    }
+
+    /// A Dock change its restart lost twice: the journal goes back to what the Dock shows (a
+    /// removal's entry as it was while every app is back; a put-back's entry kept, so undoing
+    /// again retries), and the receipt says so.
+    static func rollBack(_ check: DockCheck, journal: inout MacTweaksJournal, env: ProviderEnvironment, work: inout Work) {
+        switch check.kind {
+        case .removed(let ids):
+            if ids.isSubset(of: MacTweaksDock.appIDs(env.settings.preferences)) { journal.reset(check.key, to: check.before) }
+            work.problems.append("\(check.title): the Dock restarted with these icons still in it, twice.")
+        case .putBack:
+            journal.reset(check.key, to: check.before)
+            work.problems.append("\(check.title): the Dock restarted without the icons put back, twice. Lightspot keeps their record, so undoing again retries.")
+        }
+        work.log.append("\(check.key): the Dock lost the change twice; journal entry as the Dock is")
+        do { try journal.saveAhead(url: journalURL(env), fileSystem: env.settings.fileSystem) } catch {
+            work.problems.append("Lightspot couldn't save its undo journal (\(error.localizedDescription)).")
+        }
+    }
+
     // MARK: Undo everything
 
     private static func undoEverything(env: ProviderEnvironment, journal: inout MacTweaksJournal, work: Work, started: Date,
@@ -1269,6 +1418,7 @@ extension MacTweaksSettings {
         let store = settings.preferences
         let r = read(env, journal: journal)
         let url = journalURL(env)
+        if journal.entries.contains(where: { $0.entry.restart?.contains("Dock") == true }) { waitForDock(env, progress: progress) }
         progress?("Undoing what Lightspot changed…")
         var undone = 0, kept = 0
         var restarts = Set<String>()
@@ -1293,9 +1443,15 @@ extension MacTweaksSettings {
                 else { problems.append("macOS didn't let Lightspot change ~/\(entry.path ?? "Library") back.") }
             case "dock":
                 let tiles = entry.tiles ?? []
+                let before = journal.json(key)
                 ok = tiles.isEmpty || MacTweaksDock.putBack(tiles, store: store)
-                if ok { journal.remove(key); work.log.append("put back in the Dock: \(tiles.map(\.label).joined(separator: ", "))") }
-                else { problems.append("The Dock didn't take its icons back.") }
+                if ok {
+                    journal.remove(key)
+                    work.log.append("put back in the Dock: \(tiles.map(\.label).joined(separator: ", "))")
+                    if !tiles.isEmpty { work.dockChecks.append(DockCheck(kind: .putBack(tiles), key: key, before: before, tweak: nil, title: title)) }
+                } else {
+                    problems.append("The Dock didn't take its icons back.")
+                }
             case "service":
                 guard let label = entry.label else { break }
                 switch restoreService(label, entry: entry, journal: &journal, env: env, work: &work, problems: &problems) {
@@ -1355,7 +1511,18 @@ extension MacTweaksSettings {
         let restartList = restartOrder.filter(restarts.contains)
         if !restartList.isEmpty {
             progress?("Restarting \(spokenList(restartList))…")
-            for name in restartList { _ = settings.restart(name); work.log.append("killall \(name)") }
+            for name in restartList {
+                if name == "Dock" {
+                    for check in restartDock(env, checks: work.dockChecks, work: &work) {
+                        rollBack(check, journal: &journal, env: env, work: &work)
+                        undone -= 1
+                        kept += 1
+                    }
+                } else {
+                    _ = settings.restart(name)
+                    work.log.append("killall \(name)")
+                }
+            }
         }
 
         // One administrator batch: the profile's removal, then Background Items' root steps, which
@@ -1391,6 +1558,7 @@ extension MacTweaksSettings {
                 case .undone(let line):
                     journal.remove(key)
                     undone += 1
+                    work.enabledJobs = true
                     if let line { work.lines.append(line) }
                     work.log.append("\(key): back as it was")
                 case .dropped(let line):
@@ -1419,6 +1587,7 @@ extension MacTweaksSettings {
             }
         }
         if undone > 0 { work.lines.insert("Put back \(undone) \(undone == 1 ? "change" : "changes").", at: 0) }
+        if work.enabledJobs { work.notes.append(enabledRecordReceiptNote) }
         if !restartList.isEmpty { work.lines.append("Restarted \(spokenList(restartList)).") }
 
         // An entry dropped because its plist is gone ran nothing: never "everything is back".

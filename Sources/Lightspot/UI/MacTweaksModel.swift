@@ -126,6 +126,12 @@ final class MacTweaksModel: ObservableObject {
             cursors[section.index] = 0
             if section == self.section { isConfirming = false }
         }
+        // The cursors fit the new rows before they are published: no view sees a cursor past
+        // the end of its rows.
+        for section in MacTweaksSection.built {
+            let count = next[section].rows.count
+            if cursors[section.index] >= max(count, 1) { cursors[section.index] = max(count - 1, 0) }
+        }
         if next.revision != snapshot.revision { snapshot = next }
         // Off the plan if what it showed is gone (the rows were dropped or applied).
         if isConfirming && next[section].phase != .ready { isConfirming = false }
@@ -133,10 +139,6 @@ final class MacTweaksModel: ObservableObject {
         if isShown && next[section].isStale {
             isConfirming = false
             provider.open(section)
-        }
-        for section in MacTweaksSection.built {
-            let count = next[section].rows.count
-            if cursors[section.index] >= max(count, 1) { cursors[section.index] = max(count - 1, 0) }
         }
     }
 
@@ -190,8 +192,10 @@ final class MacTweaksModel: ObservableObject {
         cursors[section.index] = cursor < rows.count - 1 ? cursor + 1 : 0
     }
 
-    func setCursor(_ index: Int) {
-        guard index >= 0, index < rows.count else { return }
+    /// A click on a row: the cursor goes to it, found by its ID among the rows on show now, so a
+    /// click that lands as the rows change never selects another row.
+    func setCursor(id: String) {
+        guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
         cursors[section.index] = index
     }
 

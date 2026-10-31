@@ -409,10 +409,10 @@ enum MacTweaksBackground {
     }
 
     // The row's outcome names its change; the engine reads it back from these constants.
-    static let turnOffOutcome = "Turned off: it stops now and stays off after a restart"
-    static let turnOffIdleOutcome = "Turned off: it stays off, even if Login Items switches it on again"
-    static let turnOnOutcome = "Turned back on: launchd loads it again"
-    static let trashOutcome = "Stopped, then its file goes to the Trash"
+    static let turnOffOutcome = "Turns off: it stops now and stays off after a restart"
+    static let turnOffIdleOutcome = "Turns off: it stays off, even if Login Items switches it on again"
+    static let turnOnOutcome = "Turns back on: launchd loads it again"
+    static let trashOutcome = "Stops it, then its file goes to the Trash"
 
     static func change(of row: MacTweaksRow) -> Change? {
         switch row.outcome {
@@ -649,6 +649,7 @@ enum MacTweaksBackground {
         let changes = rows.compactMap(change(of:))
         var notes: [String] = []
         if changes.contains(.turnOff) { notes.append(turnedOffNote) }
+        if changes.contains(.turnOn) { notes.append(MacTweaksSettings.enabledRecordPlanNote) }
         if rows.contains(where: { $0.tags.contains(allUsersTag) }) { notes.append("Items for all users change for every account on this Mac.") }
         if rows.contains(where: needsAdministrator) { notes.append(MacTweaksStorage.passwordNote) }
         if changes.contains(.trash) { notes.append("Leftover files go to the Trash.") }
@@ -990,6 +991,7 @@ enum MacTweaksBackground {
         }
 
         if !tally.turnedOff.isEmpty { notes.append(turnBackOnNote(tally.turnedOff.count)) }
+        if !tally.turnedOn.isEmpty { notes.append(MacTweaksSettings.enabledRecordReceiptNote) }
         let receipt = MacTweaksReceipt(headline: tally.headline(unconfirmed: unconfirmed), lines: tally.lines, problems: problems,
                                        notes: notes, isSuccess: problems.isEmpty && tally.changed > 0)
         MacTweaksProvider.appendReceipt(section: .backgroundItems, lines: log + [receipt.headline] + receipt.lines + problems,

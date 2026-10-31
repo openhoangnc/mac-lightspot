@@ -452,7 +452,7 @@ enum MacTweaksIntelligence {
                                    detail: "Apple Intelligence is off, but some of its models are still on this Mac. Remove them now.")
             row.isDefault = true
             row.exclusive = true
-            row.outcome = "Models removed"
+            row.outcome = "Removes the models"
             row.countLabel = ""
             rows.append(row)
         }
@@ -463,7 +463,7 @@ enum MacTweaksIntelligence {
                                        ? "Removes Lightspot's profile so macOS can use Apple Intelligence again. It downloads the models when you next turn a feature on."
                                        : "Updates Lightspot's profile to stop turning Apple Intelligence off, keeping your other Mac Tweaks settings.")
             row.exclusive = true
-            row.outcome = "Apple Intelligence back on"
+            row.outcome = "Turns Apple Intelligence back on"
             row.countLabel = ""
             rows.append(row)
         }
@@ -493,12 +493,13 @@ enum MacTweaksIntelligence {
         return rows
     }
 
-    /// What the plan says applying does to a ticked feature, by its state now.
+    /// What the plan says applying will do to a ticked feature, by its state now: the plan shows
+    /// before anything runs.
     static func outcome(for state: FeatureState) -> String {
         switch state {
         case .off: return "Stays off, now locked off"
         case .lockedOff: return "Stays locked off"
-        case .on, .unknown, .managed: return "Turned off"
+        case .on, .unknown, .managed: return "Turns off"
         }
     }
 
@@ -527,8 +528,14 @@ enum MacTweaksIntelligence {
     static func applyTitle(ticked rows: [MacTweaksRow]) -> String {
         if rows.contains(where: { $0.id == turnOnID }) { return turnOnTitle }
         if rows.contains(where: { $0.id == finishRemovalID }) { return finishRemovalTitle }
-        let n = rows.count
-        return "Turn off \(n) \(n == 1 ? "feature" : "features")"
+        // A feature already off isn't turned off, it is locked off: "Turn off 14 features" with 11
+        // of them on said more than apply does.
+        let alreadyOff = rows.filter { $0.outcome == outcome(for: .off) }.count
+        let turning = rows.count - alreadyOff
+        let features = { (n: Int) in "\(n) \(n == 1 ? "feature" : "features")" }
+        if alreadyOff == 0 { return "Turn off " + features(turning) }
+        if turning == 0 { return "Lock \(features(alreadyOff)) off" }
+        return "Turn off \(features(turning)), lock \(alreadyOff) already off"
     }
 
     /// The plan's closing sentences, from the scan on show: `ticked` are the ticked rows, `shown`
