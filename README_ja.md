@@ -13,7 +13,7 @@ Lightspotは、macOS Spotlightのモダンなフローティングピルデザ�
 ## ⚡ クイックスタート
 
 ### 📦 ワンライナーのダウンロード＆インストール
-ターミナルに以下のコマンドをコピー＆ペーストするだけで、最新の **Lightspot** が自動的にダウンロード・解凍され、`/Applications` フォルダに直接インストールされます：
+ターミナルに以下のコマンドをコピー＆ペーストするだけで、最新の **Lightspot** が自動的にダウンロード・解凍され、`/Applications` フォルダに直接インストールされます。ダウンロードするのはこのMac用のビルドで、Appleシリコンでは約1.6 MB、Intelでは約1.75 MBです。Mac自身のプロセッサ（`sysctl hw.optional.arm64`）で判断するので、Rosettaで動くターミナルでもAppleシリコン用のビルドが入ります：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
@@ -31,6 +31,8 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/unin
 ```
 
 *(オプション: `curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/uninstall.sh | bash -s -- --dry-run` は何も変更せずに変更内容だけを表示します。代わりに `--keep-spotlight-disabled` を指定すると Spotlight を無効のままにします。)*
+
+Mac Tweaksによる変更は、オフにしたバックグラウンド項目も含めて残ります（すべてのユーザー向けの項目は、すべてのアカウントでオフのままです）。アンインストーラーは取り消し用のジャーナルとDockのバックアップを残し、残ったものを元に戻す方法を表示します：Lightspotを入れ直してMac TweaksのSettingsで **Undo everything Lightspot changed** を選ぶ、システム設定 › 一般 › デバイス管理で **Lightspot Mac Tweaks** を削除する、または **Restore Dock Icons** を実行してください。
 
 ---
 
@@ -62,7 +64,7 @@ Lightspotは根本的に異なるアプローチをとることでこれらの�
 |:---|:---|:---|:---|
 | **ファイルインデックス作成** | 制御されないバックグラウンドクロール | オプション / 設定可能 | **なし** (アーキテクチャによる保証) |
 | **アイドル時のCPU使用率** | 動作時に100%+までスパイク | 1% – 5% (バックグラウンド) | **最小限** (インデックスなし。0.6秒ごとのクリップボード確認のみ) |
-| **ディスクストレージ** | 10 GB – 200 GB+ の隠しキャッシュ | 100 MB – 1 GB | **インデックスもキャッシュもなし** (`UserDefaults` の設定とロックファイルのみ) |
+| **ディスクストレージ** | 10 GB – 200 GB+ の隠しキャッシュ | 100 MB – 1 GB | **インデックスもキャッシュもなし** (`UserDefaults` の設定とロックファイル、そしてクリーンや適用をしたときだけ書く小さなファイル：記録ログ、Mac Tweaksの取り消し用ジャーナル、Dockのバックアップ) |
 | **RAMフットプリント** | 500 MB – 2 GB+ | 200 MB – 500 MB | **約15 – 25 MB** (Pure Swift) |
 | **アプリの起動** | 頻繁に壊れ、再構築が必要 | 信頼できる | **100%の信頼性** (直接スキャン) |
 | **検索レイテンシ** | デバウンス処理あり (50 – 200 ms) | 10 – 30 ms | **< 1.0 ms** (瞬時の同期処理) |
@@ -146,8 +148,8 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 
 ### 10. 🔄 組み込みの自動アップデート
 - GitHub Releasesをバックグラウンドで確認し（起動の少し後と、メニューバーのメニューを開いたとき）、メニューバーから新しいバージョンを提示します。確認に成功すると次の確認まで1日空けます。失敗した場合（オフライン、レート制限）は、次回の起動時またはメニューを開いたときに再試行します。**`Check for Updates...`** でその場で実行でき、**`Automatically Check for Updates`** で自動確認を完全に無効化できます。
-- その場で更新します: Lightspotがリリースをダウンロードして検証し、自身のバンドルを置き換え、新しいバージョンを起動し、その起動が終わってから終了します。Lightspotが消える時間はありません。**`Skip This Version`** を選べば、確認を無効化せずにそのリリースだけを見送れます。
-- すべてのダウンロードには関門があります: HTTPSのみ、GitHubのホストのみ（リダイレクト後に再確認）、展開されたバンドルはLightspotのバンドル識別子・実行可能なバイナリ・公表されたバージョンとの完全一致が必須で、インストール済みより古いビルドは決して受け入れません。
+- その場で更新します: LightspotがリリースからこのMac用のビルド（Appleシリコンでは `Lightspot-arm64.zip`、Intelでは `Lightspot-x86_64.zip`。Mac自身のプロセッサで判断するので、Rosettaで動いているコピーもネイティブのビルドに移ります。それがないリリースではユニバーサルアプリの `Lightspot.zip`）をダウンロードして検証し、自身のバンドルを置き換え、新しいバージョンを起動し、その起動が終わってから終了します。Lightspotが消える時間はありません。**`Skip This Version`** を選べば、確認を無効化せずにそのリリースだけを見送れます。Lightspot 1.2.0〜1.3.9のアップデーターはユニバーサルの `Lightspot.zip` をダウンロードするので、1.4.0はユニバーサルアプリとして入り、その後のアップデートはこのMac用のビルドになります。
+- すべてのダウンロードには関門があります: HTTPSのみ、GitHubのホストのみ（リダイレクト後に再確認）、展開されたバンドルはLightspotのバンドル識別子・このMacのプロセッサ用のコードを含む実行可能なバイナリ（Mach-Oヘッダから読み取ります）・公表されたバージョンとの完全一致が必須で、インストール済みより古いビルドは決して受け入れません。
 - リリースはアドホック署名です（このプロジェクトはDeveloper IDを同梱していません）。そのため検証できるコード署名は存在せず、上記のチェックとGitHubへのHTTPSが信頼モデルのすべてです。これは `install.sh` が既に求めているものと同じです。
 
 ### 11. 🧹 Clean Dev Mac (`cdm`)
@@ -169,11 +171,34 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 
 ### 13. 🎛️ macOSの調整
 dotfilesのREADMEからコピーしてくるような `defaults write` のワンライナーを、クイックアクションにしました。切り替え系はどれも現在の設定を読み取って反転するので、同じ行で元に戻せます：
-- **Dock**：**Clear Dock Icons**（固定されたアプリをすべて取り除き、Dockを再起動：`defaults write com.apple.dock persistent-apps -array && killall Dock`）、**Toggle Dock Auto-Hide**、**Toggle Instant Dock Auto-Hide**（遅延なし）、**Toggle Dock Recent Apps**、**Restart Dock**。
+- **Dock**：**Clear Dock Icons**（Dockのアイコンを `~/Library/Application Support/Lightspot/dock-backup.plist` に保存してから、固定されたアプリをすべて取り除き、Dockを再起動）、**Restore Dock Icons**（アイコンを元の位置に戻し、その後に追加したアイコンは残して、再起動したDockにアイコンが表示されたときだけバックアップを削除。どちらも起動したばかりのDockが落ち着くのを待ち、再起動で変更が失われたらもう一度試します）、**Toggle Dock Auto-Hide**、**Toggle Instant Dock Auto-Hide**（遅延なし）、**Toggle Dock Recent Apps**、**Restart Dock**。
 - **Finder**：**Toggle Hidden Files in Finder**、**Toggle File Extensions in Finder**、**Toggle Finder Path Bar**、**Toggle Desktop Icons**（画面共有の前に便利）、**Toggle .DS_Store on Network & USB Drives**、**Restart Finder**。
 - **入力とスクリーンショット**：**Toggle Press-and-Hold Accents**（キーを押し続けるとリピート）、**Toggle Smart Quotes & Dashes**、**Toggle Screenshot Shadows**。
 
-どれも管理者パスワードは不要です。Clear Dock Iconsは元に戻せませんが、切り替え系は戻せます。
+どれも管理者パスワードは不要です。Clear Dock IconsはRestore Dock Iconsで元に戻せ、切り替え系は同じ行で戻せます。状態の表示と取り消し付きでさらに41の設定を変えるには、Mac TweaksのSettings（セクション14）を使ってください。
+
+### 14. 🧰 Mac Tweaks (`free up space`)
+Mac Tweaksは、macOSが抱えている容量を解放し、このMacのすべてのアカウントでApple Intelligenceをオフにし、41のmacOS設定を取り消し可能な形で変更し、他のアプリが入れたlaunchdのエージェントとデーモンをオフにします。`mac tweaks`、`free up space`、`debloat`、または消したいもの（`remove garageband`、`macos installers`、`time machine snapshots`、`app caches`）を入力して **`↵`** を押すか、メニューバーで **Clean Dev Mac...** のすぐ下にある **Mac Tweaks...** を選びます。`turn off apple intelligence` ならApple Intelligenceのセクションが、`stop music from opening`、`turn off apple music`、`turn off mac analytics`、`turn off personalized ads`、`show the library folder` ならSettingsのセクションが、`turn off background items`、`turn off launch agents`、`disable launch agents`、`turn off google updater`、`leftover launch agents`、`launch daemons` ならBackground Itemsのセクションが開きます。Clean Dev Macと同じように検索結果の上にセクションごとのタブ付きで開き、どのセクションも何かを変える前に項目別のプランを、終わった後に結果を表示します。（セクション13の `defaults` 切り替えはクイックアクションで、Mac Tweaksの一部ではありません。）
+- **Free Up Space** は各行をClean Dev Macと同じ方法で計測します。提示するものがない行は表示せず、0バイトのものは提示しません。最初の3行にはチェックが入っています：
+  - **macOS installers**：`/Applications` にある古い `Install macOS*.app`。Appleのバンドル識別子（`com.apple.InstallAssistant…`）を持つものだけです。
+  - **iPhone and iPad updates**：Finderがダウンロードしたアップデート（`~/Library/iTunes/iPhone Software Updates` と `iPad Software Updates`）。
+  - **Unavailable simulators**：ランタイムがもうインストールされていないシミュレータ。Xcodeの `simctl` を使い、`/usr/bin/xcrun` は決して実行しません。そのため、Command Line ToolsだけのMacにはこの行が出ず、そのインストーラーも開きません。
+  - **Time Machine local snapshots**：ローカルスナップショット。数で表示します（macOSはサイズを返しません）。
+  - **Aerial videos**：このMacのすべてのアカウントが共有する空撮ビデオ（`/Library/Application Support/com.apple.idleassetsd/Customer`）。各アカウント自身のコピーはClean Dev Macの行です。
+  - **GarageBand and its sound library**：GarageBandとそのサウンドライブラリ。Logic ProかMainStageがインストールされている間は、ライブラリは残ります。
+  - **iMovie**、**Keynote**、**Numbers**、**Pages**：Apple製のものだけです。Apple製でない `Pages.app` は残ります。
+  - **App caches**：`~/Library/Caches` のキャッシュ。ただし、macOS自身のもの（`com.apple.*` とmacOSが書くその他の名前）、Lightspotのもの、そしてClean Dev Macのルールが扱うものはすべて除くので、2つのオーバーレイが同じフォルダを重複して数えることはありません。Mac Tweaksはこれらのルールを、Clean Dev Macのメモリ、`~/.cleandevmac/rules`、またはアプリ内のコピーから読み、決してダウンロードしません。
+  - リンクの行が3つ：**Apple Intelligence models**（そのセクションをスキャンした後、モデルがディスクにある間だけ、サイズ付きで表示）はApple Intelligenceのセクションを、**Developer caches and project junk** はClean Dev Macを、**More in System Settings** はシステム設定のストレージを開きます。
+- **Free Up Spaceのファイルの行き先**：ゴミ箱です。ゴミ箱を空にするまでは取り出せます。シミュレータ（`simctl delete unavailable`）とスナップショット（`tmutil deletelocalsnapshots`）はすぐに削除され、その行にもそう表示されます。バックアップディスク上のバックアップには触れません。結果には、解放した容量、ゴミ箱に移動したもの、削除したもの、そして残ったものとその理由が表示されます。たとえば、App Managementの許可がないためにmacOSがLightspotに移動させないアプリなどです（`⌥↵` でFinderに表示）。
+- **Apple Intelligence**（Appleシリコン、macOS 15.1以降）：このmacOSにある機能ごとに1行（Siri、ChatGPTなどのAI拡張機能、Writing Tools、Genmoji、Image Playground、メール・通知・メッセージ・Safari・メモの要約、インラインの入力予測、Spatial Photos、Photos Clean Up、Xcodeの予測コード補完）で、それぞれの状態（On、Off、Locked off、Managed、Unknown）と必要なモデルを表示します。どの機能も最初はチェックが入っていて、これはオフにするという意味です。残したいものはチェックを外してください。適用すると構成プロファイル **Lightspot Mac Tweaks** を1つインストールし、それをシステム設定 › 一般 › デバイス管理で承認します（Lightspotがプロファイルを開き、最大10分待ちます。`Esc` で待つのをやめます）。このプロファイルは、チェックした機能をこのMacのすべてのアカウントでオフにし、そのモデルのダウンロード先を閉じたローカルのポートに向けます。プロファイルが有効になってから初めて、Lightspotは残した機能が必要としないモデルの削除をAppleのアセットサービスに頼み、macOSがまだ使っている間は再試行し、なくなるまでインベントリを確認します。**Finish removing the models** は再起動の後に残りを片付け、**Turn Apple Intelligence back on** はプロファイルを削除します（Settingsの設定も入っている場合は、Apple Intelligenceを除いたプロファイルに置き換えます）。他のプロファイルが設定している機能はそのままにし、RemoveMacAIのプロファイルがあるとこのセクションは読み取り専用になります。Lightspot自身は非公開のアセットフレームワークを呼び出しません。読み取りと削除はすべて短時間だけ動く子プロセス `Lightspot --asset-service` で行うため、フレームワークが使う9〜11 MBがLightspotのメモリに残ることはありません。
+- **Settings**：6つのグループ（Privacy、Annoyances、Apple apps、Finder、Dock and windows、Typing）に分かれた41の設定で、それぞれこのMacでの状態を表示します：On、Off、Partly、Managed（他のプロファイルが設定しているので、Lightspotは触れません）、Not on this macOS。最初はどれにもチェックが入っていません。プリセット **Recommended** と **Maximum privacy** は、まだオフのものにチェックを入れます。ローカルの設定はcfprefsdを通して書き込み、読み直して確認し、必要なときだけFinder、Dock、SystemUIServerをそれぞれ1回再起動します。Mac Analytics、パーソナライズされた広告、Siriと音声入力の改善、検索の改善、Spotlightのインターネット結果、Look UpとSafariの検索候補、Game Center、iPhoneミラーリング、Apple Music、Book Storeは同じプロファイルに入り、プロファイルのApple Intelligenceの部分はそのまま保たれます。プランには、このプロファイルがこのMacのすべてのアカウントに適用されることが表示されます。Apple Musicは3段階：Apple Musicのサービス、何もミュージックを開けないようにするミュージックの起動エントリ、そして再生・一時停止・スキップのキー（`com.apple.rcd`）です。選択中の行とプランには、各変更がコマンド（`defaults write …`、`launchctl …`、`chflags …`、`profile: …`）として表示されます。
+- **Background Items**：`~/Library/LaunchAgents`、`/Library/LaunchAgents`、`/Library/LaunchDaemons` にある `.plist` を1つにつき1行で表示します。macOS自身のもの（`com.apple.*`）、`Label` のないplist（GoogleのKeystoneが残す空のスタブ）、ドットで始まるファイルは除きます。各行には、その項目が属するアプリ（プログラムが入っている `.app`、実行するもの、または `AssociatedBundleIdentifiers` が示すアプリ。たとえばDockerのヘルパーは「Docker」と表示されます）、ラベルと実行するもの（トークンを含むことがあるため、その他の引数は決して表示しません）、そして状態を表示します：On、Off、Not loaded（システム設定のログイン項目でオフにされている可能性があります）、Unknown。状態は `launchctl print-disabled` と `launchctl print` で読みます。アップデーター（ラベルかプログラム名に `update` を含むもの）には **Updater** のタグが付き、アップデーターでも残骸でもない行には、オフにするとそのアプリが動かなくなるおそれがあるという注意が表示されます。`Space` でその行の変更にチェックを入れます：オフにする（`launchctl disable` の後に `bootout`）、オンに戻す（`enable` の後に `bootstrap`）、またはプログラムがもう存在しないことをmacOSが確認した **Leftover** なら、停止してからplistをゴミ箱に移動します。最初からチェックが入っているのは残骸の行だけです。macOSが保護しているフォルダや別のディスクにあるプログラムと、インラインコード（`-c`、`-e`）を渡されたインタープリタは、決して「消えた」とは判断しません。plistがシンボリックリンクの残骸や、ラベルが別のplistと同じ残骸は、決して移動しません。自分のエージェントは自分の権限で変更し、各デーモンの変更と、管理者にしかできない移動は1回の管理者の確認にまとめます。デーモンの変更はこのMacのすべてのアカウントに適用されますが、`/Library/LaunchAgents` の項目をオフ／オンにするのは自分のアカウントだけです。launchdが確認したものだけを結果に数え、まだ動いているもの（デーモンは再起動まで、エージェントはログアウトまで）や読み込まれなかったものは結果に表示されます。シンボリックリンクのplistはフォルダを1つずつたどり、macOSが保護しているフォルダ、別のディスク、`~/Library/CloudStorage` には決して入りません。最後の行はシステム設定のログイン項目を開きます。
+- **取り消し**：Lightspotは設定を初めて変える前に、見つけた値を `~/Library/Application Support/Lightspot/tweaks-journal.json` に保存し、保存に成功したときだけ変更します。On の行にチェックを入れると取り消しになり、プランのとおり、その値に戻すか、Lightspotが何も保存していない場合はmacOSの既定値に戻します。**Undo everything Lightspot changed** は記録されたすべての変更を元に戻し、管理者の確認1回でプロファイルを削除します。Lightspotがオフにしたバックグラウンド項目も（オフにする前にジャーナルに記録してあります）オンに戻し、以前動いていたものだけを再び起動します。デーモンは同じ1回の確認で戻します。plistがなくなった項目は何も実行せずに記録から外し、launchdのスイッチはオフのまま残ります。一部だけ適用されている設定はあなた自身のものなので、完成させるだけで、取り消すことはありません。ゴミ箱のファイルとClear Dock Iconsのバックアップは対象外です。
+- **パスワードは管理者が必要なときだけ**：スナップショットの削除、他のユーザーが所有する項目や、フォルダのアクセス権のために自分では移動できない項目の移動（その行には **May ask for password** と表示されます）、デーモンのオフ／オン、そしてLightspotのプロファイルの削除です。適用に管理者権限が必要な部分は1つのスクリプトにまとめ、sudo用Touch IDまたはパスワードダイアログで1回だけ実行します。プロファイルのインストールは、システム設定であなた自身がクリックして行います。
+- **キー操作**：`↑↓` で選択（選択中の行には項目、モデル、またはコマンドが表示されます）、`Space` でチェック（プリセットではその行すべて、Background Itemsではその行の変更）、`⇥` / `⇧⇥` でセクションを切り替え、`↵` で項目別のプランを表示し、もう一度 `↵` で適用、`⌥↵` でFree Up Spaceの行の最初の項目、またはバックグラウンド項目のplistをFinderで表示、`Esc` で戻り、システム設定を待つのをやめ、さらに押すと閉じます。
+- **結果**：どの適用も最後に結果を表示し、頼んだとおりにできたときは緑のチェックが付きます。適用はパネルが隠れても続き（パスワードの確認やシステム設定が前面に出たとき）、Mac Tweaksを開き直すと進行状況、続いて結果が表示されます。適用のたびに `~/Library/Application Support/Lightspot/mac-tweaks.log` に記録されます。別のセクションの適用でスキャン結果が古くなったセクションは、もう一度スキャンします：Apple IntelligenceとSettingsはプロファイルを、SettingsとBackground Itemsは取り消し用のジャーナルを共有しているためです。
+- **決して触れないもの**：Free Up Spaceは、`/System` 以下のすべて、`~/Desktop`、`~/Documents`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music`、iCloud Drive、`~/Library/Containers`、`~/Library/Group Containers`、メール、メッセージ、iPhoneのバックアップ（`MobileSync`）、そしてアプリバンドルの中身には決して触れません。各パスは、書かれたままでもシンボリックリンクを解決した後でも、その行の固定フォルダの直下になければならず、それ自体がシンボリックリンクであってはならず、移動の直前にもう一度このチェックを通ります。Apple IntelligenceとSettingsは、他の構成プロファイルが設定しているものには触れません。Background Itemsは、macOS自身の項目を一覧に出さず、3つのフォルダの外にあるものは何も変えません。`launchctl` はシェルを通さず直接実行し、root権限ではスキャンで見つけたラベルとplistにだけ作用します。Mac Tweaksは開くまで何も読まず、ネットワークへの通信も一切行いません。
+- **クレジット**：Free Up Space、Apple Intelligence、Settings、Background Itemsは、omlahoreによる [RemoveMacAI](https://github.com/omlahore/RemoveMacAI)（MITライセンス）の処理を移植したものです。そのApple Intelligenceの部分は4evyによる [pared](https://github.com/4evy/pared)（MITライセンス）に基づいており、Lightspotのアセットサービスへのブリッジ、モデルのカタログ、ダウンロードのブロックもそれに従っています。[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照してください。
 
 ---
 
@@ -192,7 +217,7 @@ dotfilesのREADMEからコピーしてくるような `defaults write` のワン
   - 基数: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **デフォルトブラウザのブックマーク、履歴、タブ**: 重複ゼロで、アクティブなデフォルトブラウザのみを統合します（**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**）。ブックマークと最近の履歴はブラウザ自身のファイルから読み取られ（履歴は直近3日または7日分、デフォルトは7日で、メニューバーの **Browser History** からオフにもできます）、開いているタブはSafariとChromiumベースのブラウザから取得します。
 - **インメモリの一時的なクリップボード**: `clip <query>` 経経由でアクセスできる揮発性のRAM専用リングバッファ（最大50アイテム）。ディスクに書き込むことはなく、パスワードマネージャー（`1Password`, `Bitwarden`）を厳格にフィルタリングします。
-- **macOSのシステム設定へのディープリンク**: 特定のmacOS設定ペイン（`x-apple.systempreferences:...`）を直接開く46のディープリンク。システム設定自体の検索と同じキーワード（`night shift`, `lockdown mode`, `sticky keys`）で、システムの言語のまま検索できます。
+- **macOSのシステム設定へのディープリンク**: 特定のmacOS設定ペイン（`x-apple.systempreferences:...`）を直接開く46のディープリンク。システム設定自体の検索と同じキーワード（`night shift`, `lockdown mode`, `sticky keys`）で、システムの言語のまま検索できます。macOS 27.2では、システム設定が終了してもLaunchServicesが1分以上それに気づかないことがあります。そのときLightspotは「もう開いていない」という警告を出す代わりに、新しいシステム設定でパネルを開きます。
 - **マルチエンジンWeb検索**: 組み込みのプレフィックスショートカット: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`、さらに `brew <formula>`（検索ではなく、formulae.brew.sh上のそのformulaのページを開きます）。
 
 ---
@@ -213,7 +238,7 @@ Lightspotには、Appleの組み込みSpotlightを無効または再有効化す
 ## 🚀 ビルドとインストール (Xcodeは不要)
 
 ### 📦 方法A: ワンライナーインストール (推奨)
-最新のビルド済みリリースを直接ダウンロードしてインストールします：
+最新のビルド済みリリースを直接ダウンロードしてインストールします。各リリースには、インストーラーとアップデーターがMacに合わせて選ぶ `Lightspot-arm64.zip`（Appleシリコン、約1.6 MB）と `Lightspot-x86_64.zip`（Intel、約1.75 MB）、ユニバーサルアプリの `Lightspot.zip`（約2.9 MB）、クラッシュレポートを読むためのシンボル `Lightspot.app.dSYM.zip` が含まれます：
 ```bash
 curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/install.sh | bash
 ```
@@ -237,14 +262,19 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 # または: make uninstall
 ```
 
+`./build.sh` は各アーキテクチャを完全なリンク時最適化（LTO）でコンパイルし、ローカルシンボルの名前を取り除きます（名前は `build/Lightspot.app.dSYM` に残します）。1.4.0のユニバーサルバイナリは5.1 MBで、1.3.9の8.8 MBより42%小さく、Appleシリコン用だけなら2.2 MB（Intel用は2.9 MB）です。
+
 ### 4. テストと検証
-LightspotにはXCTestターゲットはありません。`scripts/` 配下の2つの独立したスクリプトをソースとともにその場でコンパイルし、リポジトリのルートから実行します：ロジックとエンジンのテストランナー（42のテストブロック）と、ライブシステム検証ツール（11セクション、フル装備のマシンで141チェック。zshの履歴やVS Codeがない場合や、GitHubに接続できない場合などは一部がスキップされます）：
+LightspotにはXCTestターゲットはありません。`scripts/` 配下の3つの独立したスクリプトをソースとともにその場でコンパイルし、リポジトリのルートから実行します：ロジックとエンジンのテストランナー（83のテストブロック）、ライブシステム検証ツール（15セクション、開発者のMac（macOS 27.2）で204チェック。zshの履歴やVS Codeがない場合や、GitHubに接続できない場合などは一部がスキップされます）、そして本物のMac Tweaksのオーバーレイを読み取り専用のスキャンで画面外に表示し、各セクションを再スキャンとセクション切り替えに通すチェックです：
 ```bash
-# コアロジックとエンジンのテスト (42のテストブロック)
+# コアロジックとエンジンのテスト (83のテストブロック)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
 
-# ライブシステムチェック (11セクション、フル装備のマシンで141チェック)
+# ライブシステムチェック (15セクション、macOS 27.2で204チェック)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
+
+# Mac Tweaksのオーバーレイを画面外で確認 (約1分)
+swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(find Sources/Lightspot -name '*.swift' ! -name AppMain.swift) && /tmp/overlay_check
 ```
 
 ---
@@ -257,12 +287,12 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 | **`↓` / `↑`** | 検索結果をナビゲート |
 | **`Return` (`↵`)** | 選択したアプリやIDEのプロジェクトを開く、コマンドを実行する、または計算結果をコピーする |
 | **`⌘Return` (`⌘↵`)** | お好みのターミナルで選択したプロジェクトを開く |
-| **`⌥Return` (`⌥↵`)** | Finderでプロジェクトを表示する / 選択したプロセスを強制終了する (`SIGKILL`) / インストーラーのGitHubページを開く |
+| **`⌥Return` (`⌥↵`)** | Finderでプロジェクトを表示する / 選択したプロセスを強制終了する (`SIGKILL`) / インストーラーのGitHubページを開く / Mac Tweaksの行の最初の項目をFinderで表示する |
 | **`⌘P`** | 選択したターミナル履歴のコマンドをピン留め、またはピン留め解除する |
 | **`⌘⇧P`** | ピン留めされたコマンドマネージャーのオーバーレイを開く |
 | **`⌘⇧C`** | カスタムコマンドマネージャーのオーバーレイを開く |
-| **`Space`** | Clean Dev Macでカテゴリのチェックを切り替える |
-| **`Tab` (`⇥`)** | Clean Dev Macでコードリポジトリもスキャンする |
+| **`Space`** | Clean Dev Macのカテゴリ、またはMac Tweaksの行のチェックを切り替える |
+| **`Tab` (`⇥`)** | Clean Dev Macでコードリポジトリもスキャンする / Mac Tweaksで次のセクションへ（`⇧⇥` で前へ） |
 | **`⌘Y` / `⌘⇧H`** | 検索履歴マネージャーのオーバーレイを開く |
 | **`Escape`** | オーバーレイを閉じる、検索フィールドをクリアする、またはLightspotを閉じる |
 | **外側をクリック** | フローティングパネルを自動的に閉じる |
@@ -273,16 +303,22 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 ## 🔒 プライバシーとセキュリティの保証
 
-- **ファイルインデックス作成ゼロ**: Lightspotは、個人のファイル、ドキュメント、ダウンロード、またはコードリポジトリをインデックス化することは決してありません。Clean Dev Macが計測するのはcdmのルールが指すキャッシュフォルダと、2つの注記に必要な少数の場所（後述）だけで、開いている間だけ実行し、サイズ以外は何も保持しません。他のアプリのサンドボックスコンテナは決して読み込みません。AndroidとClaude Codeの行のために、AVDフォルダと `~/.claude/projects` 内のファイルの日付、そして実行中のセッションを示す `~/.claude/sessions` の小さなファイルも読みます。トランスクリプトの中身は読みません。強制終了したChromeが残すコピーについては、自分専用の一時フォルダ内のコピーを一覧し、実行中のアプリの起動時刻を読みます。cdmの2つの注記のために、使用中のスワップ量を読み、macOSが起動時に空にする一時フォルダと `~/.claude/projects` のサイズを計測し、アプリが開いたままの削除済みファイルを `lsof` に問い合わせ（保持するのは合計と上位3つのアプリ名だけです）、`~/.claude/settings.json` の2つのキー（`cleanupPeriodDays`、`desktopSessionCleanupPeriodDays`）を読みます。このファイルに書き込むことはありません。コードリポジトリのスキャンを求めたとき（`⇥`）は、ホームフォルダ内のgitリポジトリを6階層まで探しますが、`~/Library`、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music` には入らず、各リポジトリのgitに無視しているファイルを尋ねます。
+- **ファイルインデックス作成ゼロ**: Lightspotは、個人のファイル、ドキュメント、ダウンロード、またはコードリポジトリをインデックス化することは決してありません。Clean Dev Macが計測するのはcdmのルールが指すキャッシュフォルダと、2つの注記に必要な少数の場所（後述）だけで、開いている間だけ実行し、サイズ以外は何も保持しません。他のアプリのサンドボックスコンテナは決して読み込みません。AndroidとClaude Codeの行のために、AVDフォルダと `~/.claude/projects` 内のファイルの日付、そして実行中のセッションを示す `~/.claude/sessions` の小さなファイルも読みます。トランスクリプトの中身は読みません。強制終了したChromeが残すコピーについては、自分専用の一時フォルダ内のコピーを一覧し、実行中のアプリの起動時刻を読みます。cdmの2つの注記のために、使用中のスワップ量を読み、macOSが起動時に空にする一時フォルダと `~/.claude/projects` のサイズを計測し、アプリが開いたままの削除済みファイルを `lsof` に問い合わせ（保持するのは合計と上位3つのアプリ名だけです）、`~/.claude/settings.json` の2つのキー（`cleanupPeriodDays`、`desktopSessionCleanupPeriodDays`）を読みます。このファイルに書き込むことはありません。コードリポジトリのスキャンを求めたとき（`⇥`）は、ホームフォルダ内のgitリポジトリを6階層まで探しますが、`~/Library`、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music` には入らず、各リポジトリのgitに無視しているファイルを尋ねます。Mac Tweaksが読むのは決まった場所だけで、それも開いたセクションの分だけです。Free Up Space：`/Applications` 内の名前と、そこにあるInstall macOSアプリおよびGarageBand、iMovie、Keynote、Numbers、Pagesの `Info.plist`、`~/Library/iTunes/iPhone Software Updates` と `iPad Software Updates`、`/Library/Application Support/com.apple.idleassetsd/Customer`、`~/Library/Caches` の中身（提示する項目ごとのサイズと所有者を含む）、GarageBandの3つのライブラリフォルダと、Logic ProまたはMainStageがインストールされているかどうか、Xcodeの `simctl` が返す使用できないシミュレータの一覧と、`tmutil` が返すローカルスナップショットの日付、空撮ビデオを提示するときの壁紙インデックス（`~/Library/Application Support/com.apple.wallpaper/Store/Index.plist`）、そしてClean Dev Macのルールです。適用時には `~/.Trash` 内の名前を1つずつ確認し、ゴミ箱の一覧は決して取得しません。Apple Intelligence：アセットサービスが持つモデルセットとそのサイズのインベントリ（短時間だけ動く補助プロセスが読み、フォルダは読みません。削除の途中でだけ、`/System/Library/AssetsV2` にあるセットのフォルダの項目数を読みますが、一覧は取得しません）、そして機能の設定と2つのプロファイルのマーカーをcfprefsd経由で読みます。Settings：41の設定の環境設定と制限、Dockのアイコン、プロファイルのマーカーをcfprefsd経由で読み、launchctlの無効化されたサービスの一覧、Music.appとその実行ファイルのinode番号、Libraryフォルダの非表示属性、そして取り消し用のジャーナルを読みます。Background Items：`~/Library/LaunchAgents`、`/Library/LaunchAgents`、`/Library/LaunchDaemons` 内の名前と、そこにある各 `.plist`（1 MiB以下の通常ファイルのときだけ読み、ラベル、プログラム、引数、関連アプリの識別子、`Disabled` だけを残します。引数は表示も記録もしません）、自分のアカウントとシステムの `launchctl print-disabled`、各項目の `launchctl print`（出力にはジョブの環境変数が含まれるため、終了ステータスだけを残します）、plistが示す各プログラム、またはインタープリタが実行するスクリプト（フォルダを1つずつたどって確認し、macOSが保護しているフォルダ、別のディスク、`~/Library/CloudStorage` の中は決して見ません）、各plistの所有者、plistが示すアプリについてのLaunchServicesの情報、そして取り消し用のジャーナルのバックグラウンド項目のエントリです。ジャーナルにバックグラウンド項目があるときは、SettingsもUndo everythingのプランのために3つのフォルダを1回読みます。スキャンから5分を過ぎていれば、Mac Tweaksを閉じたときに見つけたものを破棄し、Free Up Spaceの合計と、Apple Intelligenceのスキャンがモデルについて読んだ内容だけを残します。
 - **RAM専用の一時的なクリップボード**: クリップボードの履歴は揮発性メモリ内にのみ留まり、隠蔽されたタイプ/パスワードマネージャー（`org.nspasteboard.ConcealedType`、`1Password`、`Bitwarden`）を積極的に無視します。ディスクには一切書き込まれず、検索履歴にも残りません。検索履歴は、計算機・開発者ツール・スニペットの結果からコピーしたテキストも保存しません。
 - **デフォルトブラウザの分離**: ブックマーク、開いているタブ、最近の閲覧履歴は、設定されたデフォルトブラウザからのみ、このMac上で読み取られ、クロスブラウザのスクレイピングを回避します。
 - **ユーザー操作によるコマンド実行**: あなたのコマンド、スクリプト、クイックアクションは、明示的なユーザーアクション（`Return` または `⌘↵`）があった場合にのみ実行されます。
-- **テレメトリゼロ、通信先は2つだけ（どちらもあなたの管理下）**: 分析、トラッキング、アカウントは一切ありません。Lightspot自身が通信するサービスは2つだけで、どちらもあなたが決められます。1つ目はアップデートのためのGitHubです。公開リリースAPI（`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`）への認証なしの `GET` で、`User-Agent: Lightspot/<バージョン> (+https://github.com/openhoangnc/mac-lightspot)` を付けて、起動の少し後とメニューバーのメニューを開いたときに送信しますが、確認に成功した後は1日1回までです（失敗した確認は次回の起動時またはメニューを開いたときに再試行します）。メニューバーで **`Automatically Check for Updates`** をオフにすれば、自動では一度も実行されません。承認したアップデートをインストールするときは、そのzipをGitHubからダウンロードします（`User-Agent: Lightspot/<バージョン>`）。どちらもエフェメラルセッションを使うため、レスポンスやCookieがディスクに保存されることはありません。以前のバージョンはmacOSの共有セッションを使っていたため（アップデート確認は1.2.0まで、IPの照会は1.2.0より前）、レスポンスが `~/Library/Caches/com.lightspot.app` に、Cookieが `~/Library/HTTPStorages` に残っていました。Lightspotは起動時にこれらの残りを削除し、アンインストーラーも削除します。2つ目はipifyで、パブリックIPを調べるための `GET https://api.ipify.org`（サードパーティのサービス）で、あなたが求めたときにだけ送信されます：IPを指すクエリ（`ip`, `my ip`, `public ip`, `ipv4`）を入力したとき、または **IP Address** の行で `Return` を押したときです。他のWebサーバーと同様に、ipifyにはあなたのIPアドレスと標準的なmacOSのユーザーエージェントが見えます。結果はメモリ内に15分間保持され、ディスクには書き込まれません。**Clean Dev Mac** を開くと、GitHubにcdmのルールファイルも要求します（`GET https://raw.githubusercontent.com/cleandevmac/cdm/main/rules/index.json` と、そこに記載されたファイル。標準的なmacOSのユーザーエージェントで、エフェメラルセッションを使用）。頻度は最大で1時間に1回で、ルールはメモリ内にのみ保持され、オフライン時はアプリに組み込まれたコピーを使います。自分のルールを `~/.cleandevmac/rules` に置けば、この通信は一切発生しません。ターミナルでcdmを実行する（`⌘↵`）と、cdm自身の手順と同じく、cdmのGitHubリリースからスクリプトをダウンロードします。インストール用の行も同様で、各ツールのインストーラーをターミナルで実行し、GitHubからのダウンロードはLightspotではなくそのスクリプトが行います。Web検索、URL、ブックマークはブラウザが開き、それも `Return` を押したときだけです。
-- **ディスクに書き込まれるもの**: Lightspot自身の環境設定（`UserDefaults`、`~/Library/Preferences/com.lightspot.app.plist`）、ロックファイル1つ、アップデートのインストール中の一時ファイル、そしてクリーン時にcdmのログへ追記される記録です：
+- **管理者コマンドは1回だけ実行**: 特権コマンドは、Touch ID付きの `sudo`、またはmacOSのパスワードダイアログで実行され、1.4.0からは決して2回実行されません。コマンドはまずランダムなマーカーを出力し、そのマーカーでsudoがコマンドを開始したとわかった時点で結果が確定します。そのため、Touch IDで実行して失敗したコマンドが、パスワードダイアログの後ろでもう一度実行されることはもうありません。マーカーの後の標準入力は `/dev/null` なので、実行したものが隠れたターミナルで入力を待ち続けることもありません。Lightspotが自分で組み立てるスクリプト（すべての引数をシングルクォートで囲んだMac Tweaksの管理者バッチ）は、内容を一切変えない別の入口を通ります。システムログに残るのは特権コマンドが実行されたかどうかと終了ステータスだけで、ファイルのパスを含みうるコマンドの本文は残りません。
+- **テレメトリゼロ、通信先は2つだけ（どちらもあなたの管理下）**: 分析、トラッキング、アカウントは一切ありません。Lightspot自身が通信するサービスは2つだけで、どちらもあなたが決められます。1つ目はアップデートのためのGitHubです。公開リリースAPI（`api.github.com/repos/openhoangnc/mac-lightspot/releases/latest`）への認証なしの `GET` で、`User-Agent: Lightspot/<バージョン> (+https://github.com/openhoangnc/mac-lightspot)` を付けて、起動の少し後とメニューバーのメニューを開いたときに送信しますが、確認に成功した後は1日1回までです（失敗した確認は次回の起動時またはメニューを開いたときに再試行します）。メニューバーで **`Automatically Check for Updates`** をオフにすれば、自動では一度も実行されません。承認したアップデートをインストールするときは、そのzipをGitHubからダウンロードします（`User-Agent: Lightspot/<バージョン>`）。どちらもエフェメラルセッションを使うため、レスポンスやCookieがディスクに保存されることはありません。以前のバージョンはmacOSの共有セッションを使っていたため（アップデート確認は1.2.0まで、IPの照会は1.2.0より前）、レスポンスが `~/Library/Caches/com.lightspot.app` に、Cookieが `~/Library/HTTPStorages` に残っていました。Lightspotは起動時にこれらの残りを削除し、アンインストーラーも削除します。2つ目はipifyで、パブリックIPを調べるための `GET https://api.ipify.org`（サードパーティのサービス）で、あなたが求めたときにだけ送信されます：IPを指すクエリ（`ip`, `my ip`, `public ip`, `ipv4`）を入力したとき、または **IP Address** の行で `Return` を押したときです。他のWebサーバーと同様に、ipifyにはあなたのIPアドレスと標準的なmacOSのユーザーエージェントが見えます。結果はメモリ内に15分間保持され、ディスクには書き込まれません。**Clean Dev Mac** を開くと、GitHubにcdmのルールファイルも要求します（`GET https://raw.githubusercontent.com/cleandevmac/cdm/main/rules/index.json` と、そこに記載されたファイル。標準的なmacOSのユーザーエージェントで、エフェメラルセッションを使用）。頻度は最大で1時間に1回で、ルールはメモリ内にのみ保持され、オフライン時はアプリに組み込まれたコピーを使います。自分のルールを `~/.cleandevmac/rules` に置けば、この通信は一切発生しません。Mac Tweaksは通信を一切行いません。Clean Dev Macのルールは、メモリ、`~/.cleandevmac/rules`、またはアプリ内のコピーから読み、決してダウンロードしません。ターミナルでcdmを実行する（`⌘↵`）と、cdm自身の手順と同じく、cdmのGitHubリリースからスクリプトをダウンロードします。インストール用の行も同様で、各ツールのインストーラーをターミナルで実行し、GitHubからのダウンロードはLightspotではなくそのスクリプトが行います。Web検索、URL、ブックマークはブラウザが開き、それも `Return` を押したときだけです。
+- **ディスクに書き込まれるもの**: Lightspot自身の環境設定（`UserDefaults`、`~/Library/Preferences/com.lightspot.app.plist`）、ロックファイル1つ、アップデートのインストール中の一時ファイル、クリーン時にcdmのログへ追記される記録、そしてMac Tweaksで適用したときの小さなファイルです：
   - 設定: `lightspot_hotkey_option`, `lightspot_terminal_app`, `lightspot_search_engine`, `lightspot_browser_history_days`, `lightspot_hide_menubar_icon`, `lightspot_auto_start_enabled`, `lightspot_first_run_completed`, `lightspot_spotlight_state`（メニュー表示用に、最後に確認したSpotlightの状態）、`lightspot_auto_update_enabled`, `lightspot_last_update_check`, `lightspot_skipped_version`（自動アップデート確認）。
   - あなたが作成したもの: `lightspot_pinned_commands`, `lightspot_custom_commands`, `lightspot_snippets`。
   - 利用履歴: `lightspot_recent_app_bundle_ids`（最近起動したアプリ）と `lightspot_search_history`：入力したクエリと開いた結果（タイトル、アプリやプロジェクトのパス、URL、シェルコマンド）、およびランキング用の選択回数。検索履歴マネージャー（`⌘Y`）で確認・消去できます。クリップボード、計算機、開発者ツールの選択は記録されません。スニペットとハードウェアレポートの選択は、クエリと回数のみを保持し、コピーしたテキストは保存しません。
   - `~/.cleandevmac/clean.log`：Clean Dev Macでクリーンしたときだけ書き込まれます。各クリーンで削除またはゴミ箱に移動したものを、cdm自身が使うログに追記します（cdmと同じく1 MiBが上限）。クリーナーで確定したものは完全に削除されます。ただし、Trashと表示されたカテゴリはゴミ箱に移動します。
+  - `~/Library/Application Support/Lightspot/mac-tweaks.log`：Mac Tweaksで何かを適用したときだけ書き込まれます。適用ごとの開始と終了の時刻、変更・ゴミ箱への移動・削除をしたもの、残ったものとその理由、解放した容量を記録します。1 MiBを超えると最新の256 KiBだけを残します（cdmのログと同じ）。Free Up Spaceで確定したファイルはゴミ箱に移動し、使用できないシミュレータとTime Machineのスナップショットは完全に削除されます。
+  - `~/Library/Application Support/Lightspot/tweaks-journal.json`：Mac Tweaksの取り消し用ジャーナルです。Lightspotが変更する前の各設定の値と、Lightspotがオフにした各バックグラウンド項目がオフだったか・読み込まれていたかを、変更の前に保存し、取り消すと消します。Lightspotが読めないジャーナルは決して上書きせず、`tweaks-journal-unreadable-<日付>-<id>.json` として脇に置きます。Settingsは他のアプリの環境設定（Finder、Dock、グローバルドメインなど）にも書き込みますが、適用したものだけで、それぞれ先にジャーナルに記録します。
+  - `~/Library/Application Support/Lightspot/dock-backup.plist`：Clear Dock IconsがDockを空にする前に書き込み、アイコンが戻るとRestore Dock Iconsが削除します。
+  - `~/Library/Application Support/Lightspot/LightspotMacTweaks.mobileconfig`：Lightspotのプロファイルの承認を適用が待っている間だけ置かれ、インストールされると削除されます。プロファイル **Lightspot Mac Tweaks** 自体は、あなたがシステム設定でインストールするもので、このMacのすべてのアカウントに適用されます。そこで削除すれば、プロファイルが変えたものはすべて元に戻ります。
+  - アンインストーラーは、取り消し用のジャーナルとDockのバックアップ以外のこれらをすべて削除します。この2つは入れ直したLightspotが取り消せるように残し、何が残り、どう元に戻すかを表示します。Lightspotがオフにした、すべてのユーザー向けのバックグラウンド項目は、すべてのアカウントでオフのままです。
   - `~/Library/Application Support/Lightspot/com.lightspot.app.lock`：2つ目のコピーが起動するのを防ぎます。実行中のプロセスのPIDと、その実行ファイルのパス・inode・更新日時を記録し、新たな起動が同じビルドか新しいビルドかを判別できるようにします。
   - 承認したアップデートのインストール中：ダウンロードしたファイル、展開したバンドル、小さなヘルパースクリプトをmacOSの一時ディレクトリ（`NSTemporaryDirectory()`、`lightspot-update-…` と `lightspot-updater-…` フォルダ）に置き、新しいバージョンが配置されるまで以前のバージョンを `Lightspot.app.lightspot-old` としてアプリの隣に残します。ヘルパーは終了時にこれらをすべて削除します。
   - **Export Settings** は、検索履歴を含むJSONバックアップを、あなたが選んだファイルにのみ書き込みます。
