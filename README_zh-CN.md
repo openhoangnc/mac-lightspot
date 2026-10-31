@@ -153,11 +153,11 @@ Lightspot自动监控以下最近工作区：
 - 发布版本采用临时（ad-hoc）签名（本项目不附带Developer ID），因此没有可供验证的代码签名——以上检查加上通往GitHub的HTTPS就是全部的信任模型，与 `install.sh` 已经要求的完全相同。
 
 ### 11. 🧹 Clean Dev Mac (`cdm`)
-[CleanDevMac](https://github.com/cleandevmac/cdm)（`cdm`）能找出占用磁盘的开发缓存和构建产物；Lightspot 在面板中直接运行它。输入 `cdm`、`clean dev mac` 或缓存名称（`derived data`、`npm cache`）并按下 **`↵`**：
-- **先测量，不盲目勾选**：cdm 规则涵盖的每个类别（Xcode DerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、浏览器和 Electron 应用缓存、未使用的 Android 镜像、clang 的模块缓存、被强制退出的 Chrome 留下的副本等）都会像 `du` 一样测量，按大小从大到小排列，并按 cdm 的安全默认值勾选。面板会显示清理前后的磁盘状态。与 cdm 一样，在适用时还会显示两条提示：当重启可释放的空间（交换空间、macOS 开机时清空的临时文件夹、应用仍打开着的已删除文件）超过可用空间时，给出这一估算；当 Claude Code 的会话历史超过 1 GB 且有超过其保留期限的对话记录时，提示可让 Claude Code 同时删除 Claude Desktop 与 Cowork 会话的设置 `desktopSessionCleanupPeriodDays`。Lightspot 从不替您修改这项设置。
+[CleanDevMac](https://github.com/cleandevmac/cdm)（`cdm`）能找出占用磁盘的开发缓存和构建产物；Lightspot 在它自己的窗口中运行它；窗口可以移动，访达、密码提示或终端中的 cdm 切到前台时仍保持打开。输入 `cdm`、`clean dev mac` 或缓存名称（`derived data`、`npm cache`）并按下 **`↵`**：
+- **先测量，不盲目勾选**：cdm 规则涵盖的每个类别（Xcode DerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、浏览器和 Electron 应用缓存、未使用的 Android 镜像、clang 的模块缓存、被强制退出的 Chrome 留下的副本等）都会像 `du` 一样测量，按大小从大到小排列，并按 cdm 的安全默认值勾选。窗口会显示清理前后的磁盘状态。与 cdm 一样，在适用时还会显示两条提示：当重启可释放的空间（交换空间、macOS 开机时清空的临时文件夹、应用仍打开着的已删除文件）超过可用空间时，给出这一估算；当 Claude Code 的会话历史超过 1 GB 且有超过其保留期限的对话记录时，提示可让 Claude Code 同时删除 Claude Desktop 与 Cowork 会话的设置 `desktopSessionCleanupPeriodDays`。Lightspot 从不替您修改这项设置。
 - **已安装的 SDK 组件和旧会话，默认不勾选**：cdm 的可选行也会出现：PlatformIO 的工具链；Android NDK、CMake 与 SDK 源码；除最新版之外的所有 Android build-tools 与平台版本；60 天内没人启动过的 AVD 的系统镜像（该行会列出 AVD 名称，镜像重新安装之前该 AVD 无法启动）；以及 30 天未动过的 Claude Code 会话，它们只会移到废纸篓。每一行都写明如何恢复。
 - **代码库也一起**：测量完缓存后，Clean Dev Mac 会像 cdm 一样询问是否也扫描您的代码库中的构建和依赖垃圾；按 **`⇥`** 即可。每个代码库一行，列出其中的 `node_modules`、`dist`、`build`、`target`、`__pycache__` 以及其他被 git 忽略的文件，默认不勾选。只有代码库自己的 git 确认忽略的内容才会列出（被跟踪的 `build/` 会保留），`.env*` 文件以及包含其他代码库的文件夹永远不会列出。可再生的文件夹会被删除；其他被忽略的文件会移到废纸篓。
-- **按键**：`↑↓` 选择（选中的行会显示其路径和大小），`Space` 勾选，`⇥` 扫描代码库，`↵` 显示逐项清理计划，再按一次 `↵` 开始清理，`⌥↵` 在访达中显示所选缓存，`Esc` 返回。
+- **按键**：`↑↓` 选择（选中的行会显示其路径和大小），`Space` 勾选，`⇥` 扫描代码库，`↵` 显示逐项清理计划，再按一次 `↵` 开始清理，`⌥↵` 在访达中显示所选缓存，`⌘↵` 在终端中运行 cdm，`Esc` 退出计划，没有计划时则像 `⌘W` 一样关闭窗口。关闭窗口后扫描或清理仍会继续。
 - **与 cdm 相同的规则**：Lightspot 读取 cdm 自己的规则文件：如果有 `~/.cleandevmac/rules` 就用它，否则使用 GitHub 上 cdm 的最新规则，再否则使用应用内置的副本。因此 cdm 能清理的缓存，Lightspot 也能清理。
 - **与 cdm 相同的安全性**：执行任何操作之前，每个路径都要通过 cdm 的安全检查：必须位于您的主文件夹内，或位于 cdm 规则指定了缓存的、您自己在 `/private/var/folders` 下的临时文件夹内（两种情况都会先解析符号链接），并且绝不触碰 `~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music`、`~/.ssh`、`~/.gnupg` 和 iCloud 云盘。清理之前，计划会列出仍在运行、会重新写入其缓存的应用（请先退出它们）。每次清理都会记录到 `~/.cleandevmac/clean.log`，与 cdm 使用同一份日志。
 - **其余一键直达**：Docker / Podman、Rust 工具链及其离线文档（用 `rustup` 移除）、已卸载应用的残留数据以及沙盒应用的缓存需要容器引擎、rustup 或对应用的扫描，因此 `⌘↵` 会在您首选的终端中直接从最新发布版本运行完整的 cdm。
@@ -265,7 +265,7 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 `./build.sh` 会以完整的链接时优化（LTO）编译每个架构，并去掉本地符号名（保留在 `build/Lightspot.app.dSYM` 中）：1.4.0 的通用二进制文件为 5.1 MB，比 1.3.9 的 8.8 MB 小 42%；仅 Apple 芯片版本为 2.2 MB（Intel 版本为 2.9 MB）。
 
 ### 4. 测试与验证
-Lightspot没有XCTest目标。`scripts/` 下有三个独立脚本，会随源码一起即时编译，并需在仓库根目录下运行：逻辑与引擎测试运行器（84个测试块）、实时系统验证器（15个部分，在开发者的 Mac（macOS 27.2）上共206项检查；例如没有zsh历史记录、未安装VS Code或无法访问GitHub时，部分检查会被跳过），以及一项检查：它在屏幕外创建真实的 Mac Tweaks 窗口，使用只读扫描，并让每个部分经历重新扫描、部分切换和窗口的按键：
+Lightspot没有XCTest目标。`scripts/` 下有三个独立脚本，会随源码一起即时编译，并需在仓库根目录下运行：逻辑与引擎测试运行器（84个测试块）、实时系统验证器（15个部分，在开发者的 Mac（macOS 27.2）上共206项检查；例如没有zsh历史记录、未安装VS Code或无法访问GitHub时，部分检查会被跳过），以及一项检查：它在屏幕外创建真实的 Mac Tweaks 和 Clean Dev Mac 窗口，使用只读扫描，让 Mac Tweaks 的每个部分经历重新扫描和部分切换，并让两个窗口经历各自的按键：
 ```bash
 # 核心逻辑与引擎测试 (84个测试块)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
@@ -273,7 +273,7 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 # 实时系统检查 (15个部分，macOS 27.2 上共206项检查)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 
-# 在屏幕外检查 Mac Tweaks 窗口 (约一分钟)
+# 在屏幕外检查 Mac Tweaks 和 Clean Dev Mac 窗口 (约一分钟)
 swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(find Sources/Lightspot -name '*.swift' ! -name AppMain.swift) && /tmp/overlay_check
 ```
 
@@ -295,8 +295,8 @@ swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(fin
 | **`Delete` (`⌫`)** | 在 Mac Tweaks 中把后台项目标记为删除或取消标记 |
 | **`Tab` (`⇥`)** | 在 Clean Dev Mac 中同时扫描代码库 / 在 Mac Tweaks 中切换到下一个部分（`⇧⇥` 上一个） |
 | **`⌘Y` / `⌘⇧H`** | 打开搜索历史记录管理器浮层 |
-| **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot；在 Mac Tweaks 窗口中返回，再按则关闭窗口 |
-| **`⌘W`** | 关闭 Mac Tweaks 窗口 |
+| **`Escape`** | 关闭浮层、清除搜索字段或关闭Lightspot；在 Mac Tweaks 和 Clean Dev Mac 窗口中返回，再按则关闭窗口 |
+| **`⌘W`** | 关闭 Mac Tweaks 或 Clean Dev Mac 窗口 |
 | **点击外部** | 自动关闭悬浮面板 |
 
 呼出所用的快捷键可在菜单栏的 **Shortcut** 中从四者里选择。macOS 将 `⌃Space` 指定为「选择上一个输入源」，因此选用它时，该按键也会切换输入源；**Shortcut** 子菜单会指出哪个系统快捷键已占用所选的组合。

@@ -1,16 +1,16 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Clean Dev Mac (cdm) Overlay
+// MARK: - Clean Dev Mac (cdm)
 
-/// cdm's menu, inside the panel: what can be reclaimed, biggest first, ticked to cdm's safe
-/// defaults; an itemized plan to confirm; then the receipt. Drawn as an overlay like the
-/// other managers, so the search field keeps focus and routes every key here.
+/// cdm's menu, in Clean Dev Mac's own window (`CleanDevMacWindowController`): what can be
+/// reclaimed, biggest first, ticked to cdm's safe defaults; an itemized plan to confirm; then the
+/// receipt. The window takes every key (`ToolWindow.onKey`); clicks reach the views. Dark in both
+/// appearances, filling the window under its transparent title bar.
 struct CleanDevMacView: View {
     typealias Entry = CleanDevMacProvider.Entry
 
     @ObservedObject var model: CleanDevMacModel
-    let onClose: () -> Void
     let onOpenInTerminal: () -> Void
 
     var body: some View {
@@ -28,20 +28,19 @@ struct CleanDevMacView: View {
 
             footer
         }
-        .background(OverlayCardBackground())
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: ToolWindow.background))
     }
 
     // MARK: - Header
 
+    /// The window's title bar names Clean Dev Mac and holds the close button; the header keeps
+    /// cdm's name and the disk line.
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: CleanDevMacProvider.symbol)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.white.opacity(0.85))
-
-            Text(CleanDevMacProvider.title)
-                .font(.system(size: 14.5, weight: .semibold))
-                .foregroundColor(.white)
 
             Text("cdm")
                 .font(.system(size: 11.5, weight: .medium, design: .monospaced))
@@ -58,17 +57,10 @@ struct CleanDevMacView: View {
                     .foregroundColor(.white.opacity(0.5))
                     .lineLimit(1)
             }
-
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 15))
-                    .foregroundColor(.white.opacity(0.55))
-            }
-            .buttonStyle(.plain)
-            .help("Close (Esc)")
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 12)
     }
 
     // MARK: - Content
@@ -118,7 +110,7 @@ struct CleanDevMacView: View {
             Text(title)
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundColor(.white.opacity(0.6))
-            Text("This keeps running if you close the panel.")
+            Text("This keeps running if you close the window.")
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.35))
             Spacer()
@@ -537,29 +529,7 @@ struct CleanDevMacView: View {
     }
 }
 
-// MARK: - Shared overlay pieces (Clean Dev Mac, Mac Tweaks)
-
-/// The card both cleaners draw on: dark glass whatever the system appearance, so light and
-/// dark mode look the same.
-struct OverlayCardBackground: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.black.opacity(0.88))
-
-            VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow, cornerRadius: 22)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-            Color.black.opacity(0.72)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.85)
-        )
-        .shadow(color: .black.opacity(0.6), radius: 30, x: 0, y: 14)
-    }
-}
+// MARK: - Shared pieces (Clean Dev Mac, Mac Tweaks)
 
 /// A key and what it does, in an overlay's footer.
 struct OverlayKeyHint: View {

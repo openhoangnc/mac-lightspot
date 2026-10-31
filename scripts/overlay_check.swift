@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-// The Mac Tweaks window, hosted offscreen: the real `MacTweaksWindowController` building the
-// app's own window (`MacTweaksWindowController.makeWindow`: the `MacTweaksView` in its
-// `NSHostingView`) at (-6000, -6000), its model on a provider that scans this Mac read-only
+// The Mac Tweaks and Clean Dev Mac windows, hosted offscreen: the real controllers building the
+// app's own windows (`ToolWindowController.makeWindow`: the `MacTweaksView` or `CleanDevMacView`
+// in its `NSHostingView`) at (-6000, -6000). Mac Tweaks: its model on a provider that scans this Mac read-only
 // (every writer refuses, Apple Intelligence's inventory runs in-process, never the Lightspot
 // binary). Each section is scanned, rescanned with the cursor on its last row, and left for
 // every other section and back, so the rows on show shrink each way they can: once with the
@@ -13,14 +13,18 @@ import SwiftUI
 // ⌫ to mark a row for deletion and unmark it, ↵ for the plan, Esc back out of it, Esc to close,
 // and ⌘W after a reopen.
 //
+// Clean Dev Mac, after them: its window on a scan of this Mac's caches (cdm's rules from the
+// repository, never fetched), its keys (↓, Space, ↵ for the plan and Esc out of it, never a
+// second ↵, Esc to close, ⌘W after a reopen).
+//
 // Each run is a child process of its own, so a trap ends only that one and the report says
-// which. Nothing is applied, written, moved, asked for or opened (a link's ↵ goes nowhere);
-// Lightspot isn't launched and the app is never activated.
+// which. Nothing is applied, cleaned, written, moved, asked for or opened (a link's ↵ goes
+// nowhere); Lightspot isn't launched and the app is never activated.
 //
 //   swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift \
 //       $(find Sources/Lightspot -name '*.swift' ! -name AppMain.swift)
 //   /tmp/overlay_check            # from the repository root (it reads Resources/cdm-rules)
-//   /tmp/overlay_check --render <folder>   # each section's window as PNGs, light and dark
+//   /tmp/overlay_check --render <folder>   # each window as PNGs, light and dark
 
 @main
 struct OverlayCheck {
@@ -29,6 +33,10 @@ struct OverlayCheck {
         if let flag = arguments.firstIndex(of: "--render"), flag + 1 < arguments.count {
             let folder = URL(fileURLWithPath: arguments[flag + 1], isDirectory: true)
             exit(MainActor.assumeIsolated { Render(folder).run() })
+        }
+        if arguments.contains("--cleaner") {
+            MainActor.assumeIsolated { CleanerRun().run() }
+            exit(0)
         }
         if let flag = arguments.firstIndex(of: "--section"), flag + 1 < arguments.count,
            let section = MacTweaksSection(rawValue: arguments[flag + 1]) {
@@ -39,20 +47,24 @@ struct OverlayCheck {
         exit(runAll())
     }
 
-    /// The parent: two children per built section (the rescan first, the switches first), each
-    /// reported as it ends.
+    /// The parent: two children per built section (the rescan first, the switches first), then
+    /// Clean Dev Mac's, each reported as it ends.
     static func runAll() -> Int32 {
         let me = Bundle.main.executablePath ?? CommandLine.arguments[0]
         var failed = 0
         var runs = 0
-        print("Mac Tweaks window, offscreen, sections: \(MacTweaksSection.built.map(\.title).joined(separator: ", "))")
-        for section in MacTweaksSection.built {
-          for switchesFirst in [false, true] {
+        print("Mac Tweaks window, offscreen, sections: \(MacTweaksSection.built.map(\.title).joined(separator: ", ")); then Clean Dev Mac's")
+        let children = MacTweaksSection.built.flatMap { section in
+            [false, true].map { switchesFirst in
+                ("\(section.title), \(switchesFirst ? "switches first" : "rescan first")",
+                 ["--section", section.rawValue] + (switchesFirst ? ["--switches-first"] : []))
+            }
+        } + [("Clean Dev Mac", ["--cleaner"])]
+        for (name, arguments) in children {
             runs += 1
-            let name = "\(section.title), \(switchesFirst ? "switches first" : "rescan first")"
             let process = Process()
             process.executableURL = URL(fileURLWithPath: me)
-            process.arguments = ["--section", section.rawValue] + (switchesFirst ? ["--switches-first"] : [])
+            process.arguments = arguments
             process.standardInput = FileHandle.nullDevice
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -74,11 +86,10 @@ struct OverlayCheck {
                 print("❌ \(name): failed (exit \(process.terminationStatus))")
                 failed += 1
             } else {
-                print("✅ \(name): survived every rescan and switch")
+                print("✅ \(name): survived every " + (arguments.first == "--cleaner" ? "key" : "rescan and switch"))
             }
-          }
         }
-        print(failed == 0 ? "\n✅ The window survived all \(runs) runs." : "\n❌ \(failed) of \(runs) runs failed.")
+        print(failed == 0 ? "\n✅ The windows survived all \(runs) runs." : "\n❌ \(failed) of \(runs) runs failed.")
         return failed == 0 ? 0 : 1
     }
 }
@@ -113,7 +124,7 @@ final class SectionRun {
         }
     }
 
-    var window: MacTweaksWindow? { controller.window }
+    var window: ToolWindow? { controller.window }
 
     func log(_ line: String) {
         print(line)
@@ -149,12 +160,7 @@ final class SectionRun {
     /// A key as AppKit hands it to the window.
     func press(_ keyCode: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags = []) {
         guard let window else { fail("a key with the window closed: \(state)") }
-        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
-                                           windowNumber: window.windowNumber, context: nil, characters: characters,
-                                           charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode) else {
-            fail("couldn't make key \(keyCode)")
-        }
-        window.sendEvent(event)
+        Keys.press(window, keyCode, characters, flags)
         pump(0.05)
     }
 
@@ -333,9 +339,154 @@ final class SectionRun {
     }
 }
 
-/// `--render <folder>`: each built section's window, as the app shows it after a scan, drawn
-/// offscreen with `cacheDisplay` (ImageRenderer blanks scroll views) under both app
-/// appearances, title bar included. The window is dark in both; this shows it stays so.
+/// A key as AppKit hands it to a window: through its `sendEvent`, where the tool takes it.
+@MainActor
+enum Keys {
+    static func press(_ window: NSWindow, _ keyCode: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags = []) {
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil, characters: characters,
+                                           charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode) else {
+            print("FAIL: couldn't make key \(keyCode)")
+            exit(3)
+        }
+        window.sendEvent(event)
+    }
+
+    /// The window and its title bar, drawn offscreen with `cacheDisplay` (ImageRenderer blanks
+    /// scroll views), as a PNG at `url`.
+    static func render(_ window: NSWindow, to url: URL) -> Bool {
+        guard let frame = window.contentView?.superview else { return false }
+        frame.layoutSubtreeIfNeeded()
+        guard let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { return false }
+        frame.cacheDisplay(in: frame.bounds, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]), (try? data.write(to: url)) != nil else { return false }
+        print("wrote \(url.path) (\(rep.pixelsWide) × \(rep.pixelsHigh))")
+        return true
+    }
+}
+
+/// `--cleaner`: Clean Dev Mac's window on a read-only scan of this Mac's caches, through its keys.
+/// Its plan is shown and backed out of, never confirmed.
+@MainActor
+final class CleanerRun {
+    static let scanTimeout: TimeInterval = 180
+
+    let provider: CleanDevMacProvider
+    let model: CleanDevMacModel
+    let controller: CleanDevMacWindowController
+    var terminals = 0
+
+    init() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.finishLaunching()
+        provider = CleanDevMacProvider(environment: Self.readOnlyEnvironment())
+        model = CleanDevMacModel(provider: provider)
+        controller = CleanDevMacWindowController(model: model, placement: .offscreen(SectionRun.offscreen))
+        controller.onOpenInTerminal = { [weak self] in self?.terminals += 1 }
+    }
+
+    /// The live environment, offline (cdm's rules from the repository) and refusing the Trash.
+    static func readOnlyEnvironment() -> CleanDevMacProvider.Environment {
+        var env = CleanDevMacProvider.Environment.live
+        env.bundledRules = URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/Resources/cdm-rules")
+        env.fetchRemoteRules = { $0(nil) }
+        env.moveToTrash = { _ in throw CocoaError(.featureUnsupported) }
+        return env
+    }
+
+    func log(_ line: String) {
+        print(line)
+        fflush(stdout)
+    }
+
+    func fail(_ message: String) -> Never {
+        log("FAIL: " + message)
+        exit(3)
+    }
+
+    var state: String { "\(model.snapshot.phase), \(model.entries.count) categories, cursor \(model.cursor), \(model.checked.count) ticked" }
+
+    @discardableResult
+    func pump(_ seconds: TimeInterval, until done: () -> Bool = { false }) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            if let window = controller.window {
+                window.contentView?.layoutSubtreeIfNeeded()
+                window.displayIfNeeded()
+            }
+            if done() { return true }
+        }
+        return done()
+    }
+
+    func press(_ keyCode: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags = []) {
+        guard let window = controller.window else { fail("a key with the window closed: \(state)") }
+        Keys.press(window, keyCode, characters, flags)
+        pump(0.05)
+    }
+
+    func waitSettled() {
+        let settled = pump(Self.scanTimeout) {
+            switch model.snapshot.phase {
+            case .ready, .finished, .failed: return true
+            default: return false
+            }
+        }
+        if !settled { log("  (still scanning after \(Int(Self.scanTimeout)) s: \(state))") }
+        pump(0.5)
+    }
+
+    func run() {
+        log("== Clean Dev Mac")
+        controller.show()
+        guard let window = controller.window else { fail("no window") }
+        if !(window.contentView is NSHostingView<CleanDevMacView>) || window.contentMinSize != CleanDevMacWindowController.size
+            || window.title != CleanDevMacProvider.title || window.hidesOnDeactivate {
+            fail("the window isn't the app's: \(window.styleMask), \(window.contentMinSize)")
+        }
+        waitSettled()
+        log("scanned: \(state)")
+        let count = model.entries.count
+        if count > 1 {
+            for _ in 0..<count where model.cursor != count - 1 { press(125, "\u{F701}", [.numericPad, .function]) }
+            if model.cursor != count - 1 { fail("↓ didn't reach the last category: \(state)") }
+            let before = model.checked
+            press(49, " ") // Space
+            if model.checked == before { fail("Space didn't tick or untick: \(state)") }
+            press(49, " ")
+            if model.checked != before { fail("Space again didn't put the tick back: \(state)") }
+        }
+        press(36, "\r", .command) // ⌘↵: cdm in the terminal (counted here, never run)
+        if terminals != 1 || !controller.isOpen { fail("⌘↵ didn't hand cdm to the terminal with the window left open") }
+        if model.snapshot.phase == .ready, !model.checked.isEmpty, !model.isConfirming {
+            press(36, "\r") // ↵: the plan, never confirmed
+            pump(0.3)
+            log("plan: confirming \(model.isConfirming), \(model.checked.count) ticked")
+            if !model.isConfirming { fail("↵ didn't show the plan: \(state)") }
+            press(53, "\u{1B}") // Esc: back to the list
+            if model.isConfirming || !controller.isOpen { fail("Esc didn't back out of the plan only: \(state)") }
+        } else {
+            log("plan: nothing ticked to review")
+        }
+        press(53, "\u{1B}") // Esc: closes
+        pump(0.5)
+        if controller.isOpen { fail("Esc didn't close the window") }
+        controller.show()
+        guard let reopened = controller.window, reopened !== window else { fail("reopening didn't make a new window") }
+        waitSettled()
+        log("reopened: \(state)")
+        press(13, "w", .command) // ⌘W
+        pump(0.5)
+        if controller.isOpen { fail("⌘W didn't close the window") }
+        log(SectionRun.survived)
+    }
+}
+
+/// `--render <folder>`: each built section's window, and Clean Dev Mac's, as the app shows them
+/// after a scan, drawn offscreen under both app appearances, title bar included. The windows are
+/// dark in both; this shows they stay so.
 @MainActor
 final class Render {
     let folder: URL
@@ -360,19 +511,23 @@ final class Render {
             for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 app.appearance = NSAppearance(named: appearance)
                 run.pump(0.5)
-                guard let window = run.window, let frame = window.contentView?.superview else { continue }
-                frame.layoutSubtreeIfNeeded()
-                guard let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds) else { continue }
-                frame.cacheDisplay(in: frame.bounds, to: rep)
-                let url = folder.appendingPathComponent("mac-tweaks-\(section.rawValue)-\(name).png")
-                if let data = rep.representation(using: .png, properties: [:]), (try? data.write(to: url)) != nil {
-                    print("wrote \(url.path) (\(rep.pixelsWide) × \(rep.pixelsHigh))")
-                    written += 1
-                }
+                guard let window = run.window else { continue }
+                if Keys.render(window, to: folder.appendingPathComponent("mac-tweaks-\(section.rawValue)-\(name).png")) { written += 1 }
             }
             run.controller.close()
             run.pump(0.3)
         }
+        let cleaner = CleanerRun()
+        cleaner.controller.show()
+        cleaner.waitSettled()
+        if cleaner.model.entries.count > 1 { cleaner.press(125, "\u{F701}", [.numericPad, .function]) }
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            app.appearance = NSAppearance(named: appearance)
+            cleaner.pump(0.5)
+            guard let window = cleaner.controller.window else { continue }
+            if Keys.render(window, to: folder.appendingPathComponent("clean-dev-mac-\(name).png")) { written += 1 }
+        }
+        cleaner.controller.close()
         return written > 0 ? 0 : 1
     }
 }

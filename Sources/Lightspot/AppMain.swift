@@ -77,8 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var viewModel: SearchViewModel!
     private var hostingView: NSHostingView<SpotlightView>!
     private var instanceRequests: SingleInstanceGuard.RequestListener?
-    /// Mac Tweaks' window, made on its first open, never at launch.
+    /// Mac Tweaks' and Clean Dev Mac's windows, each made on its first open, never at launch.
     private var tweaks: MacTweaksWindowController?
+    private var cleaner: CleanDevMacWindowController?
     private let launchedAt = Date()
 
     struct InstanceClaim {
@@ -180,6 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.onOpenTweaks = { [weak self] section in
             self?.openTweaks(section)
         }
+        viewModel.onOpenCleaner = { [weak self] in
+            self?.openCleaner()
+        }
 
         // Create and configure the panel
         panel = SpotlightPanel()
@@ -253,9 +257,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onDeleteKey = { [weak self] in
             self?.viewModel.handleDeleteKey() ?? false
         }
-        panel.onSpaceKey = { [weak self] in
-            self?.viewModel.handleSpaceKey() ?? false
-        }
 
         // Set up hotkey
         hotkeyManager = HotkeyManager()
@@ -294,11 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.viewModel.showHistoryManager()
         }
         menuBarController.onOpenCleaner = { [weak self] in
-            guard let self = self else { return }
-            if !self.panel.isVisible {
-                self.showPanel()
-            }
-            self.viewModel.showCleaner()
+            self?.openCleaner()
         }
         menuBarController.onOpenTweaks = { [weak self] in
             self?.openTweaks(nil)
@@ -372,12 +369,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Mac Tweaks
+    // MARK: - Tool windows (Mac Tweaks, Clean Dev Mac)
+
+    /// A click into a tool window dismisses the panel, as a click outside it does.
+    private func hidePanelForToolWindow() {
+        guard panel.isShowing else { return }
+        hidePanel()
+    }
 
     /// Opens Mac Tweaks' window on `section` (nil: where it was left), or focuses it. The panel
     /// hides first: the window takes over from it.
     private func openTweaks(_ section: MacTweaksSection?) {
-        if panel.isShowing { hidePanel() }
+        hidePanelForToolWindow()
         let controller = tweaks ?? makeTweaksWindow()
         controller.show(section)
     }
@@ -385,11 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func makeTweaksWindow() -> MacTweaksWindowController {
         let controller = MacTweaksWindowController(model: MacTweaksModel())
         controller.onLink = { [weak self] link in self?.openTweaksLink(link) }
-        // A click into the window dismisses the panel, as a click outside it does.
-        controller.onBecomeKey = { [weak self] in
-            guard let self, self.panel.isShowing else { return }
-            self.hidePanel()
-        }
+        controller.onBecomeKey = { [weak self] in self?.hidePanelForToolWindow() }
         tweaks = controller
         return controller
     }
@@ -398,14 +397,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openTweaksLink(_ link: MacTweaksLink) {
         switch link {
         case .cleanDevMac:
-            // The cleaner is the panel's overlay: the panel shows over the window.
-            if !panel.isShowing { showPanel() }
-            viewModel.showCleaner()
+            openCleaner()
         case .settings(let deepLink):
             if let url = URL(string: deepLink) { SystemSettingsOpener.open(url) }
         case .section:
             break // The window switches sections itself.
         }
+    }
+
+    /// Opens Clean Dev Mac's window, which measures unless a recent scan stands, or focuses it.
+    private func openCleaner() {
+        hidePanelForToolWindow()
+        let controller = cleaner ?? makeCleanerWindow()
+        controller.show()
+    }
+
+    private func makeCleanerWindow() -> CleanDevMacWindowController {
+        let controller = CleanDevMacWindowController(model: CleanDevMacModel())
+        // cdm itself, in the preferred terminal; the window stays open.
+        controller.onOpenInTerminal = { CleanDevMacProvider.openInTerminal() }
+        controller.onBecomeKey = { [weak self] in self?.hidePanelForToolWindow() }
+        cleaner = controller
+        return controller
     }
 
     private func handleShowRequest() {

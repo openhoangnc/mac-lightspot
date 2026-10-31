@@ -34,11 +34,6 @@ final class SearchViewModel: ObservableObject {
     @Published var customCommands: [CustomCommand] = []
     @Published var customCommandSelectedIndex: Int = 0
 
-    // Clean Dev Mac (cdm). The overlay observes `cleaner` itself, so scan progress
-    // redraws the overlay alone rather than the whole panel.
-    @Published var isCleanerPresented: Bool = false
-    let cleaner = CleanDevMacModel()
-
     // MARK: - Dependencies
     weak var hotkeyManager: HotkeyManager?
     weak var menuBarController: MenuBarController?
@@ -48,6 +43,8 @@ final class SearchViewModel: ObservableObject {
     /// Mac Tweaks opens in its own window, on a section or where it was left; the owner hides
     /// the panel first (`MacTweaksWindowController`).
     var onOpenTweaks: ((MacTweaksSection?) -> Void)?
+    /// Clean Dev Mac opens in its own window too (`CleanDevMacWindowController`).
+    var onOpenCleaner: (() -> Void)?
     var onHeightChange: ((CGFloat) -> Void)?
 
     // MARK: - Constants
@@ -240,9 +237,7 @@ final class SearchViewModel: ObservableObject {
     // MARK: - 2D Keyboard Navigation
 
     func moveLeft() {
-        if isCleanerPresented {
-            cleaner.moveUp()
-        } else if isCustomCommandManagerPresented {
+        if isCustomCommandManagerPresented {
             moveUp()
         } else if isHistoryManagerPresented {
             moveUp()
@@ -258,9 +253,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveRight() {
-        if isCleanerPresented {
-            cleaner.moveDown()
-        } else if isCustomCommandManagerPresented {
+        if isCustomCommandManagerPresented {
             moveDown()
         } else if isHistoryManagerPresented {
             moveDown()
@@ -277,9 +270,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveUp() {
-        if isCleanerPresented {
-            cleaner.moveUp()
-        } else if isCustomCommandManagerPresented {
+        if isCustomCommandManagerPresented {
             guard !customCommands.isEmpty else { return }
             customCommandSelectedIndex = customCommandSelectedIndex > 0 ? customCommandSelectedIndex - 1 : customCommands.count - 1
         } else if isHistoryManagerPresented {
@@ -305,9 +296,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func moveDown() {
-        if isCleanerPresented {
-            cleaner.moveDown()
-        } else if isCustomCommandManagerPresented {
+        if isCustomCommandManagerPresented {
             guard !customCommands.isEmpty else { return }
             customCommandSelectedIndex = customCommandSelectedIndex < customCommands.count - 1 ? customCommandSelectedIndex + 1 : 0
         } else if isHistoryManagerPresented {
@@ -336,11 +325,6 @@ final class SearchViewModel: ObservableObject {
     }
 
     func nextCategory() {
-        if isCleanerPresented {
-            // Tab answers the cleaner's "Also scan your code repos?".
-            cleaner.scanRepos()
-            return
-        }
         if isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
@@ -350,7 +334,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func previousCategory() {
-        if isCleanerPresented || isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
+        if isCustomCommandManagerPresented || isPinManagerPresented || isHistoryManagerPresented { return }
         let all = AppCategory.allCases
         guard let idx = all.firstIndex(of: selectedCategory) else { return }
         let prevIdx = (idx - 1 + all.count) % all.count
@@ -359,11 +343,6 @@ final class SearchViewModel: ObservableObject {
     }
 
     func activateSelected() {
-        if isCleanerPresented {
-            cleaner.primaryAction()
-            return
-        }
-
         if isCustomCommandManagerPresented {
             runCustomCommand(at: customCommandSelectedIndex)
             return
@@ -410,9 +389,9 @@ final class SearchViewModel: ObservableObject {
                 RecentAppsManager.shared.recordLaunch(bundleIdentifier: bundleId)
             }
 
-            // The cleaner opens inside the panel, so the panel stays; Mac Tweaks opens its window.
+            // Clean Dev Mac and Mac Tweaks open their own windows.
             if case .runQuickAction(let script, _) = result.action, script == CleanDevMacProvider.openScript {
-                showCleaner()
+                openCleaner()
                 return
             }
             if case .runQuickAction(let script, _) = result.action, MacTweaksProvider.isOpenScript(script) {
@@ -489,15 +468,6 @@ final class SearchViewModel: ObservableObject {
 
     /// Secondary action: triggered by Option+Return (⌥↵) - Opens Finder for projects
     func activateSecondary() {
-        if isCleanerPresented {
-            // The scan stays in the provider, so the cleaner reopens where it was.
-            onHide?()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [cleaner] in
-                cleaner.revealCursorInFinder()
-            }
-            return
-        }
-
         guard let result = selectedSearchResult else { return }
 
         // Record selection in SearchHistoryManager
@@ -548,11 +518,6 @@ final class SearchViewModel: ObservableObject {
 
     /// Tertiary action: triggered by Command+Return (⌘↵) - Opens Terminal for projects
     func activateFinder() {
-        if isCleanerPresented {
-            openCdmInTerminal()
-            return
-        }
-
         guard let result = selectedSearchResult else { return }
 
         // Record selection in SearchHistoryManager
@@ -634,12 +599,7 @@ final class SearchViewModel: ObservableObject {
     }
 
     func handleCancel() {
-        if isCleanerPresented {
-            // Esc backs out of the plan first, then closes the cleaner.
-            if !cleaner.cancelConfirmation() {
-                hideCleaner()
-            }
-        } else if isCustomCommandManagerPresented {
+        if isCustomCommandManagerPresented {
             hideCustomCommandManager()
         } else if isHistoryManagerPresented {
             hideHistoryManager()
@@ -666,7 +626,6 @@ final class SearchViewModel: ObservableObject {
         isPinManagerPresented = false
         isHistoryManagerPresented = false
         isCustomCommandManagerPresented = false
-        isCleanerPresented = false
         pinnedCommands = PinnedCommandsStore.shared.commands()
         historyEntries = SearchHistoryManager.shared.entries()
         customCommands = CustomCommandsStore.shared.entries()
@@ -683,7 +642,6 @@ final class SearchViewModel: ObservableObject {
         isPinManagerPresented = false
         isHistoryManagerPresented = false
         isCustomCommandManagerPresented = false
-        isCleanerPresented = false
         pinnedCommands.removeAll(keepingCapacity: false)
         historyEntries.removeAll(keepingCapacity: false)
         customCommands.removeAll(keepingCapacity: false)
@@ -696,7 +654,6 @@ final class SearchViewModel: ObservableObject {
 
     func showHistoryManager() {
         if isPinManagerPresented { isPinManagerPresented = false }
-        if isCleanerPresented { isCleanerPresented = false }
         historyEntries = SearchHistoryManager.shared.entries()
         historySelectedIndex = 0
         if !isPanelExpanded {
@@ -758,7 +715,7 @@ final class SearchViewModel: ObservableObject {
         )
 
         if case .runQuickAction(let script, _) = entry.action, script == CleanDevMacProvider.openScript {
-            showCleaner()
+            openCleaner()
             return
         }
         if case .runQuickAction(let script, _) = entry.action, MacTweaksProvider.isOpenScript(script) {
@@ -805,7 +762,6 @@ final class SearchViewModel: ObservableObject {
     func showCustomCommandManager() {
         if isPinManagerPresented { isPinManagerPresented = false }
         if isHistoryManagerPresented { isHistoryManagerPresented = false }
-        if isCleanerPresented { isCleanerPresented = false }
         customCommands = CustomCommandsStore.shared.entries()
         customCommandSelectedIndex = 0
         if !isPanelExpanded {
@@ -878,38 +834,10 @@ final class SearchViewModel: ObservableObject {
 
     // MARK: - Clean Dev Mac (cdm)
 
-    /// Opens the cleaner over the results; it starts a scan unless a recent one stands.
-    func showCleaner() {
-        if isPinManagerPresented { isPinManagerPresented = false }
-        if isHistoryManagerPresented { isHistoryManagerPresented = false }
-        if isCustomCommandManagerPresented { isCustomCommandManagerPresented = false }
-        if !isPanelExpanded {
-            isPanelExpanded = true
-            updateHeight()
-        }
-        isCleanerPresented = true
-        cleaner.open()
-    }
-
-    func hideCleaner() {
-        isCleanerPresented = false
-    }
-
-    /// cdm itself, in the preferred terminal, for what only it cleans.
-    func openCdmInTerminal() {
-        isCleanerPresented = false
-        onHide?()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            CleanDevMacProvider.openInTerminal()
-        }
-    }
-
-    /// Space ticks the selected row while the cleaner is open; returns false to let it type a
-    /// space otherwise.
-    func handleSpaceKey() -> Bool {
-        guard isCleanerPresented else { return false }
-        cleaner.toggleCursor()
-        return true
+    /// The Clean Dev Mac row (search, history) opens its window, which measures unless a recent
+    /// scan stands. The window, not the panel, routes its keys.
+    func openCleaner() {
+        onOpenCleaner?()
     }
 
     // MARK: - Mac Tweaks
@@ -925,7 +853,6 @@ final class SearchViewModel: ObservableObject {
 
     func showPinManager() {
         if isHistoryManagerPresented { isHistoryManagerPresented = false }
-        if isCleanerPresented { isCleanerPresented = false }
         pinnedCommands = PinnedCommandsStore.shared.commands()
         pinSelectedIndex = 0
         if !isPanelExpanded {
@@ -950,7 +877,6 @@ final class SearchViewModel: ObservableObject {
     /// ⌘P: pins or unpins the selected history result, or unpins the selected row
     /// while the manager is open.
     func togglePinForSelection() {
-        if isCleanerPresented { return }
         if isPinManagerPresented {
             unpinCommand(at: pinSelectedIndex)
             return

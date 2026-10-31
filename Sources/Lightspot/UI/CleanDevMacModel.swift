@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// The cleaner overlay's state: the provider's latest snapshot, which categories are
-/// ticked, the cursor, and whether the plan is up for confirmation. Ticks start at each
-/// rule's `default` after every scan, as they do in cdm's menu.
+/// Clean Dev Mac's state: the provider's latest snapshot, which categories are ticked, the
+/// cursor, and whether the plan is up for confirmation. Ticks start at each rule's `default`
+/// after every scan, as they do in cdm's menu. Made the first time the window opens, so launch
+/// builds nothing for it, and kept while Lightspot runs (`CleanDevMacWindowController`).
 @MainActor
 final class CleanDevMacModel: ObservableObject {
     typealias Entry = CleanDevMacProvider.Entry

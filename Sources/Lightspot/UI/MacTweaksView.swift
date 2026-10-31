@@ -5,8 +5,8 @@ import AppKit
 
 /// Mac Tweaks in its own window (`MacTweaksWindowController`): one tab per built section; in
 /// each, what it offers with the safe ones ticked, an itemized plan to confirm, the steps while
-/// it applies, then the receipt. The window takes every key (`MacTweaksWindow.onKey`); clicks
-/// reach the views. Dark in both appearances, filling the window under its transparent title bar.
+/// it applies, then the receipt. The window takes every key (`ToolWindow.onKey`); clicks reach
+/// the views. Dark in both appearances, filling the window under its transparent title bar.
 ///
 /// Built from small view structs that take plain values: SwiftUI spells a view's whole type
 /// out in every symbol name it generates, and one nested `body` of a few hundred lines made
@@ -24,7 +24,7 @@ struct MacTweaksView: View {
             MacTweaksFooter(hints: model.hints)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: MacTweaksWindowController.background))
+        .background(Color(nsColor: ToolWindow.background))
     }
 }
 

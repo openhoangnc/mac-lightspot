@@ -153,11 +153,11 @@ Webユーティリティを開いたりCLIパッケージをインストール�
 - リリースはアドホック署名です（このプロジェクトはDeveloper IDを同梱していません）。そのため検証できるコード署名は存在せず、上記のチェックとGitHubへのHTTPSが信頼モデルのすべてです。これは `install.sh` が既に求めているものと同じです。
 
 ### 11. 🧹 Clean Dev Mac (`cdm`)
-[CleanDevMac](https://github.com/cleandevmac/cdm)（`cdm`）は、ディスクを圧迫している開発用キャッシュやビルド成果物を見つけるツールです。Lightspotはこれをパネル内で実行します。`cdm`、`clean dev mac`、またはキャッシュ名（`derived data`、`npm cache`）を入力して **`↵`** を押します：
-- **まず計測し、やみくもに選択しない**: cdmのルールが扱う各カテゴリ（XcodeのDerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、ブラウザとElectronアプリのキャッシュ、使われていないAndroidイメージ、clangのモジュールキャッシュ、強制終了したChromeが残すコピーなど）を `du` と同じ方法で計測し、大きい順に並べ、cdmの安全なデフォルトにチェックを入れます。パネルにはクリーン前後のディスク状況が表示されます。cdmと同じく、該当するときは2つの注記も表示します。1つは、再起動で空く容量（スワップ、macOSが起動時に空にする一時フォルダ、アプリが開いたままの削除済みファイル）が空き容量を上回るときの、その見積もりです。もう1つは、Claude Codeのセッション履歴が1 GBを超え、保持期間を過ぎたトランスクリプトがあるときの、Claude DesktopとCoworkのセッションもClaude Codeに削除させる設定 `desktopSessionCleanupPeriodDays` の案内です。Lightspotがこの設定を書き換えることはありません。
+[CleanDevMac](https://github.com/cleandevmac/cdm)（`cdm`）は、ディスクを圧迫している開発用キャッシュやビルド成果物を見つけるツールです。Lightspotはこれを専用のウインドウで実行します。ウインドウは動かすことができ、Finder、パスワードの確認、ターミナルのcdmが前面に出ても開いたままです。`cdm`、`clean dev mac`、またはキャッシュ名（`derived data`、`npm cache`）を入力して **`↵`** を押します：
+- **まず計測し、やみくもに選択しない**: cdmのルールが扱う各カテゴリ（XcodeのDerivedData、Go、npm/pnpm/Yarn、Gradle、Cargo、pip/uv、CocoaPods、JetBrains、ブラウザとElectronアプリのキャッシュ、使われていないAndroidイメージ、clangのモジュールキャッシュ、強制終了したChromeが残すコピーなど）を `du` と同じ方法で計測し、大きい順に並べ、cdmの安全なデフォルトにチェックを入れます。ウインドウにはクリーン前後のディスク状況が表示されます。cdmと同じく、該当するときは2つの注記も表示します。1つは、再起動で空く容量（スワップ、macOSが起動時に空にする一時フォルダ、アプリが開いたままの削除済みファイル）が空き容量を上回るときの、その見積もりです。もう1つは、Claude Codeのセッション履歴が1 GBを超え、保持期間を過ぎたトランスクリプトがあるときの、Claude DesktopとCoworkのセッションもClaude Codeに削除させる設定 `desktopSessionCleanupPeriodDays` の案内です。Lightspotがこの設定を書き換えることはありません。
 - **インストール済みのSDK一式と古いセッション（チェックなし）**: cdmのオプトインの行も表示されます。PlatformIOのツールチェーン、AndroidのNDK・CMake・SDKソース、最新版を除くすべてのAndroid build-toolsとプラットフォーム、60日間だれも起動していないAVDのシステムイメージ（行にそのAVDの名前が出ます。イメージを入れ直すまで、そのAVDは起動しません）、そして30日間触れていないClaude Codeのセッション（必ずゴミ箱へ）。各行に元に戻す方法が書かれています。
 - **コードリポジトリも**：キャッシュの計測後、Clean Dev Macはcdmと同じように、コードリポジトリのビルド成果物や依存関係のゴミもスキャンするかを尋ねます。**`⇥`** を押してください。リポジトリごとに1行、`node_modules`、`dist`、`build`、`target`、`__pycache__` などgitで無視されたファイルが、チェックなしで表示されます。リポジトリ自身のgitが無視していないものは提示されず（追跡されている `build/` は残ります）、`.env*` ファイルや別のリポジトリを含むフォルダーも決して提示されません。再生成できるフォルダーは削除し、その他の無視されたファイルはゴミ箱に移動します。
-- **キー操作**: `↑↓` で選択（選択中の行にはパスとサイズが表示されます）、`Space` でチェック、`⇥` でコードリポジトリをスキャン、`↵` で項目別のプランを表示し、もう一度 `↵` でクリーン、`⌥↵` で選択中のキャッシュをFinderで表示、`Esc` で戻ります。
+- **キー操作**: `↑↓` で選択（選択中の行にはパスとサイズが表示されます）、`Space` でチェック、`⇥` でコードリポジトリをスキャン、`↵` で項目別のプランを表示し、もう一度 `↵` でクリーン、`⌥↵` で選択中のキャッシュをFinderで表示、`⌘↵` でターミナルのcdmを実行、`Esc` でプランから戻り、プランがないときは `⌘W` と同じくウインドウを閉じます。スキャンやクリーンはウインドウを閉じても続きます。
 - **cdmと同じルール**: Lightspotはcdm自身のルールファイルを読み込みます。`~/.cleandevmac/rules` があればそれを、なければGitHub上のcdmの最新ルールを、それもなければアプリに組み込まれたコピーを使います。cdmが新たに掃除できるようになったキャッシュは、Lightspotでも掃除できます。
 - **cdmと同じ安全性**: 何かを実行する前に、すべてのパスがcdmの安全チェックを通ります。ホームフォルダ内、またはcdmのルールがキャッシュを指定している `/private/var/folders` 内の自分専用の一時フォルダ内（どちらもシンボリックリンクを解決した上で）にあることが必須で、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Movies`、`~/Music`、`~/.ssh`、`~/.gnupg`、iCloud Driveには決して触れません。クリーンの前に、キャッシュを書き戻してしまう実行中のアプリをプランに表示します（先に終了してください）。クリーンのたびに、cdmと同じ `~/.cleandevmac/clean.log` に記録されます。
 - **残りはキー1つで**: Docker / Podman、Rustのツールチェーンとオフラインドキュメント（`rustup` で削除）、アンインストール済みアプリの残りデータ、サンドボックスアプリのキャッシュには、コンテナエンジン、rustup、またはアプリのスキャンが必要です。そのため `⌘↵` で、cdm本体を最新リリースから直接、好みのターミナルで実行します。
@@ -265,7 +265,7 @@ curl -fsSL https://raw.githubusercontent.com/openhoangnc/mac-lightspot/main/inst
 `./build.sh` は各アーキテクチャを完全なリンク時最適化（LTO）でコンパイルし、ローカルシンボルの名前を取り除きます（名前は `build/Lightspot.app.dSYM` に残します）。1.4.0のユニバーサルバイナリは5.1 MBで、1.3.9の8.8 MBより42%小さく、Appleシリコン用だけなら2.2 MB（Intel用は2.9 MB）です。
 
 ### 4. テストと検証
-LightspotにはXCTestターゲットはありません。`scripts/` 配下の3つの独立したスクリプトをソースとともにその場でコンパイルし、リポジトリのルートから実行します：ロジックとエンジンのテストランナー（84のテストブロック）、ライブシステム検証ツール（15セクション、開発者のMac（macOS 27.2）で206チェック。zshの履歴やVS Codeがない場合や、GitHubに接続できない場合などは一部がスキップされます）、そして本物のMac Tweaksのウインドウを読み取り専用のスキャンで画面外に作り、各セクションを再スキャン、セクション切り替え、ウインドウのキー操作に通すチェックです：
+LightspotにはXCTestターゲットはありません。`scripts/` 配下の3つの独立したスクリプトをソースとともにその場でコンパイルし、リポジトリのルートから実行します：ロジックとエンジンのテストランナー（84のテストブロック）、ライブシステム検証ツール（15セクション、開発者のMac（macOS 27.2）で206チェック。zshの履歴やVS Codeがない場合や、GitHubに接続できない場合などは一部がスキップされます）、そして本物のMac TweaksとClean Dev Macのウインドウを読み取り専用のスキャンで画面外に作り、Mac Tweaksの各セクションを再スキャンとセクション切り替えに、両方のウインドウをキー操作に通すチェックです：
 ```bash
 # コアロジックとエンジンのテスト (84のテストブロック)
 swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift Sources/Lightspot/System/AutoStartManager.swift Sources/Lightspot/System/SpotlightManager.swift Sources/Lightspot/System/FirstRunManager.swift Sources/Lightspot/System/UpdateManager.swift Sources/Lightspot/System/SingleInstanceGuard.swift Sources/Lightspot/System/LegacyNetworkStores.swift Sources/Lightspot/System/HotkeyManager.swift Sources/Lightspot/System/SystemShortcutConflicts.swift && /tmp/test_engine
@@ -273,7 +273,7 @@ swiftc -o /tmp/test_engine scripts/test_engine.swift Sources/Lightspot/Core/*.sw
 # ライブシステムチェック (15セクション、macOS 27.2で206チェック)
 swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.swift Sources/Lightspot/System/TerminalLauncher.swift && /tmp/deep_verify
 
-# Mac Tweaksのウインドウを画面外で確認 (約1分)
+# Mac TweaksとClean Dev Macのウインドウを画面外で確認 (約1分)
 swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(find Sources/Lightspot -name '*.swift' ! -name AppMain.swift) && /tmp/overlay_check
 ```
 
@@ -295,8 +295,8 @@ swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(fin
 | **`Delete` (`⌫`)** | Mac Tweaksでバックグラウンド項目を削除の対象にする、または外す |
 | **`Tab` (`⇥`)** | Clean Dev Macでコードリポジトリもスキャンする / Mac Tweaksで次のセクションへ（`⇧⇥` で前へ） |
 | **`⌘Y` / `⌘⇧H`** | 検索履歴マネージャーのオーバーレイを開く |
-| **`Escape`** | オーバーレイを閉じる、検索フィールドをクリアする、またはLightspotを閉じる。Mac Tweaksのウインドウでは戻り、続けて押すとウインドウを閉じる |
-| **`⌘W`** | Mac Tweaksのウインドウを閉じる |
+| **`Escape`** | オーバーレイを閉じる、検索フィールドをクリアする、またはLightspotを閉じる。Mac TweaksとClean Dev Macのウインドウでは戻り、続けて押すとウインドウを閉じる |
+| **`⌘W`** | Mac TweaksまたはClean Dev Macのウインドウを閉じる |
 | **外側をクリック** | フローティングパネルを自動的に閉じる |
 
 呼び出しに使うショートカットは、メニューバーの **Shortcut** で4つのうちから選びます。macOSは `⌃Space` を「前の入力ソースを選択」に割り当てているため、これを選ぶとキー操作で入力ソースも切り替わります。**Shortcut** サブメニューには、選んだ組み合わせをすでに使っているシステムのショートカットが表示されます。
