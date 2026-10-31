@@ -1,6 +1,6 @@
 {
   "title": "Orphaned application data",
-  "_comment": "Config for detecting leftover data from apps that are no longer installed. The tool scans each location for reverse-DNS (bundle-id) named folders whose bundle id is NOT registered with LaunchServices and is NOT covered by skipPrefixes/sharedComponents, then offers to move them to the Trash. 'strip' removes a filename suffix before treating a name as a bundle id. 'sharedComponents' are prefix-matched: they name updaters, crash/analytics SDKs and security agents that legitimately live on disk without an app of their own bundle id being installed — without them they look exactly like orphans.",
+  "_comment": "Config for detecting leftover data from apps that are no longer installed. The tool scans each location for reverse-DNS (bundle-id) named folders whose bundle id is NOT registered with LaunchServices and is NOT covered by skipPrefixes/sharedComponents, then offers to move them to the Trash. 'strip' removes a filename suffix before treating a name as a bundle id. 'sharedComponents' are prefix-matched: they name updaters, crash/analytics SDKs and security agents that legitimately live on disk without an app of their own bundle id being installed — without them they look exactly like orphans. 'apps' covers what the bundle-id scan cannot see: data an app keeps under a name that is not its bundle id (VS Code's '~/Library/Application Support/Code' and '~/.vscode'). Each entry is an app's bundle 'id', a display 'name' and '~/' 'paths'. When no installed app owns 'id', its existing paths join the orphan row for that id. A path is literal, or ends in '<Product>[[:digit:]]*' for a folder per version (JetBrains/PyCharm2025.1 but never PyCharmCE2025.1). 'optional' paths get a row of their own, '<name> (optional)', with 'note' as its description: folders a command-line tool also uses (~/.docker, ~/.ollama, ~/.codex, ~/.android, ~/.cursor) and Docker Desktop's sandbox container, which holds its VM disk. Like every orphan row, both arrive unchecked. 'keptByCommand' names the commands that keep such a folder: while any of them is on PATH the folder is never offered, whichever app lists it (~/.docker stays while OrbStack's or Colima's docker is installed, even after Docker Desktop is gone). A path listed by several entries stays while any of them is installed (Zed and Zed Preview share '~/.config/zed'). An id may be a vendor namespace when the real one carries a version: 'com.sublimetext' stays while com.sublimetext.4 (or .3, .5) is installed. Ids and paths come from each app's Homebrew cask zap list. 'paths' holds only folders the app alone writes: never a parent shared by a vendor's other products (JetBrains, Google), and never a folder a command-line tool also uses — those go in 'optional'.",
   "locations": [
     { "path": "~/Library/Application Support" },
     { "path": "~/Library/Caches" },
@@ -38,5 +38,308 @@
     "com.paloaltonetworks.",
     "com.cisco.anyconnect",
     "com.cisco.secureclient"
+  ],
+  "apps": [
+    { "id": "com.microsoft.VSCode", "name": "Visual Studio Code",
+      "paths": ["~/Library/Application Support/Code", "~/.vscode", "~/.vscode-shared"] },
+    { "id": "com.microsoft.VSCodeInsiders", "name": "Visual Studio Code - Insiders",
+      "paths": ["~/Library/Application Support/Code - Insiders", "~/.vscode-insiders", "~/.vscode-shared"] },
+    { "id": "com.vscodium", "name": "VSCodium",
+      "paths": ["~/Library/Application Support/VSCodium", "~/Library/Caches/VSCodium", "~/.vscode-oss"] },
+    { "id": "com.todesktop.230313mzl4w4u92", "name": "Cursor",
+      "note": "~/.cursor holds Cursor's extensions and the cursor-agent CLI's config, MCP servers and rules. Offered only once no cursor-agent command is left on your PATH.",
+      "paths": [
+        "~/Library/Application Support/Cursor",
+        "~/Library/Application Support/Caches/cursor-updater",
+        "~/Library/Logs/Cursor",
+        "~/.cursor-tutor"
+      ],
+      "optional": ["~/.cursor"] },
+    { "id": "dev.zed.Zed", "name": "Zed",
+      "paths": ["~/Library/Application Support/Zed", "~/Library/Caches/Zed", "~/Library/Logs/Zed", "~/.config/zed"] },
+    { "id": "dev.zed.Zed-Preview", "name": "Zed Preview",
+      "paths": ["~/Library/Application Support/Zed", "~/Library/Caches/Zed", "~/Library/Logs/Zed", "~/.config/zed"] },
+    { "id": "com.google.antigravity", "name": "Antigravity",
+      "paths": ["~/Library/Application Support/Antigravity", "~/Library/Logs/Antigravity", "~/.antigravity"] },
+    { "id": "dev.kiro.desktop", "name": "Kiro",
+      "paths": ["~/Library/Application Support/Kiro"] },
+    { "id": "com.trae.app", "name": "Trae",
+      "paths": ["~/Library/Application Support/Trae", "~/.trae"] },
+    { "id": "com.voideditor.Void", "name": "Void",
+      "paths": ["~/Library/Application Support/Void"] },
+    { "id": "co.posit.positron", "name": "Positron",
+      "paths": ["~/Library/Application Support/Positron", "~/.positron"] },
+    { "id": "com.rstudio.positron", "name": "Positron",
+      "paths": ["~/Library/Application Support/Positron", "~/.positron"] },
+    { "id": "com.rstudio.desktop", "name": "RStudio",
+      "paths": ["~/Library/Application Support/RStudio"] },
+    { "id": "com.sublimetext", "name": "Sublime Text",
+      "paths": [
+        "~/Library/Application Support/Sublime Text",
+        "~/Library/Application Support/Sublime Text 3",
+        "~/Library/Application Support/Sublime Text (Safe Mode)",
+        "~/Library/Caches/Sublime Text",
+        "~/Library/Caches/Sublime Text 3",
+        "~/Library/Caches/Sublime Text (Safe Mode)"
+      ] },
+    { "id": "com.sublimemerge", "name": "Sublime Merge",
+      "paths": ["~/Library/Application Support/Sublime Merge"] },
+    { "id": "com.postmanlabs.mac", "name": "Postman",
+      "paths": ["~/Library/Application Support/Postman", "~/Library/Caches/Postman"] },
+    { "id": "com.insomnia.app", "name": "Insomnia",
+      "paths": ["~/Library/Application Support/Insomnia", "~/Library/Logs/Insomnia"] },
+    { "id": "com.usebruno.app", "name": "Bruno",
+      "paths": ["~/Library/Application Support/bruno", "~/Library/Logs/bruno"] },
+    { "id": "io.httpie.desktop", "name": "HTTPie",
+      "paths": ["~/Library/Application Support/HTTPie", "~/Library/Logs/HTTPie"] },
+    { "id": "com.github.GitHubClient", "name": "GitHub Desktop",
+      "paths": ["~/Library/Application Support/GitHub Desktop", "~/Library/Logs/GitHub Desktop"] },
+    { "id": "com.torusknot.SourceTreeNotMAS", "name": "Sourcetree",
+      "paths": ["~/Library/Application Support/SourceTree", "~/Library/Logs/Sourcetree"] },
+    { "id": "com.DanPristupov.Fork", "name": "Fork",
+      "paths": ["~/Library/Application Support/Fork", "~/Library/Logs/Fork.log"] },
+    { "id": "com.axosoft.gitkraken", "name": "GitKraken",
+      "paths": ["~/Library/Application Support/GitKraken", "~/Library/Caches/GitKraken"] },
+    { "id": "com.mongodb.compass", "name": "MongoDB Compass",
+      "paths": ["~/Library/Application Support/MongoDB Compass", "~/Library/Caches/MongoDB Compass"] },
+    { "id": "io.beekeeperstudio.desktop", "name": "Beekeeper Studio",
+      "paths": [
+        "~/Library/Application Support/beekeeper-studio",
+        "~/Library/Application Support/Caches/beekeeper-studio-updater"
+      ] },
+    { "id": "com.azuredatastudio.oss", "name": "Azure Data Studio",
+      "paths": ["~/Library/Application Support/azuredatastudio"] },
+    { "id": "com.docker.docker", "name": "Docker Desktop",
+      "note": "Docker Desktop's Linux VM disk, often tens of GB, and its settings. ~/.docker, the docker CLI's own folder, is offered only once no docker command is left on your PATH.",
+      "paths": [
+        "~/Library/Application Support/Docker Desktop",
+        "~/Library/Caches/Docker Desktop",
+        "~/Library/Logs/Docker Desktop"
+      ],
+      "optional": ["~/Library/Containers/com.docker.docker", "~/Library/Group Containers/group.com.docker", "~/.docker"] },
+    { "id": "dev.kdrag0n.MacVirt", "name": "OrbStack",
+      "note": "OrbStack's disk image, holding its Linux machines and containers. ~/.docker, the docker CLI's own folder, is offered only once no docker command is left on your PATH.",
+      "paths": ["~/.orbstack"],
+      "optional": ["~/Library/Group Containers/HUAQ24HBR6.dev.orbstack", "~/.docker"] },
+    { "id": "io.podmandesktop.PodmanDesktop", "name": "Podman Desktop",
+      "paths": ["~/Library/Application Support/Podman Desktop", "~/.local/share/containers/podman-desktop"] },
+    { "id": "io.rancherdesktop.app", "name": "Rancher Desktop",
+      "note": "~/.docker is the docker CLI's own folder, offered only once no docker command is left on your PATH.",
+      "paths": [
+        "~/Library/Application Support/rancher-desktop",
+        "~/Library/Application Support/Rancher Desktop",
+        "~/Library/Application Support/Caches/rancher-desktop-updater",
+        "~/Library/Caches/rancher-desktop",
+        "~/Library/Logs/rancher-desktop",
+        "~/Library/Preferences/rancher-desktop",
+        "~/.rd"
+      ],
+      "optional": ["~/.docker"] },
+    { "id": "ai.elementlabs.lmstudio", "name": "LM Studio",
+      "paths": ["~/Library/Application Support/LM Studio", "~/Library/Logs/LM Studio"] },
+    { "id": "com.unity3d.unityhub", "name": "Unity Hub",
+      "paths": ["~/Library/Application Support/UnityHub"] },
+    { "id": "cc.arduino.IDE2", "name": "Arduino IDE",
+      "paths": ["~/Library/Application Support/arduino-ide", "~/.arduinoIDE"] },
+    { "id": "co.zeit.hyper", "name": "Hyper",
+      "paths": ["~/Library/Application Support/Hyper", "~/Library/Logs/Hyper", "~/.hyper_plugins", "~/.hyper.js"] },
+    { "id": "com.electron.ollama", "name": "Ollama",
+      "note": "Downloaded models. The ollama CLI from Homebrew keeps its models here too, so this is offered only once no ollama command is left on your PATH.",
+      "paths": ["~/Library/Application Support/Ollama"],
+      "optional": ["~/.ollama"] },
+    { "id": "com.openai.codex", "name": "ChatGPT",
+      "note": "~/.codex is also the Codex CLI's settings, sign-in and sessions. Offered only once no codex command is left on your PATH.",
+      "paths": [
+        "~/Library/Application Support/Codex",
+        "~/Library/Application Support/OpenAI/Codex",
+        "~/Library/Caches/Codex"
+      ],
+      "optional": ["~/.codex"] },
+    { "id": "com.google.android.studio", "name": "Android Studio",
+      "note": "Your emulators (AVDs), the debug signing key and the Android SDK, which Flutter, React Native and Gradle builds use without Android Studio. Offered only once no adb, flutter or emulator command is left on your PATH.",
+      "paths": [
+        "~/Library/Application Support/Google/AndroidStudio[[:digit:]]*",
+        "~/Library/Caches/Google/AndroidStudio[[:digit:]]*",
+        "~/Library/Logs/Google/AndroidStudio[[:digit:]]*"
+      ],
+      "optional": ["~/.android", "~/Library/Android/sdk"] },
+    { "id": "com.google.android.studio-EAP", "name": "Android Studio Preview",
+      "note": "Your emulators (AVDs), the debug signing key and the Android SDK, which Flutter, React Native and Gradle builds use without Android Studio. Offered only once no adb, flutter or emulator command is left on your PATH.",
+      "paths": [
+        "~/Library/Application Support/Google/AndroidStudioPreview[[:digit:]]*",
+        "~/Library/Caches/Google/AndroidStudioPreview[[:digit:]]*",
+        "~/Library/Logs/Google/AndroidStudioPreview[[:digit:]]*"
+      ],
+      "optional": ["~/.android", "~/Library/Android/sdk"] },
+    { "id": "com.jetbrains.intellij", "name": "IntelliJ IDEA",
+      "paths": [
+        "~/Library/Application Support/JetBrains/IntelliJIdea[[:digit:]]*",
+        "~/Library/Caches/JetBrains/IntelliJIdea[[:digit:]]*",
+        "~/Library/Logs/JetBrains/IntelliJIdea[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.intellij-EAP", "name": "IntelliJ IDEA EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/IntelliJIdea[[:digit:]]*",
+        "~/Library/Caches/JetBrains/IntelliJIdea[[:digit:]]*",
+        "~/Library/Logs/JetBrains/IntelliJIdea[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.intellij.ce", "name": "IntelliJ IDEA CE",
+      "paths": [
+        "~/Library/Application Support/JetBrains/IdeaIC[[:digit:]]*",
+        "~/Library/Caches/JetBrains/IdeaIC[[:digit:]]*",
+        "~/Library/Logs/JetBrains/IdeaIC[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.intellij.ce-EAP", "name": "IntelliJ IDEA CE EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/IdeaIC[[:digit:]]*",
+        "~/Library/Caches/JetBrains/IdeaIC[[:digit:]]*",
+        "~/Library/Logs/JetBrains/IdeaIC[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.pycharm", "name": "PyCharm",
+      "paths": [
+        "~/Library/Application Support/JetBrains/PyCharm[[:digit:]]*",
+        "~/Library/Caches/JetBrains/PyCharm[[:digit:]]*",
+        "~/Library/Logs/JetBrains/PyCharm[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.pycharm-EAP", "name": "PyCharm EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/PyCharm[[:digit:]]*",
+        "~/Library/Caches/JetBrains/PyCharm[[:digit:]]*",
+        "~/Library/Logs/JetBrains/PyCharm[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.pycharm.ce", "name": "PyCharm CE",
+      "paths": [
+        "~/Library/Application Support/JetBrains/PyCharmCE[[:digit:]]*",
+        "~/Library/Caches/JetBrains/PyCharmCE[[:digit:]]*",
+        "~/Library/Logs/JetBrains/PyCharmCE[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.pycharm.ce-EAP", "name": "PyCharm CE EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/PyCharmCE[[:digit:]]*",
+        "~/Library/Caches/JetBrains/PyCharmCE[[:digit:]]*",
+        "~/Library/Logs/JetBrains/PyCharmCE[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.WebStorm", "name": "WebStorm",
+      "paths": [
+        "~/Library/Application Support/JetBrains/WebStorm[[:digit:]]*",
+        "~/Library/Caches/JetBrains/WebStorm[[:digit:]]*",
+        "~/Library/Logs/JetBrains/WebStorm[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.WebStorm-EAP", "name": "WebStorm EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/WebStorm[[:digit:]]*",
+        "~/Library/Caches/JetBrains/WebStorm[[:digit:]]*",
+        "~/Library/Logs/JetBrains/WebStorm[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.goland", "name": "GoLand",
+      "paths": [
+        "~/Library/Application Support/JetBrains/GoLand[[:digit:]]*",
+        "~/Library/Caches/JetBrains/GoLand[[:digit:]]*",
+        "~/Library/Logs/JetBrains/GoLand[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.goland-EAP", "name": "GoLand EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/GoLand[[:digit:]]*",
+        "~/Library/Caches/JetBrains/GoLand[[:digit:]]*",
+        "~/Library/Logs/JetBrains/GoLand[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.CLion", "name": "CLion",
+      "paths": [
+        "~/Library/Application Support/JetBrains/CLion[[:digit:]]*",
+        "~/Library/Caches/JetBrains/CLion[[:digit:]]*",
+        "~/Library/Logs/JetBrains/CLion[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.CLion-EAP", "name": "CLion EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/CLion[[:digit:]]*",
+        "~/Library/Caches/JetBrains/CLion[[:digit:]]*",
+        "~/Library/Logs/JetBrains/CLion[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.rustrover", "name": "RustRover",
+      "paths": [
+        "~/Library/Application Support/JetBrains/RustRover[[:digit:]]*",
+        "~/Library/Caches/JetBrains/RustRover[[:digit:]]*",
+        "~/Library/Logs/JetBrains/RustRover[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.rustrover-EAP", "name": "RustRover EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/RustRover[[:digit:]]*",
+        "~/Library/Caches/JetBrains/RustRover[[:digit:]]*",
+        "~/Library/Logs/JetBrains/RustRover[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.PhpStorm", "name": "PhpStorm",
+      "paths": [
+        "~/Library/Application Support/JetBrains/PhpStorm[[:digit:]]*",
+        "~/Library/Caches/JetBrains/PhpStorm[[:digit:]]*",
+        "~/Library/Logs/JetBrains/PhpStorm[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.PhpStorm-EAP", "name": "PhpStorm EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/PhpStorm[[:digit:]]*",
+        "~/Library/Caches/JetBrains/PhpStorm[[:digit:]]*",
+        "~/Library/Logs/JetBrains/PhpStorm[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.rider", "name": "Rider",
+      "paths": [
+        "~/Library/Application Support/JetBrains/Rider[[:digit:]]*",
+        "~/Library/Caches/JetBrains/Rider[[:digit:]]*",
+        "~/Library/Logs/JetBrains/Rider[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.rider-EAP", "name": "Rider EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/Rider[[:digit:]]*",
+        "~/Library/Caches/JetBrains/Rider[[:digit:]]*",
+        "~/Library/Logs/JetBrains/Rider[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.datagrip", "name": "DataGrip",
+      "paths": [
+        "~/Library/Application Support/JetBrains/DataGrip[[:digit:]]*",
+        "~/Library/Caches/JetBrains/DataGrip[[:digit:]]*",
+        "~/Library/Logs/JetBrains/DataGrip[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.datagrip-EAP", "name": "DataGrip EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/DataGrip[[:digit:]]*",
+        "~/Library/Caches/JetBrains/DataGrip[[:digit:]]*",
+        "~/Library/Logs/JetBrains/DataGrip[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.rubymine", "name": "RubyMine",
+      "paths": [
+        "~/Library/Application Support/JetBrains/RubyMine[[:digit:]]*",
+        "~/Library/Caches/JetBrains/RubyMine[[:digit:]]*",
+        "~/Library/Logs/JetBrains/RubyMine[[:digit:]]*"
+      ] },
+    { "id": "com.jetbrains.rubymine-EAP", "name": "RubyMine EAP",
+      "paths": [
+        "~/Library/Application Support/JetBrains/RubyMine[[:digit:]]*",
+        "~/Library/Caches/JetBrains/RubyMine[[:digit:]]*",
+        "~/Library/Logs/JetBrains/RubyMine[[:digit:]]*"
+      ] },
+    { "id": "com.anthropic.claudefordesktop", "name": "Claude",
+      "paths": ["~/Library/Application Support/Claude", "~/Library/Logs/Claude"] },
+    { "id": "com.tinyspeck.slackmacgap", "name": "Slack",
+      "paths": ["~/Library/Application Support/Slack", "~/Library/Logs/Slack"] },
+    { "id": "com.hnc.Discord", "name": "Discord",
+      "paths": ["~/Library/Application Support/discord"] },
+    { "id": "com.figma.Desktop", "name": "Figma",
+      "paths": ["~/Library/Application Support/Figma", "~/Library/Application Support/figma-desktop"] },
+    { "id": "com.figma.agent", "name": "Figma Agent",
+      "paths": ["~/Library/Application Support/Figma"] },
+    { "id": "notion.id", "name": "Notion",
+      "paths": [
+        "~/Library/Application Support/Notion",
+        "~/Library/Logs/Notion",
+        "~/Library/Application Support/Caches/notion-updater"
+      ] },
+    { "id": "md.obsidian", "name": "Obsidian",
+      "paths": ["~/Library/Application Support/obsidian"] }
+  ],
+  "keptByCommand": [
+    { "path": "~/.docker", "cmds": ["docker"] },
+    { "path": "~/.ollama", "cmds": ["ollama"] },
+    { "path": "~/.codex", "cmds": ["codex"] },
+    { "path": "~/.cursor", "cmds": ["cursor-agent"] },
+    { "path": "~/.android", "cmds": ["adb", "flutter", "emulator"] },
+    { "path": "~/Library/Android/sdk", "cmds": ["adb", "flutter", "emulator", "sdkmanager"] }
   ]
 }
