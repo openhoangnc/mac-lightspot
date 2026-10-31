@@ -111,6 +111,13 @@ jobs:
         run: |
           (cd build && zip -r -y ../Lightspot.zip Lightspot.app)
 
+      # The app ships stripped (`strip -x`); this dSYM, made by build.sh from the same build,
+      # is what symbolicates its crash reports (CLAUDE.md, "Release binary"). Lightspot.zip
+      # stays the only asset the updater and install.sh download.
+      - name: Package dSYM Zip
+        run: |
+          (cd build && zip -r -y ../Lightspot.app.dSYM.zip Lightspot.app.dSYM)
+
       - name: Tag Repository
         env:
           TAG_NAME: ${{ steps.versioning.outputs.tag_name }}
@@ -132,6 +139,8 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: Lightspot.zip
+          files: |
+            Lightspot.zip
+            Lightspot.app.dSYM.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

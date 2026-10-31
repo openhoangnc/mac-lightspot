@@ -11,7 +11,9 @@ Code ported from other projects, and their licenses: [THIRD-PARTY-NOTICES.md](TH
 ## Commands
 
 ```bash
-./build.sh      # or: make build    — swift build -c release, then package/strip/ad-hoc-sign build/Lightspot.app
+./build.sh      # or: make build    — swiftc per architecture (full LTO), lipo, dSYM, strip -x, ad-hoc sign:
+                #                     build/Lightspot.app and build/Lightspot.app.dSYM
+                #                     ARCH_FLAGS="--arch arm64 --arch x86_64" ./build.sh builds universal, as CI does
 ./run.sh        # or: make run      — killall Lightspot, rebuild, open build/Lightspot.app
 ./install.sh    # or: make install  — build, kill running instance, copy to /Applications (falls back to ~/Applications)
                 #                     ./install.sh --user forces ~/Applications, --system forces /Applications
@@ -20,7 +22,45 @@ make clean      # rm -rf build .build
 ./scripts/generate_icon.sh  # or: make icon — regenerates Resources/AppIcon.icns via Core Graphics + iconutil
 ```
 
-`swift build` alone produces the bare binary; it will not run correctly as an app (no bundle, no `Info.plist`, so no `LSUIElement`). Always go through `build.sh` or `install.sh`.
+`swift build` (Package.swift) is the development build and produces the bare binary; it will not run correctly as an app (no bundle, no `Info.plist`, so no `LSUIElement`). Always go through `build.sh` or `install.sh`.
+
+### Release binary
+
+`build.sh` does not use SwiftPM: neither SwiftPM build system links LTO objects. It runs one
+`swiftc` per architecture over every file in `Sources/Lightspot` (whole module, `-Osize`, Swift 6,
+macOS 13), `lipo`s them, writes the dSYM, then strips, signs and checks that the dSYM's UUIDs
+match the app's. Each flag is there for size, none for behaviour; together, at c3d1da3, they took
+the arm64 binary from 5.70 MB to 2.19 MB and the universal one from 11.43 MB to 5.06 MB:
+
+- `-lto=llvm-full`: LLVM, and on arm64 the machine outliner, see the whole program; arm64 code
+  is 22% smaller (x86_64 gains little, it has no outliner by default).
+- No `-cross-module-optimization`: it only helps modules that import this one, and an
+  executable has none; it gave thousands of internal symbols public linkage.
+- `-Xlinker -no_exported_symbols`: nothing loads this executable or looks up its symbols
+  (no `dlsym`, plugins or `-bundle_loader`).
+- `strip -x` instead of `strip -S`: local symbol names were half the binary. Nothing reads them at
+  run time (no `dladdr`, `callStackSymbols`); crash reports read them, so the dSYM keeps them.
+
+The linked dylibs are the same as `swift build`'s plus CFNetwork, which `swiftc` names directly
+and Foundation loads anyway. Check `otool -L` against the previous release when this changes.
+
+**Crash reports.** The shipped binary has no local symbols, so a crash report's Lightspot frames
+are addresses. CI attaches each release's dSYM as `Lightspot.app.dSYM.zip`, next to
+`Lightspot.zip` (the only asset the updater and `install.sh` download). To symbolicate, unzip the
+dSYM of that version, check that `dwarfdump --uuid Lightspot.app.dSYM` lists the UUID in the
+report's Binary Images line for Lightspot, then pass the frame addresses and Lightspot's load
+address from that line:
+
+```bash
+atos -o Lightspot.app.dSYM/Contents/Resources/DWARF/Lightspot -arch arm64 -l 0x104a3c000 0x104ad6d18
+# static MacTweaksStorage.apply(_:environment:progress:) (in Lightspot) (MacTweaksStorage.swift:756)
+```
+
+Use `-arch x86_64` for an Intel report; `atos` takes several addresses at once. Xcode also ships
+`symbolicatecrash` (inside `SharedFrameworks/DVTFoundation.framework/…/Resources`, not on the
+`PATH`; the Command Line Tools don't have it), which rewrites a whole text `.crash` report given
+the dSYM; for an `.ips` report, `atos` per frame is the way verified here. A local build's dSYM is
+`build/Lightspot.app.dSYM`.
 
 Write `@ViewState`, never `@State` (`UI/ViewState.swift`). From the macOS 27 SDK on,
 `@State` resolves to a SwiftUI macro whose implementation ships with Xcode only, so a
@@ -44,6 +84,18 @@ swiftc -o /tmp/deep_verify scripts/deep_verify.swift Sources/Lightspot/Core/*.sw
 
 Both runners read `Resources/cdm-rules`, so run them from the repository root.
 
+Before a release, or after changing `build.sh`'s flags, also compile both runners with the release
+flags and run them: the app ships LTO code the plain commands above don't build. `swiftc` writes
+its bitcode files into the working directory, so compile from a scratch one, with absolute paths
+(`$R` is the repository), and still run from the repository root:
+
+```bash
+mkdir -p /tmp/lto && cd /tmp/lto
+swiftc -Osize -whole-module-optimization -enforce-exclusivity=unchecked -lto=llvm-full -o /tmp/test_engine_lto "$R"/scripts/test_engine.swift <the same sources, prefixed with "$R"/>
+swiftc -Osize -whole-module-optimization -enforce-exclusivity=unchecked -lto=llvm-full -o /tmp/deep_verify_lto "$R"/scripts/deep_verify.swift "$R"/Sources/Lightspot/Core/*.swift "$R"/Sources/Lightspot/System/TerminalLauncher.swift
+cd "$R" && /tmp/test_engine_lto && /tmp/deep_verify_lto
+```
+
 These scripts are the primary test coverage — when you modify engines, keep tests updated.
 
 The runners are bare executables, so `SMAppService.mainApp` inside them is the runner
@@ -57,7 +109,7 @@ system on the app's behalf needs the same `.app` check.
 mac-lightspot/
 ├── Package.swift                 # SPM manifest (Swift 6, macOS 13+)
 ├── Makefile                      # make build / run / install / uninstall / clean
-├── build.sh                      # Release build & .app packager script
+├── build.sh                      # Release build (swiftc, LTO, dSYM, strip -x) & .app packager
 ├── run.sh                        # Build & launch helper
 ├── install.sh                    # Install to /Applications or ~/Applications (local or remote)
 ├── uninstall.sh                  # Clean removal script
@@ -467,9 +519,10 @@ format and the copy are Lightspot's.
 - **Receipts** go to `~/Library/Application Support/Lightspot/mac-tweaks.log`, written only when
   the user applies something and capped like cdm's clean.log
   (`CleanDevMacEngine.appendToLog(_:url:now:)`).
-- **Binary size.** `build.sh` strips debug symbols only (`strip -S`), so every local symbol
-  name stays in the binary, and SwiftUI spells a view's whole nested type into each name it
-  generates: one long `body` made names of 2,000 characters by the hundred. The overlay is
+- **Binary size.** SwiftUI spells a view's whole nested type into each name it generates: one
+  long `body` made names of 2,000 characters by the hundred. `build.sh` used to keep every local
+  name (`strip -S`); it now ships `strip -x` (see Release binary), but the names
+  still fill the dSYM and the type metadata keeps the nested types. The overlay is
   therefore small view structs that take plain values (`MacTweaksHeader`, `MacTweaksList`,
   `MacTweaksRowView`, …), per-section state lives in arrays rather than dictionaries keyed by
   the section, and `scan`/`apply` take an optional progress closure (a closure argument made

@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_BUNDLE="$BUILD_DIR/Lightspot.app"
 CONTENTS="$APP_BUNDLE/Contents"
+DSYM="$BUILD_DIR/Lightspot.app.dSYM"
+WORK="$BUILD_DIR/intermediates"
+
+# Any failing step stops the build (set -e), and says so once, whatever failed.
+trap 'status=$?; [ $status -eq 0 ] || echo "❌ Build failed (exit $status)." >&2' EXIT
 
 echo "🔨 Building Lightspot..."
 
@@ -16,57 +21,73 @@ if grep -rnE '@State([^A-Za-z0-9_]|$)' "$SCRIPT_DIR/Sources" --include='*.swift'
     exit 1
 fi
 
-ARCH_FLAGS=${ARCH_FLAGS:-}
+# The architectures: ARCH_FLAGS takes SwiftPM's spelling ("--arch arm64 --arch x86_64",
+# as CI passes it); without it, this Mac's own.
+ARCHS=()
+set -- ${ARCH_FLAGS:-}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch) [ $# -ge 2 ] || { echo "❌ ARCH_FLAGS: --arch needs a value." >&2; exit 1; }
+                ARCHS+=("$2"); shift 2 ;;
+        *) echo "❌ ARCH_FLAGS: unknown flag '$1' (expected --arch <arch> ...)." >&2; exit 1 ;;
+    esac
+done
+[ ${#ARCHS[@]} -gt 0 ] || ARCHS=("$(uname -m)")
 
-# Build with SPM (Maximum Optimization)
-echo "🚀 Compiling with maximum optimizations..."
-BUILD_SUCCESS=0
-if [ -n "$ARCH_FLAGS" ]; then
-    if swift build -c release $ARCH_FLAGS \
-        -Xswiftc -Osize \
-        -Xswiftc -whole-module-optimization \
-        -Xswiftc -cross-module-optimization \
-        -Xswiftc -enforce-exclusivity=unchecked \
-        --package-path "$SCRIPT_DIR" 2>&1; then
-        BUILD_SUCCESS=1
-    else
-        echo "⚠️ Build with ARCH_FLAGS ($ARCH_FLAGS) failed. Falling back to native architecture..."
-        ARCH_FLAGS=""
-    fi
+SOURCES=()
+while IFS= read -r file; do SOURCES+=("$file"); done < <(find "$SCRIPT_DIR/Sources/Lightspot" -name '*.swift' | sort)
+SDK="$(xcrun --sdk macosx --show-sdk-path)"
+
+# Not `swift build`: neither SwiftPM build system links LTO objects. Package.swift stays the
+# development build. The release flags, each for size (CLAUDE.md, "Release binary"):
+# - full LTO lets LLVM (and on arm64 the machine outliner) work on the whole program;
+# - no -cross-module-optimization: it only helps modules importing this one, and gave
+#   thousands of internal symbols public linkage;
+# - -no_exported_symbols: nothing loads or looks up symbols in this executable;
+# - -g with -object_path_lto keeps the debug info dsymutil needs for the dSYM.
+# The app and its dSYM go together: a failed build leaves neither behind.
+rm -rf "$WORK" "$DSYM" "$APP_BUNDLE"
+THIN=()
+for arch in "${ARCHS[@]}"; do
+    echo "🚀 Compiling for $arch (whole module, -Osize, full LTO)..."
+    mkdir -p "$WORK/$arch"
+    # swiftc writes its bitcode into the working directory, so it runs inside $WORK.
+    (cd "$WORK/$arch" && xcrun swiftc \
+        -parse-as-library -module-name Lightspot -swift-version 6 \
+        -target "$arch-apple-macos13.0" -sdk "$SDK" \
+        -Osize -whole-module-optimization -num-threads "$(sysctl -n hw.ncpu)" \
+        -enforce-exclusivity=unchecked -lto=llvm-full -g \
+        -module-cache-path "$WORK/ModuleCache" \
+        -Xlinker -dead_strip -Xlinker -no_exported_symbols \
+        -Xlinker -object_path_lto -Xlinker "$WORK/$arch/Lightspot-lto.o" \
+        "${SOURCES[@]}" -o "$WORK/$arch/Lightspot")
+    THIN+=("$WORK/$arch/Lightspot")
+done
+
+BINARY="$WORK/Lightspot"
+if [ ${#THIN[@]} -eq 1 ]; then
+    cp "${THIN[0]}" "$BINARY"
+else
+    lipo -create "${THIN[@]}" -output "$BINARY"
 fi
 
-if [ "$BUILD_SUCCESS" -eq 0 ]; then
-    swift build -c release \
-        -Xswiftc -Osize \
-        -Xswiftc -whole-module-optimization \
-        -Xswiftc -cross-module-optimization \
-        -Xswiftc -enforce-exclusivity=unchecked \
-        --package-path "$SCRIPT_DIR" 2>&1
-fi
-
-# Find the built binary
-BIN_DIR=$(swift build -c release $ARCH_FLAGS --package-path "$SCRIPT_DIR" --show-bin-path 2>/dev/null || swift build -c release --package-path "$SCRIPT_DIR" --show-bin-path)
-BINARY="$BIN_DIR/Lightspot"
-
-
-if [ ! -f "$BINARY" ]; then
-    echo "❌ Build failed: binary not found"
-    exit 1
-fi
+# The dSYM is made from the unstripped binary while the LTO objects still exist. Keep it
+# with each release: crash reports from the stripped binary need it for names and lines.
+echo "🧾 Writing $DSYM..."
+dsymutil "$BINARY" -o "$DSYM"
 
 echo "📦 Creating app bundle..."
 
 # Create .app bundle structure
-rm -rf "$APP_BUNDLE"
 mkdir -p "$CONTENTS/MacOS"
 mkdir -p "$CONTENTS/Resources"
 
 # Copy binary
 cp "$BINARY" "$CONTENTS/MacOS/Lightspot"
 
-# Strip binary to minimize size
-echo "🔪 Stripping debug symbols..."
-strip -S "$CONTENTS/MacOS/Lightspot"
+# Every symbol but what dyld needs: local names are half the binary, and the dSYM has them.
+echo "🔪 Stripping symbols..."
+strip -x "$CONTENTS/MacOS/Lightspot"
 
 # Copy Info.plist
 cp "$SCRIPT_DIR/Resources/Info.plist" "$CONTENTS/Info.plist"
@@ -84,6 +105,15 @@ echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
 # Ad-hoc codesign
 echo "🔏 Signing..."
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --verify --strict "$APP_BUNDLE"
 
-echo "✅ Build complete: $APP_BUNDLE"
+# The dSYM only helps if it matches the binary that ships, architecture by architecture.
+uuids() { dwarfdump --uuid "$1" | awk '{print $2, $3}' | sort; }
+if [ "$(uuids "$CONTENTS/MacOS/Lightspot")" != "$(uuids "$DSYM")" ]; then
+    echo "❌ The dSYM's UUIDs don't match the app's binary." >&2
+    exit 1
+fi
+
+rm -rf "$WORK"
+echo "✅ Build complete: $APP_BUNDLE ($(lipo -archs "$CONTENTS/MacOS/Lightspot")), dSYM: $DSYM"
