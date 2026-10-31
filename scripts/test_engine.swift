@@ -3152,39 +3152,90 @@ struct TestRunner {
 
     // MARK: - System Settings opener
 
-    /// LaunchServices' records of System Settings, faked: each PID alive or dead, with or
-    /// without windows; a clock the waits advance; every open logged with its mode.
+    /// LaunchServices' records of System Settings and this user's processes, faked: each PID
+    /// recorded or not, alive or dead, with or without windows; a launch adds an instance that
+    /// shows its window after `launchDelay`; a clock the waits advance; every open, delivery and
+    /// activation logged.
     final class SettingsFake: @unchecked Sendable {
-        struct Instance { var pid: pid_t; var alive: Bool; var windows: Bool }
+        struct Instance {
+            var pid: pid_t
+            var alive: Bool
+            var windows: Bool
+            var recorded = true
+            var finished = true
+            var readyAt: Date? = nil
+        }
         var instances: [Instance] = []
         var now = Date(timeIntervalSince1970: 1_000)
         var opens: [String] = []
-        var quitRequests: [pid_t] = []
+        var deliveries: [String] = []
+        var activations: [pid_t] = []
         var slept: TimeInterval = 0
-        /// The answer to each open in turn; nil (taken) once they run out.
+        /// The answer to each LaunchServices open in turn; nil (taken) once they run out.
         var answers: [Error?] = []
+        /// The answer to each delivery in turn; nil (delivered) once they run out.
+        var deliverAnswers: [Error?] = []
         /// Before each sleep: lets a test make an instance exit, or LaunchServices drop it.
         var onSleep: (SettingsFake) -> Void = { _ in }
-        /// Runs when an instance is asked to quit.
-        var onQuit: (SettingsFake, pid_t) -> Void = { _, _ in }
+        /// Runs as each delivery is sent.
+        var onDeliver: (SettingsFake, pid_t) -> Void = { _, _ in }
+        var launchDelay: TimeInterval = 0.3
+        var nextPID: pid_t = 100
+        /// The instances this fake launched, LaunchServices' own launches included.
+        var launched: [pid_t] = []
+        var live: [pid_t] { instances.filter(\.alive).map(\.pid) }
+        static let handedToDeadPID = NSError(domain: NSCocoaErrorDomain, code: 256, userInfo: [
+            NSUnderlyingErrorKey: NSError(domain: NSOSStatusErrorDomain, code: -600, userInfo: nil)])
 
         var environment: SystemSettingsOpener.Environment {
             var env = SystemSettingsOpener.Environment()
-            env.instances = { self.instances.map(\.pid) }
-            env.isAlive = { pid in self.instances.first { $0.pid == pid }?.alive ?? false }
-            env.hasWindows = { pid in self.instances.first { $0.pid == pid }?.windows ?? false }
-            env.requestQuit = { pid in self.quitRequests.append(pid); self.onQuit(self, pid) }
+            env.instances = { self.instances.filter(\.recorded).map(\.pid) }
+            env.liveProcesses = { self.live }
+            env.hasWindows = { pid in self.instance(pid)?.windows ?? false }
+            env.isFinishedLaunching = { pid in self.instance(pid)?.finished ?? false }
             env.open = { url, mode in
                 self.opens.append("\(mode)")
-                return self.answers.isEmpty ? nil : self.answers.removeFirst()
+                let answer: Error?
+                if !self.answers.isEmpty {
+                    answer = self.answers.removeFirst()
+                } else if mode == .quiet || mode == .normal, self.instances.contains(where: { $0.recorded && !$0.alive }) {
+                    // Measured on 27.2: LaunchServices hands an ordinary open to a dead record,
+                    // even beside a live instance.
+                    answer = Self.handedToDeadPID
+                } else {
+                    answer = nil
+                }
+                if answer == nil { self.launchIfNeeded(mode) }
+                return answer
             }
+            env.deliver = { url, pid in
+                self.deliveries.append("\(pid) \(url.isFileURL ? url.lastPathComponent : url.absoluteString)")
+                self.onDeliver(self, pid)
+                return self.deliverAnswers.isEmpty ? nil : self.deliverAnswers.removeFirst()
+            }
+            env.activate = { pid in self.activations.append(pid) }
             env.now = { self.now }
             env.sleep = { seconds in
                 self.onSleep(self)
                 self.slept += seconds
                 self.now = self.now.addingTimeInterval(seconds)
+                for index in self.instances.indices where self.instances[index].readyAt.map({ $0 <= self.now }) ?? false {
+                    self.instances[index].finished = true
+                    self.instances[index].windows = true
+                    self.instances[index].readyAt = nil
+                }
             }
             return env
+        }
+        func instance(_ pid: pid_t) -> Instance? { instances.first { $0.pid == pid && $0.alive } }
+        /// A new instance always launches; an ordinary open launches only with nothing running,
+        /// else LaunchServices hands it to the instance that is.
+        func launchIfNeeded(_ mode: SystemSettingsOpener.Mode) {
+            guard mode == .newInstance || mode == .newInstancePrompting || live.isEmpty else { return }
+            let pid = nextPID
+            nextPID += 1
+            launched.append(pid)
+            instances.append(Instance(pid: pid, alive: true, windows: false, finished: false, readyAt: now.addingTimeInterval(launchDelay)))
         }
         func set(_ pid: pid_t, alive: Bool? = nil, windows: Bool? = nil) {
             guard let index = instances.firstIndex(where: { $0.pid == pid }) else { return }
@@ -3192,19 +3243,24 @@ struct TestRunner {
             if let windows { instances[index].windows = windows }
         }
         func drop(_ pid: pid_t) { instances.removeAll { $0.pid == pid } }
+        /// Whoever runs is still running: the opener never quits an instance.
+        func stillAlive(_ pids: [pid_t]) -> Bool { pids.allSatisfy { pid in instances.contains { $0.pid == pid && $0.alive } } }
     }
 
     static func testSystemSettingsOpener() {
         print("Testing SystemSettingsOpener...")
         typealias Opener = SystemSettingsOpener
         let link = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
+        let trackpad = URL(string: "x-apple.systempreferences:com.apple.Trackpad-Settings.extension")!
+        let displays = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension")!
         // What 27.2 returns for an open handed to a dead PID, quietly: Cocoa 256 over procNotFound.
         let procNotFound = NSError(domain: NSCocoaErrorDomain, code: 256, userInfo: [
             NSUnderlyingErrorKey: NSError(domain: NSOSStatusErrorDomain, code: -600, userInfo: ["_LSErrorMessage": "procNotFound"])])
         let otherFailure = NSError(domain: NSCocoaErrorDomain, code: 256, userInfo: [
             NSUnderlyingErrorKey: NSError(domain: NSOSStatusErrorDomain, code: -10814, userInfo: nil)])
+        let wouldNeedConsent = NSError(domain: NSOSStatusErrorDomain, code: -1744)
 
-        // The error it waits on.
+        // The error it looks for.
         assertTrue(Opener.isHandOffFailure(procNotFound), "procNotFound under Cocoa's 256 is a failed hand-off (measured on 27.2)")
         assertTrue(Opener.isHandOffFailure(NSError(domain: NSOSStatusErrorDomain, code: -600)), "...and bare")
         assertTrue(Opener.isHandOffFailure(NSError(domain: NSOSStatusErrorDomain, code: -609)), "connectionInvalid is one too")
@@ -3226,76 +3282,184 @@ struct TestRunner {
         assertTrue(Opener.isSystemSettingsApp(path: "/System/Applications/System Settings.app"), "AppScanner's path for System Settings")
         assertTrue(!Opener.isSystemSettingsApp(path: "/Applications/Settings.app"), "...not another Settings app")
 
-        // Nothing recorded: LaunchServices launches it; quietly too.
+        // Never a quit: the opener has no way to ask an instance to.
+        let fields = Mirror(reflecting: Opener.Environment()).children.compactMap(\.label)
+        assertTrue(!fields.isEmpty && !fields.contains { $0.lowercased().contains("quit") || $0.lowercased().contains("terminat") },
+                   "The opener's system access holds no way to quit an instance (\(fields))")
+
+        // The Apple Event: what LaunchServices itself sends, addressed to the PID.
+        if let gurl = Opener.event(for: link, to: 4242) {
+            assertEqual(gurl.eventClass, AEEventClass(kInternetEventClass), "A link goes as GURL...")
+            assertEqual(gurl.eventID, AEEventID(kAEGetURL), "...GURL")
+            let text = gurl.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))
+            assertEqual(text?.descriptorType, DescType(typeUTF8Text), "...the link as UTF-8 text (a UTF-16 one reached System Settings as \"x\")")
+            assertEqual(text?.data, Data(link.absoluteString.utf8), "...byte for byte")
+            let address = gurl.attributeDescriptor(forKeyword: AEKeyword(keyAddressAttr))
+            assertEqual(address?.descriptorType, DescType(typeKernelProcessID), "...addressed by PID, past LaunchServices' routing")
+            assertEqual(address?.data, withUnsafeBytes(of: pid_t(4242)) { Data($0) }, "...to that PID")
+        } else {
+            assertTrue(false, "A link makes an event")
+        }
+        let profile = URL(fileURLWithPath: "/tmp/LightspotMacTweaks.mobileconfig")
+        if let odoc = Opener.event(for: profile, to: 4242) {
+            assertEqual(odoc.eventClass, AEEventClass(kCoreEventClass), "A file goes as odoc...")
+            assertEqual(odoc.eventID, AEEventID(kAEOpenDocuments), "...odoc")
+            let files = odoc.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))
+            assertEqual(files?.numberOfItems, 1, "...with the one file")
+            assertEqual(files?.atIndex(1)?.fileURLValue?.path, profile.path, "...the profile")
+        } else {
+            assertTrue(false, "A file makes an event")
+        }
+        assertTrue(Opener.event(for: Opener.appURL, to: 4242) == nil, "System Settings itself needs no event, only activating")
+        assertTrue(Opener.sendEvent(Opener.appURL, to: 4242) == nil, "...so nothing is sent for it")
+
+        // Nothing recorded, nothing running: LaunchServices launches it; quietly too.
         let none = SettingsFake()
         assertEqual(Opener.run(link, environment: none.environment), .opened, "Nothing running: opened")
         assertEqual(none.opens, ["quiet"], "...with promptsUserIfNeeded off, once")
+        assertEqual(none.launched.count, 1, "...one instance")
         // The list read empty while LaunchServices still held a dead record (measured on 27.2).
         let hidden = SettingsFake()
-        hidden.answers = [procNotFound, procNotFound]
-        assertEqual(Opener.run(link, environment: hidden.environment), .relaunched, "An empty list hiding a dead record...")
-        assertEqual(hidden.opens, ["quiet", "quiet", "newInstance"], "...ends in a new instance, never an alert")
-        assertEqual(hidden.slept, 0, "...with nothing to wait for")
+        hidden.answers = [procNotFound]
+        assertEqual(Opener.run(link, environment: hidden.environment), .newInstance, "An empty list hiding a dead record...")
+        assertEqual(hidden.opens, ["quiet", "newInstance"], "...ends in one new instance, never an alert")
+        assertEqual(hidden.launched.count, 1, "...one")
 
-        // A live instance takes it: handed over quietly, and that's all.
+        // A live instance alone takes it through LaunchServices, which activates it.
         let live = SettingsFake()
         live.instances = [.init(pid: 10, alive: true, windows: true)]
         assertEqual(Opener.run(link, environment: live.environment), .opened, "A running System Settings takes it")
         assertEqual(live.opens, ["quiet"], "...handed over with promptsUserIfNeeded off, once")
-        assertEqual(live.slept, 0, "...with no wait")
+        assertTrue(live.deliveries.isEmpty && live.launched.isEmpty && live.slept == 0, "...nothing sent past LaunchServices, nothing launched, no wait")
+        // ...unless LaunchServices hands it to a dead record the list didn't show: then straight to it.
+        let unseen = SettingsFake()
+        unseen.instances = [.init(pid: 10, alive: true, windows: true)]
+        unseen.answers = [procNotFound]
+        assertEqual(Opener.run(link, environment: unseen.environment), .delivered, "A hand-off failure beside a live instance...")
+        assertEqual(unseen.opens, ["quiet"], "...is not retried through LaunchServices")
+        assertEqual(unseen.deliveries, ["10 \(link.absoluteString)"], "...the link goes to the live PID")
+        assertEqual(unseen.activations, [10], "...which is brought forward")
+        assertTrue(unseen.launched.isEmpty && unseen.stillAlive([10]), "...no new instance, and it keeps running")
 
-        // Only dead records (27.2 keeps them a minute or more): a new instance, never a hand-off.
+        // A dead record beside a live instance (LaunchServices picks the dead one, measured):
+        // the link goes to the live process by its PID, and nothing through LaunchServices.
+        let beside = SettingsFake()
+        beside.instances = [.init(pid: 10, alive: false, windows: false), .init(pid: 20, alive: true, windows: true)]
+        assertEqual(Opener.run(link, environment: beside.environment), .delivered, "Dead record beside a live one: delivered")
+        assertTrue(beside.opens.isEmpty, "...without an open LaunchServices would hand to the dead PID (\(beside.opens))")
+        assertEqual(beside.deliveries, ["20 \(link.absoluteString)"], "...to the live PID")
+        assertEqual(beside.activations, [20], "...then activated, so System Settings opens the pane it kept pending")
+        assertTrue(beside.launched.isEmpty && beside.stillAlive([20]), "...never a new instance, never a quit")
+        assertEqual(beside.slept, 0, "...with no wait")
+        // Two live ones (the user's own): the newest, the one in front.
+        let twoLive = SettingsFake()
+        twoLive.instances = [.init(pid: 10, alive: false, windows: false), .init(pid: 20, alive: true, windows: true), .init(pid: 30, alive: true, windows: true)]
+        assertEqual(Opener.run(link, environment: twoLive.environment), .delivered, "Two live instances beside a dead record")
+        assertEqual(twoLive.deliveries, ["30 \(link.absoluteString)"], "...the newest gets it")
+        assertTrue(twoLive.launched.isEmpty && twoLive.stillAlive([20, 30]), "...and both keep running")
+        // A file goes the same way; System Settings itself only needs activating.
+        let file = SettingsFake()
+        file.instances = beside.instances
+        assertEqual(Opener.run(profile, environment: file.environment), .delivered, "A profile beside a dead record")
+        assertEqual(file.deliveries, ["20 LightspotMacTweaks.mobileconfig"], "...goes to the live PID")
+        let app = SettingsFake()
+        app.instances = beside.instances
+        assertEqual(Opener.run(Opener.appURL, environment: app.environment), .delivered, "System Settings itself beside a dead record")
+        assertEqual(app.activations, [20], "...brings the live one forward")
+        assertTrue(app.opens.isEmpty && app.launched.isEmpty, "...and launches nothing")
+
+        // The live one doesn't take it (a macOS that wants consent: -1744, never a prompt): it
+        // is still brought forward, and nothing else is tried.
+        let refused = SettingsFake()
+        refused.instances = beside.instances
+        refused.deliverAnswers = [wouldNeedConsent]
+        assertEqual(Opener.run(link, environment: refused.environment), .undelivered, "A refused delivery")
+        assertEqual(refused.activations, [20], "...still brings it forward")
+        assertTrue(refused.opens.isEmpty && refused.launched.isEmpty && refused.stillAlive([20]),
+                   "...no open to the dead record, no second instance beside the live one, no quit")
+        // ...but one that exited as it was sent leaves only dead records: then one new instance.
+        let exited = SettingsFake()
+        exited.instances = beside.instances
+        exited.deliverAnswers = [NSError(domain: NSOSStatusErrorDomain, code: -600)]
+        exited.onDeliver = { fake, pid in fake.set(pid, alive: false, windows: false) }
+        assertEqual(Opener.run(link, environment: exited.environment), .newInstance, "Gone as the link was sent")
+        assertEqual(exited.opens, ["newInstance"], "...one new instance with the link")
+        assertEqual(exited.launched.count, 1, "...one")
+
+        // Only dead records (27.2 keeps them seconds to minutes): one new instance, never a
+        // hand-off, and the opener waits until it is up, so the next open finds it live.
         let dead = SettingsFake()
         dead.instances = [.init(pid: 10, alive: false, windows: false), .init(pid: 11, alive: false, windows: false)]
-        assertEqual(Opener.run(link, environment: dead.environment), .relaunched, "Only dead records: opened in a new instance")
+        assertEqual(Opener.run(link, environment: dead.environment), .newInstance, "Only dead records: opened in a new instance")
         assertEqual(dead.opens, ["newInstance"], "...straight away, with nothing handed to a dead PID")
-        assertEqual(dead.slept, 0, "...and no wait")
+        assertEqual(dead.launched.count, 1, "...one instance")
+        assertTrue(dead.slept >= dead.launchDelay - 0.01 && dead.slept < dead.launchDelay + 0.2,
+                   "...waited for until it showed its window (waited \(dead.slept) s)")
         let deadFails = SettingsFake()
         deadFails.instances = [.init(pid: 10, alive: false, windows: false)]
         deadFails.answers = [otherFailure]
-        assertEqual(Opener.run(link, environment: deadFails.environment), .relaunched, "A new instance that fails to launch...")
+        assertEqual(Opener.run(link, environment: deadFails.environment), .newInstance, "A new instance that fails to launch...")
         assertEqual(deadFails.opens, ["newInstance", "newInstancePrompting"], "...is tried once more, with macOS's own message")
+        assertEqual(deadFails.launched.count, 1, "...still one instance")
+        let neverLaunches = SettingsFake()
+        neverLaunches.instances = [.init(pid: 10, alive: false, windows: false)]
+        neverLaunches.answers = [otherFailure, otherFailure]
+        assertEqual(Opener.run(link, environment: neverLaunches.environment), .newInstance, "Both launches failing...")
+        assertTrue(neverLaunches.launched.isEmpty && neverLaunches.slept == 0, "...wait for nothing")
+        let slowLaunch = SettingsFake()
+        slowLaunch.instances = [.init(pid: 10, alive: false, windows: false)]
+        slowLaunch.launchDelay = 60
+        _ = Opener.run(link, environment: slowLaunch.environment)
+        assertTrue(slowLaunch.slept >= Opener.launchWait - 0.01 && slowLaunch.slept < Opener.launchWait + 0.2,
+                   "A launch that never shows its window is waited for \(Opener.launchWait) s (waited \(slowLaunch.slept) s)")
 
-        // Quitting (⌘Q closed its windows): the hand-off fails; wait for the process, then the
-        // one retry once LaunchServices has dropped the record.
+        // The owner's report: pane after pane with a dead record in the Dock. One new instance,
+        // then every later pane goes to it; one System Settings, never quit.
+        let panes = SettingsFake()
+        panes.instances = [.init(pid: 10, alive: false, windows: false)]
+        let env = panes.environment
+        assertEqual(Opener.run(link, environment: env), .newInstance, "Pane A past a dead record: a new instance")
+        assertEqual(Opener.run(trackpad, environment: env), .delivered, "Pane B: to that instance")
+        assertEqual(Opener.run(displays, environment: env), .delivered, "Pane C: to that instance")
+        assertEqual(panes.launched, [100], "...one instance launched in all")
+        assertEqual(panes.live, [100], "...one running")
+        assertEqual(panes.opens, ["newInstance"], "...and only the first open went through LaunchServices")
+        assertEqual(panes.deliveries, ["100 \(trackpad.absoluteString)", "100 \(displays.absoluteString)"], "...the others straight to it")
+        // ...and once LaunchServices has dropped the dead record, through LaunchServices again.
+        panes.drop(10)
+        assertEqual(Opener.run(link, environment: env), .opened, "Pane D once the dead record has gone: the ordinary open")
+        assertEqual(panes.launched, [100], "...still one instance")
+        // With nothing recorded: one launch, then LaunchServices hands the rest to it.
+        let fresh = SettingsFake()
+        let freshEnv = fresh.environment
+        for url in [link, trackpad, displays] { _ = Opener.run(url, environment: freshEnv) }
+        assertEqual(fresh.launched.count, 1, "Three panes with nothing running: one instance")
+        assertEqual(fresh.opens, ["quiet", "quiet", "quiet"], "...three quiet opens")
+
+        // Half-way instances. Quitting (⌘Q closed its windows): waited for until it exits,
+        // never handed the link; then only its dead record is left, so one new instance.
         let quitting = SettingsFake()
         quitting.instances = [.init(pid: 10, alive: true, windows: false)]
-        quitting.answers = [procNotFound]
-        quitting.onSleep = { fake in
-            if fake.slept >= 0.3 { fake.set(10, alive: false); fake.drop(10) }
-        }
-        assertEqual(Opener.run(link, environment: quitting.environment), .reopened, "Quitting, then gone: opened again")
-        assertEqual(quitting.opens, ["quiet", "quiet"], "...quietly, the retry once")
-        assertTrue(quitting.quitRequests.isEmpty, "...without asking an instance that is already quitting to quit")
-        assertTrue(quitting.slept >= 0.3 && quitting.slept < 1, "...after waiting for the process to exit (waited \(quitting.slept) s)")
-
-        // The process exits but its record stays (27.2): the retry goes to the dead PID too, so
-        // a new instance, and never a prompting open, which would show the alert.
-        let staleAfter = SettingsFake()
-        staleAfter.instances = [.init(pid: 10, alive: true, windows: false)]
-        staleAfter.answers = [procNotFound, procNotFound]
-        staleAfter.onSleep = { fake in if fake.slept >= 0.3 { fake.set(10, alive: false) } }
-        assertEqual(Opener.run(link, environment: staleAfter.environment), .relaunched, "Gone, record still there: the error, the retry, the error again")
-        assertEqual(staleAfter.opens, ["quiet", "quiet", "newInstance"], "...end in a new instance, never the ordinary way")
-
-        // A dead record beside a live instance that shows its window: LaunchServices picks the
-        // dead one (measured), so the live one is asked to quit and a new one gets the pane.
-        let beside = SettingsFake()
-        beside.instances = [.init(pid: 10, alive: false, windows: false), .init(pid: 20, alive: true, windows: true)]
-        beside.answers = [procNotFound, procNotFound]
-        beside.onQuit = { fake, pid in fake.set(pid, alive: false, windows: false) }
-        assertEqual(Opener.run(link, environment: beside.environment), .relaunched, "Dead record beside a live one: a new instance")
-        assertEqual(beside.quitRequests, [20], "...once the live one, and only it, was asked to quit")
-        assertEqual(beside.opens, ["quiet", "quiet", "newInstance"], "...so one System Settings is left, on the pane asked for")
-        assertEqual(beside.slept, 0, "...with no wait once it has gone")
-
-        // The timeout: an instance that never exits is waited for 5 s, no longer.
-        let stuck = SettingsFake()
-        stuck.instances = [.init(pid: 10, alive: true, windows: false)]
-        stuck.answers = [procNotFound, procNotFound]
-        assertEqual(Opener.run(link, environment: stuck.environment), .relaunched, "An instance that never exits...")
-        assertTrue(stuck.slept >= Opener.exitWait - 0.01 && stuck.slept < Opener.exitWait + 0.2, "...is waited for \(Opener.exitWait) s (waited \(stuck.slept) s)")
-        assertEqual(stuck.opens, ["quiet", "quiet", "newInstance"], "...then the retry, then a new instance")
+        quitting.onSleep = { fake in if fake.slept >= 0.3 { fake.set(10, alive: false) } }
+        assertEqual(Opener.run(link, environment: quitting.environment), .newInstance, "Quitting, then gone, record still there")
+        assertTrue(quitting.deliveries.isEmpty, "...nothing sent to the instance on its way out")
+        assertEqual(quitting.opens, ["newInstance"], "...one new instance")
+        assertTrue(quitting.slept >= 0.3 && quitting.slept < 0.3 + quitting.launchDelay + 0.3, "...after waiting for it to exit (waited \(quitting.slept) s)")
+        // Launching (no window yet) beside a dead record: waited for, then handed the link,
+        // never a second instance beside it.
+        let launching = SettingsFake()
+        launching.instances = [.init(pid: 10, alive: false, windows: false),
+                               .init(pid: 20, alive: true, windows: false, finished: false, readyAt: launching.now.addingTimeInterval(0.4))]
+        assertEqual(Opener.run(link, environment: launching.environment), .delivered, "A launching instance beside a dead record")
+        assertEqual(launching.deliveries, ["20 \(link.absoluteString)"], "...gets the link once it shows its window")
+        assertTrue(launching.launched.isEmpty, "...and no instance beside it")
+        // A live one that never shows a window: waited for 5 s, then counted, never a second one.
+        let windowless = SettingsFake()
+        windowless.instances = [.init(pid: 10, alive: false, windows: false), .init(pid: 20, alive: true, windows: false)]
+        assertEqual(Opener.run(link, environment: windowless.environment), .delivered, "A windowless live instance")
+        assertTrue(windowless.slept >= Opener.settleWait - 0.01 && windowless.slept < Opener.settleWait + 0.2,
+                   "...is waited for \(Opener.settleWait) s (waited \(windowless.slept) s)")
+        assertTrue(windowless.launched.isEmpty && windowless.stillAlive([20]), "...then given the link: no second instance, no quit")
 
         // Another failure is macOS's to report: the ordinary open, at once.
         let other = SettingsFake()
@@ -3304,12 +3468,10 @@ struct TestRunner {
         assertEqual(Opener.run(link, environment: other.environment), .fellBack, "Another error: the fallback")
         assertEqual(other.opens, ["quiet", "normal"], "...the ordinary way")
         assertEqual(other.slept, 0, "...without waiting")
-        let otherRetry = SettingsFake()
-        otherRetry.instances = [.init(pid: 10, alive: true, windows: false)]
-        otherRetry.answers = [procNotFound, otherFailure]
-        otherRetry.onSleep = { fake in fake.drop(10) }
-        assertEqual(Opener.run(link, environment: otherRetry.environment), .fellBack, "A retry failing another way falls back too")
-        assertEqual(otherRetry.opens, ["quiet", "quiet", "normal"], "...once")
+        let otherAlone = SettingsFake()
+        otherAlone.answers = [otherFailure]
+        assertEqual(Opener.run(link, environment: otherAlone.environment), .fellBack, "With nothing running too")
+        assertEqual(otherAlone.opens, ["quiet", "normal"], "...once")
 
         // One queue, in order: the profile file, then a second later Device Management, even
         // when the first open waits.
@@ -3321,6 +3483,7 @@ struct TestRunner {
         let order = Order()
         var slow = SystemSettingsOpener.Environment()
         slow.instances = { [] }
+        slow.liveProcesses = { [] }
         slow.open = { url, _ in
             if url.isFileURL { Thread.sleep(forTimeInterval: 0.2) }
             order.lock.lock(); order.urls.append(url.isFileURL ? url.lastPathComponent : url.absoluteString); let count = order.urls.count; order.lock.unlock()
