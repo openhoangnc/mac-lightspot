@@ -217,7 +217,7 @@ Mac Tweaksは、macOSが抱えている容量を解放し、このMacのすべ�
   - 基数: `0xFF in dec`, `255 in hex`, `0b1010 in dec`
 - **デフォルトブラウザのブックマーク、履歴、タブ**: 重複ゼロで、アクティブなデフォルトブラウザのみを統合します（**Chrome**, **Safari**, **Firefox**, **Arc**, **Brave**, **Edge**）。ブックマークと最近の履歴はブラウザ自身のファイルから読み取られ（履歴は直近3日または7日分、デフォルトは7日で、メニューバーの **Browser History** からオフにもできます）、開いているタブはSafariとChromiumベースのブラウザから取得します。
 - **インメモリの一時的なクリップボード**: `clip <query>` 経経由でアクセスできる揮発性のRAM専用リングバッファ（最大50アイテム）。ディスクに書き込むことはなく、パスワードマネージャー（`1Password`, `Bitwarden`）を厳格にフィルタリングします。
-- **macOSのシステム設定へのディープリンク**: 特定のmacOS設定ペイン（`x-apple.systempreferences:...`）を直接開く46のディープリンク。システム設定自体の検索と同じキーワード（`night shift`, `lockdown mode`, `sticky keys`）で、システムの言語のまま検索できます。macOS 27.2では、システム設定が終了してもLaunchServicesが1分以上それに気づかないことがあります。そのときLightspotは「もう開いていない」という警告を出す代わりに、新しいシステム設定でパネルを開きます。
+- **macOSのシステム設定へのディープリンク**: 特定のmacOS設定ペイン（`x-apple.systempreferences:...`）を直接開く46のディープリンク。システム設定自体の検索と同じキーワード（`night shift`, `lockdown mode`, `sticky keys`）で、システムの言語のまま検索できます。macOS 27.2では、システム設定が終了してもLaunchServicesが1分以上それに気づかないことがあります。そのときLightspotは「もう開いていない」という警告を出す代わりに、起動中のシステム設定でパネルを開き、起動中のものがないときだけ新しく起動します。Dockにコピーが増えることはありません。
 - **マルチエンジンWeb検索**: 組み込みのプレフィックスショートカット: `g` (Google), `gh` (GitHub), `so` (StackOverflow), `npm`, `crates`, `wiki`, `mdn`, `yt`, `ddg`、さらに `brew <formula>`（検索ではなく、formulae.brew.sh上のそのformulaのページを開きます）。
 
 ---
