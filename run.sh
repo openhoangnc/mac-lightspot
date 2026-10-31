@@ -16,5 +16,7 @@ fi
 
 "$SCRIPT_DIR/build.sh"
 
+# -n: a new instance even while a copy the kill above couldn't stop still runs (without it
+# LaunchServices only activates that copy); the new build asks it to quit and takes over.
 echo "🚀 Launching Lightspot..."
-open "$SCRIPT_DIR/build/Lightspot.app"
+open -n "$SCRIPT_DIR/build/Lightspot.app"

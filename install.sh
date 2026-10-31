@@ -42,6 +42,41 @@ echo "Target directory: $TARGET_DIR"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# This Mac's architecture, as the release names its builds. hw.optional.arm64 is 1 on
+# Apple silicon, also in a shell Rosetta runs, where `uname -m` says x86_64; Intel Macs
+# don't have it, or report 0.
+mac_arch() {
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+        echo "arm64"
+    else
+        echo "x86_64"
+    fi
+}
+
+# download_release <base URL> <arch> <dir>: unpacks the release's app into <dir>, from
+# ${APP_NAME}-<arch>.zip, or from the universal ${APP_NAME}.zip when the release has no
+# build for <arch> (a 404: releases before 1.4.0). Any other failure fails.
+download_release() {
+    local base="$1" arch="$2" dir="$3" name status
+    name="${APP_NAME}-${arch}.zip"
+    status="$(curl -fsL -o "${dir}/${name}" -w '%{http_code}' "${base}/${name}" || true)"
+    if [ "$status" = "404" ]; then
+        echo "--> This release has no ${name}; using the universal ${APP_NAME}.zip."
+        rm -f "${dir}/${name}"
+        name="${APP_NAME}.zip"
+        status="$(curl -fsSL -o "${dir}/${name}" -w '%{http_code}' "${base}/${name}" || true)"
+    fi
+    if [ "$status" != "200" ]; then
+        case "$status" in
+            000|"") echo "--> ${name}: no response from GitHub." >&2 ;;
+            *) echo "--> ${name}: HTTP ${status}." >&2 ;;
+        esac
+        return 1
+    fi
+    echo "--> Downloaded ${name} from GitHub Release."
+    unzip -q "${dir}/${name}" -d "${dir}"
+}
+
 # Detect whether running from a local checkout or piped (curl ... | bash)
 SOURCE_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
@@ -60,12 +95,10 @@ if [ -n "${SOURCE_DIR}" ] && [ -f "${SOURCE_DIR}/build.sh" ]; then
         exit 1
     fi
 else
-    # Remote install: download prebuilt release from GitHub
-    echo "[1/3] Downloading latest release of ${APP_NAME}..."
-    LATEST_ZIP_URL="https://github.com/${REPO}/releases/latest/download/${APP_NAME}.zip"
-    if curl -fsSL -o "${TMP_DIR}/${APP_NAME}.zip" "${LATEST_ZIP_URL}"; then
-        echo "--> Downloaded ${APP_NAME}.zip from GitHub Release."
-        unzip -q "${TMP_DIR}/${APP_NAME}.zip" -d "${TMP_DIR}"
+    # Remote install: download the latest release's build for this Mac from GitHub
+    ARCH="$(mac_arch)"
+    echo "[1/3] Downloading latest release of ${APP_NAME} (${ARCH})..."
+    if download_release "https://github.com/${REPO}/releases/latest/download" "${ARCH}" "${TMP_DIR}"; then
         APP_SRC="${TMP_DIR}/${APP_NAME}.app"
     fi
     if [ ! -d "${APP_SRC}" ]; then
@@ -118,9 +151,11 @@ echo "🔏 Setting permissions and codesigning..."
 xattr -dr com.apple.quarantine "$DEST_APP" 2>/dev/null || true
 codesign --force --deep --sign - "$DEST_APP" 2>/dev/null || true
 
-# Launch installed application
+# Launch installed application. -n starts the new build even when the old copy is still
+# running (its kill was refused above): without it LaunchServices only activates the
+# old copy. The new build then asks the old one to quit and takes over.
 echo "[3/3] Launching ${APP_NAME}..."
-open "$DEST_APP"
+open -n "$DEST_APP"
 
 echo "=========================================="
 echo "✅ Installation complete!"

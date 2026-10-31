@@ -100,20 +100,29 @@ jobs:
           plutil -replace CFBundleShortVersionString -string "${VERSION}" Resources/Info.plist 2>/dev/null || sed -i '' "s/<string>1.0.0<\/string>/<string>${VERSION}<\/string>/g" Resources/Info.plist || true
           plutil -replace CFBundleVersion -string "${VERSION}" Resources/Info.plist 2>/dev/null || true
 
+      # --thin also writes build/arm64/Lightspot.app and build/x86_64/Lightspot.app: the
+      # universal app with one slice, signed again and checked by build.sh.
       - name: Build macOS Application
         env:
           ARCH_FLAGS: "--arch arm64 --arch x86_64"
         run: |
           chmod +x build.sh
-          ./build.sh
+          ./build.sh --thin
 
-      - name: Package Application Zip
+      # Lightspot.zip stays universal and keeps its name: the updaters of 1.2.0 to 1.3.9
+      # download exactly it, and the afixer.app button and older docs link to
+      # releases/latest/download/Lightspot.zip. install.sh and the updater from 1.4.0 take
+      # Lightspot-<arch>.zip for the Mac they run on (CLAUDE.md, "Release assets").
+      - name: Package Application Zips
         run: |
           (cd build && zip -r -y ../Lightspot.zip Lightspot.app)
+          for arch in arm64 x86_64; do
+            (cd "build/$arch" && zip -r -y "../../Lightspot-$arch.zip" Lightspot.app)
+          done
 
       # The app ships stripped (`strip -x`); this dSYM, made by build.sh from the same build,
-      # is what symbolicates its crash reports (CLAUDE.md, "Release binary"). Lightspot.zip
-      # stays the only asset the updater and install.sh download.
+      # is what symbolicates its crash reports (CLAUDE.md, "Release binary"), from any of
+      # the three zips: a thin slice keeps its UUID. Nothing downloads it.
       - name: Package dSYM Zip
         run: |
           (cd build && zip -r -y ../Lightspot.app.dSYM.zip Lightspot.app.dSYM)
@@ -139,8 +148,11 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             Lightspot.zip
+            Lightspot-arm64.zip
+            Lightspot-x86_64.zip
             Lightspot.app.dSYM.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

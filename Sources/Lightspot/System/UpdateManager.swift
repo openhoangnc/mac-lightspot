@@ -67,6 +67,50 @@ struct SemanticVersion: Comparable, CustomStringConvertible, Sendable, Equatable
     }
 }
 
+// MARK: - Architecture
+
+/// The kind of processor a Mac has, as the release names its per-architecture builds.
+enum MacArchitecture: String, CaseIterable, Sendable {
+    case arm64
+    case x86_64
+
+    /// This Mac's, from `hw.optional.arm64`: 1 on Apple silicon, also inside a process
+    /// that Rosetta runs (there `uname -m` says x86_64); Intel Macs lack the key or
+    /// report 0. Never this process's own architecture, so a Lightspot running under
+    /// Rosetta, or an Intel build carried over to an Apple silicon Mac, updates to the
+    /// native build.
+    static let current: MacArchitecture = {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 else { return .x86_64 }
+        return value == 1 ? .arm64 : .x86_64
+    }()
+
+    /// The release asset holding the app built for this architecture alone.
+    var assetName: String { "Lightspot-\(rawValue).zip" }
+
+    var displayName: String {
+        switch self {
+        case .arm64: return "Apple silicon"
+        case .x86_64: return "Intel"
+        }
+    }
+
+    /// The Mach-O `cputype` of its code: `CPU_TYPE_ARM64` (arm64e is a subtype of it)
+    /// and `CPU_TYPE_X86_64`, from <mach/machine.h>.
+    var cpuType: UInt32 {
+        switch self {
+        case .arm64: return 0x0100_000C
+        case .x86_64: return 0x0100_0007
+        }
+    }
+
+    init?(cpuType: UInt32) {
+        guard let match = Self.allCases.first(where: { $0.cpuType == cpuType }) else { return nil }
+        self = match
+    }
+}
+
 // MARK: - Release Info
 
 struct ReleaseInfo: Sendable, Equatable {
@@ -110,8 +154,9 @@ enum HandOverStep: Equatable, Sendable {
 /// Trust model, stated plainly: releases are ad-hoc signed (the project ships no
 /// Developer ID), so there is no signature to validate against. What is enforced is
 /// HTTPS, a GitHub host allowlist, a bundle-identifier and version check on the
-/// unpacked bundle, and a refusal to ever install an older version. That is the same
-/// trust placed in `install.sh`, no more and no less.
+/// unpacked bundle, its executable holding this Mac's architecture, and a refusal to
+/// ever install an older version. That is the same trust placed in `install.sh`, no
+/// more and no less.
 @MainActor
 final class UpdateManager {
     static let shared = UpdateManager()
@@ -119,6 +164,10 @@ final class UpdateManager {
     // MARK: Configuration
 
     nonisolated static let repository = "openhoangnc/mac-lightspot"
+    /// The universal build. Every release keeps it under this name: the updaters of
+    /// 1.2.0 to 1.3.9 download exactly it, and so do older links to
+    /// `releases/latest/download/Lightspot.zip`. This version prefers the build for
+    /// this Mac (`MacArchitecture.assetName`) and falls back to it.
     nonisolated static let assetName = "Lightspot.zip"
     nonisolated static let latestReleaseEndpoint =
         "https://api.github.com/repos/\(repository)/releases/latest"
@@ -249,7 +298,8 @@ final class UpdateManager {
     nonisolated static func evaluate(data: Data?,
                                      response: URLResponse?,
                                      error: Error?,
-                                     current: String) -> UpdateCheckOutcome {
+                                     current: String,
+                                     architecture: MacArchitecture = .current) -> UpdateCheckOutcome {
         if let error = error {
             return .failed(error.localizedDescription)
         }
@@ -268,7 +318,7 @@ final class UpdateManager {
 
         let release: ReleaseInfo
         do {
-            release = try parseRelease(from: data)
+            release = try parseRelease(from: data, architecture: architecture)
         } catch let failure as UpdateError {
             return .failed(failure.message)
         } catch {
@@ -288,8 +338,10 @@ final class UpdateManager {
         let message: String
     }
 
-    /// Reads the fields Lightspot needs out of a GitHub `releases/latest` payload.
-    nonisolated static func parseRelease(from data: Data) throws -> ReleaseInfo {
+    /// Reads the fields Lightspot needs out of a GitHub `releases/latest` payload, with
+    /// the download a Mac of `architecture` should take (`chooseAsset`).
+    nonisolated static func parseRelease(from data: Data,
+                                         architecture: MacArchitecture = .current) throws -> ReleaseInfo {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw UpdateError(message: "The release feed was not valid JSON.")
         }
@@ -301,13 +353,10 @@ final class UpdateManager {
         }
 
         let assets = root["assets"] as? [[String: Any]] ?? []
-        let asset = assets.first { ($0["name"] as? String) == assetName }
-            ?? assets.first { ($0["name"] as? String)?.hasSuffix(".zip") == true }
-
-        guard let asset = asset,
+        guard let asset = chooseAsset(assets, for: architecture),
               let urlString = asset["browser_download_url"] as? String,
               let downloadURL = URL(string: urlString) else {
-            throw UpdateError(message: "Release \(tag) has no \(assetName) attached.")
+            throw UpdateError(message: "Release \(tag) has no \(architecture.assetName) or \(assetName) attached.")
         }
         guard isAllowedDownloadHost(downloadURL) else {
             throw UpdateError(message: "Release \(tag) points its download at an unexpected host.")
@@ -324,6 +373,27 @@ final class UpdateManager {
             notes: notes,
             assetSize: asset["size"] as? Int
         )
+    }
+
+    /// The asset a Mac of `architecture` downloads, by name, whatever order the release
+    /// lists them in: the build for it alone (`Lightspot-arm64.zip`), else the universal
+    /// `Lightspot.zip` (the only build up to 1.3.9), else any other `.zip` except the
+    /// dSYM and another architecture's build. `validate` checks the architecture again
+    /// once the download is unpacked.
+    nonisolated static func chooseAsset(_ assets: [[String: Any]],
+                                        for architecture: MacArchitecture) -> [String: Any]? {
+        func named(_ name: String) -> [String: Any]? {
+            assets.first { ($0["name"] as? String) == name }
+        }
+        if let own = named(architecture.assetName) { return own }
+        if let universal = named(assetName) { return universal }
+        let otherBuilds = Set(MacArchitecture.allCases.filter { $0 != architecture }
+            .map { $0.assetName.lowercased() })
+        return assets.first { asset in
+            guard let name = asset["name"] as? String, name.hasSuffix(".zip") else { return false }
+            let lowered = name.lowercased()
+            return !lowered.hasSuffix(".dsym.zip") && !otherBuilds.contains(lowered)
+        }
     }
 
     // MARK: - Skipping
@@ -372,6 +442,7 @@ final class UpdateManager {
                                             response: response,
                                             error: error,
                                             expected: expected,
+                                            architecture: .current,
                                             destination: destination)
             Task { @MainActor in
                 switch result {
@@ -529,6 +600,7 @@ final class UpdateManager {
                                           response: URLResponse?,
                                           error: Error?,
                                           expected: SemanticVersion,
+                                          architecture: MacArchitecture,
                                           destination: URL) -> StageResult {
         if let error = error { return .failure(error.localizedDescription) }
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -582,7 +654,7 @@ final class UpdateManager {
         guard let bundle = findAppBundle(in: unpacked, fileManager: fm) else {
             return fail("The archive did not contain \(destination.lastPathComponent).")
         }
-        if let problem = validate(bundle: bundle, expected: expected, fileManager: fm) {
+        if let problem = validate(bundle: bundle, expected: expected, architecture: architecture, fileManager: fm) {
             return fail(problem)
         }
 
@@ -612,9 +684,10 @@ final class UpdateManager {
 
     /// Returns a reason to refuse the bundle, or nil when it is acceptable.
     /// Without a Developer ID to verify, these checks are the whole gate: the bundle
-    /// must be Lightspot, must be runnable, and must not be a downgrade.
+    /// must be Lightspot, must be runnable on this Mac, and must not be a downgrade.
     nonisolated static func validate(bundle: URL,
                                      expected: SemanticVersion,
+                                     architecture: MacArchitecture,
                                      fileManager fm: FileManager) -> String? {
         let infoPlist = bundle.appendingPathComponent("Contents/Info.plist")
         guard let info = NSDictionary(contentsOf: infoPlist) as? [String: Any] else {
@@ -638,7 +711,64 @@ final class UpdateManager {
         guard bundleVersion == expected else {
             return "The downloaded bundle is version \(bundleVersion), not the expected \(expected)."
         }
+        // Another architecture's build would install and then never start.
+        guard let cpuTypes = machOCPUTypes(of: executable) else {
+            return "The downloaded executable is not a Mac program."
+        }
+        guard cpuTypes.contains(architecture.cpuType) else {
+            var builtFor: [String] = []    // arm64 and arm64e slices are both Apple silicon
+            for type in cpuTypes {
+                let name = MacArchitecture(cpuType: type)?.displayName ?? String(format: "CPU type 0x%x", type)
+                if !builtFor.contains(name) { builtFor.append(name) }
+            }
+            return "The downloaded build is for \(builtFor.joined(separator: " and ")) only; this Mac has \(architecture.displayName)."
+        }
         return nil
+    }
+
+    /// The `cputype` of each architecture an executable holds, from its Mach-O header:
+    /// a thin binary's own, or each slice a universal one lists. Nil when the file is not
+    /// Mach-O. Read here, not with `lipo -archs`: on a Mac without the Command Line Tools,
+    /// `/usr/bin/lipo` is the shim that opens their installer.
+    nonisolated static func machOCPUTypes(of executable: URL) -> [UInt32]? {
+        guard let handle = try? FileHandle(forReadingFrom: executable) else { return nil }
+        defer { try? handle.close() }
+        // A universal header lists at most `maxSlices` slices of 32 bytes after 8.
+        guard let header = try? handle.read(upToCount: 8 + 32 * maxSlices) else { return nil }
+        return machOCPUTypes(header: header)
+    }
+
+    nonisolated static let maxSlices = 32
+
+    /// `machOCPUTypes(of:)` on the file's first bytes. A thin header (`MH_MAGIC_64`,
+    /// `MH_MAGIC`) is in the file's byte order, as its magic reads; a universal one
+    /// (`FAT_MAGIC`, `FAT_MAGIC_64`) is big-endian, with `nfat_arch` slices of 20 or 32
+    /// bytes, each starting with its `cputype`.
+    nonisolated static func machOCPUTypes(header: Data) -> [UInt32]? {
+        let bytes = [UInt8](header)
+        func word(_ offset: Int, bigEndian: Bool) -> UInt32? {
+            guard offset >= 0, offset + 4 <= bytes.count else { return nil }
+            let four = Array(bytes[offset..<offset + 4])
+            return (bigEndian ? four : four.reversed()).reduce(0) { ($0 << 8) | UInt32($1) }
+        }
+        guard let magic = word(0, bigEndian: true) else { return nil }
+        switch magic {
+        case 0xCFFA_EDFE, 0xCEFA_EDFE:          // MH_MAGIC_64, MH_MAGIC, stored little-endian
+            return word(4, bigEndian: false).map { [$0] }
+        case 0xFEED_FACF, 0xFEED_FACE:          // the same, stored big-endian
+            return word(4, bigEndian: true).map { [$0] }
+        case 0xCAFE_BABE, 0xCAFE_BABF:          // FAT_MAGIC, FAT_MAGIC_64
+            let stride = magic == 0xCAFE_BABE ? 20 : 32
+            guard let count = word(4, bigEndian: true), count > 0, count <= UInt32(maxSlices) else { return nil }
+            var types: [UInt32] = []
+            for index in 0..<Int(count) {
+                guard let type = word(8 + index * stride, bigEndian: true) else { return nil }
+                types.append(type)
+            }
+            return types
+        default:
+            return nil
+        }
     }
 
     // MARK: - The swap helper

@@ -2513,6 +2513,67 @@ struct TestRunner {
 
         assertTrue((try? UpdateManager.parseRelease(from: Data("not json".utf8))) == nil, "Garbage is refused")
 
+        // --- The download for this Mac ---
+        // The updaters of 1.2.0 to 1.3.9 download exactly this name, so it never changes.
+        assertEqual(UpdateManager.assetName, "Lightspot.zip", "The universal build keeps its name")
+        assertEqual(MacArchitecture.arm64.assetName, "Lightspot-arm64.zip", "Apple silicon's build")
+        assertEqual(MacArchitecture.x86_64.assetName, "Lightspot-x86_64.zip", "Intel's build")
+        // This Mac's architecture is the one sysctl reports, as install.sh reads it.
+        let sysctl = Process()
+        sysctl.executableURL = URL(fileURLWithPath: "/usr/sbin/sysctl")
+        sysctl.arguments = ["-n", "hw.optional.arm64"]
+        let sysctlOut = Pipe()
+        sysctl.standardOutput = sysctlOut
+        sysctl.standardError = FileHandle.nullDevice
+        try? sysctl.run()
+        let sysctlText = String(data: sysctlOut.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        sysctl.waitUntilExit()
+        assertEqual(MacArchitecture.current, sysctlText == "1" ? .arm64 : .x86_64,
+                    "This Mac's architecture comes from hw.optional.arm64")
+
+        func asset(_ name: String, size: Int) -> String {
+            "{\"name\": \"\(name)\", \"size\": \(size), \"browser_download_url\": "
+                + "\"https://github.com/openhoangnc/mac-lightspot/releases/download/v1.4.0/\(name)\"}"
+        }
+        func releaseFeed(_ assets: [String]) -> Data {
+            Data("{\"tag_name\": \"v1.4.0\", \"assets\": [\(assets.joined(separator: ", "))]}".utf8)
+        }
+        func chosen(_ assets: [String], _ architecture: MacArchitecture) -> String? {
+            (try? UpdateManager.parseRelease(from: releaseFeed(assets), architecture: architecture))?
+                .downloadURL.lastPathComponent
+        }
+        let dsymAsset = asset("Lightspot.app.dSYM.zip", size: 41_000_000)
+        let universalAsset = asset("Lightspot.zip", size: 5_100_000)
+        let armAsset = asset("Lightspot-arm64.zip", size: 2_300_000)
+        let intelAsset = asset("Lightspot-x86_64.zip", size: 2_800_000)
+
+        // From 1.4.0 a release has all four, in whatever order GitHub lists them.
+        let fourAssets = [dsymAsset, universalAsset, intelAsset, armAsset]
+        assertEqual(chosen(fourAssets, .arm64), "Lightspot-arm64.zip", "Apple silicon takes its own build")
+        assertEqual(chosen(fourAssets, .x86_64), "Lightspot-x86_64.zip", "Intel takes its own build")
+        assertEqual(chosen([armAsset, intelAsset, universalAsset, dsymAsset], .x86_64), "Lightspot-x86_64.zip",
+                    "The order of the list doesn't matter")
+        assertEqual((try? UpdateManager.parseRelease(from: releaseFeed(fourAssets), architecture: .arm64))?.assetSize,
+                    2_300_000, "The size the prompt shows is the chosen build's")
+        // A release up to 1.3.9 has the universal build alone, or with the dSYM listed first.
+        assertEqual(chosen([universalAsset], .arm64), "Lightspot.zip", "An old release: Apple silicon takes the universal build")
+        assertEqual(chosen([universalAsset], .x86_64), "Lightspot.zip", "An old release: Intel takes the universal build")
+        assertEqual(chosen([dsymAsset, universalAsset], .arm64), "Lightspot.zip", "A dSYM listed first is never taken (arm64)")
+        assertEqual(chosen([dsymAsset, universalAsset], .x86_64), "Lightspot.zip", "A dSYM listed first is never taken (x86_64)")
+        // The last fallback, any other zip, never takes the dSYM or the other Mac's build.
+        assertEqual(chosen([dsymAsset], .arm64), nil, "A release with only a dSYM has no download")
+        assertEqual(chosen([asset("lightspot.app.dsym.zip", size: 1)], .x86_64), nil, "Nor in another case")
+        assertEqual(chosen([dsymAsset, intelAsset], .arm64), nil, "Apple silicon never falls back to the Intel build")
+        assertEqual(chosen([dsymAsset, armAsset], .x86_64), nil, "Intel never falls back to Apple silicon's build")
+        assertEqual(chosen([dsymAsset, intelAsset, asset("Lightspot-1.4.0.zip", size: 1)], .arm64), "Lightspot-1.4.0.zip",
+                    "Any other zip is still the last fallback")
+        // The allowlist holds for the chosen asset: an off-GitHub build for this Mac refuses
+        // the release instead of falling back to another asset.
+        let offsiteOwn = #"{"name": "Lightspot-arm64.zip", "browser_download_url": "https://evil.example.com/Lightspot-arm64.zip"}"#
+        assertEqual(chosen([universalAsset, offsiteOwn], .arm64), nil, "An off-GitHub build for this Mac is refused")
+        assertEqual(chosen([universalAsset, offsiteOwn], .x86_64), "Lightspot.zip", "The other Mac's asset is not looked at")
+
         // --- Check outcome ---
         let ok = HTTPURLResponse(url: URL(string: "https://api.github.com/x")!,
                                  statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -2552,12 +2613,43 @@ struct TestRunner {
         default: print("❌ FAIL: expected a failure for an empty body"); exit(1)
         }
 
+        switch UpdateManager.evaluate(data: releaseFeed(fourAssets), response: ok, error: nil,
+                                      current: "1.3.9", architecture: .x86_64) {
+        case .available(let found):
+            assertEqual(found.downloadURL.lastPathComponent, "Lightspot-x86_64.zip", "The check offers this Mac's build")
+        default: print("❌ FAIL: expected an available update with four assets"); exit(1)
+        }
+
         // --- Bundle validation gate ---
         // Releases carry no Developer ID signature, so these checks are the whole gate.
         let fm = FileManager.default
         let sandbox = fm.temporaryDirectory.appendingPathComponent("lightspot-update-test-\(UUID().uuidString)")
 
-        func makeBundle(identifier: String, version: String, withExecutable: Bool) -> URL {
+        /// The first bytes of a Mach-O executable holding `architectures`: a thin 64-bit
+        /// header for one (little-endian, as both build), a universal one listing each for
+        /// several. The updater reads nothing past them.
+        func machO(_ architectures: [MacArchitecture], wide: Bool = false) -> Data {
+            func big(_ value: UInt32) -> [UInt8] { [24, 16, 8, 0].map { UInt8((value >> UInt32($0)) & 0xFF) } }
+            func little(_ value: UInt32) -> [UInt8] { [0, 8, 16, 24].map { UInt8((value >> UInt32($0)) & 0xFF) } }
+            if architectures.count == 1 {
+                // mach_header_64: magic, cputype, cpusubtype, filetype (MH_EXECUTE), then zeros.
+                return Data(little(0xFEED_FACF) + little(architectures[0].cpuType) + little(0) + little(2)
+                            + [UInt8](repeating: 0, count: 16))
+            }
+            var bytes = big(wide ? 0xCAFE_BABF : 0xCAFE_BABE) + big(UInt32(architectures.count))
+            for (index, architecture) in architectures.enumerated() {
+                // fat_arch: cputype, cpusubtype, offset, size, align; fat_arch_64 has 64-bit
+                // offset and size, and a reserved word.
+                let offset = UInt32(0x4000 * (index + 1))
+                bytes += big(architecture.cpuType) + big(0)
+                bytes += wide ? big(0) + big(offset) + big(0) + big(0x1000) + big(14) + big(0)
+                              : big(offset) + big(0x1000) + big(14)
+            }
+            return Data(bytes)
+        }
+        let universalBinary = machO([.arm64, .x86_64])
+
+        func makeBundle(identifier: String, version: String, executable: Data?) -> URL {
             let bundle = sandbox.appendingPathComponent("\(UUID().uuidString)/Lightspot.app")
             let macos = bundle.appendingPathComponent("Contents/MacOS")
             try? fm.createDirectory(at: macos, withIntermediateDirectories: true)
@@ -2568,34 +2660,111 @@ struct TestRunner {
             ]
             (info as NSDictionary).write(to: bundle.appendingPathComponent("Contents/Info.plist"),
                                          atomically: true)
-            if withExecutable {
+            if let executable {
                 let binary = macos.appendingPathComponent("Lightspot")
-                fm.createFile(atPath: binary.path, contents: Data("#!/bin/sh\n".utf8))
+                fm.createFile(atPath: binary.path, contents: executable)
                 try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
             }
             return bundle
         }
 
         let expected = SemanticVersion("1.4.0")!
-        let good = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", withExecutable: true)
-        assertTrue(UpdateManager.validate(bundle: good, expected: expected, fileManager: fm) == nil,
+        let good = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", executable: universalBinary)
+        assertTrue(UpdateManager.validate(bundle: good, expected: expected, architecture: .arm64, fileManager: fm) == nil,
                    "A matching Lightspot bundle is accepted")
 
-        let imposter = makeBundle(identifier: "com.example.evil", version: "1.4.0", withExecutable: true)
-        assertTrue(UpdateManager.validate(bundle: imposter, expected: expected, fileManager: fm) != nil,
+        let imposter = makeBundle(identifier: "com.example.evil", version: "1.4.0", executable: universalBinary)
+        assertTrue(UpdateManager.validate(bundle: imposter, expected: expected, architecture: .arm64, fileManager: fm) != nil,
                    "A bundle with a different identifier is refused")
 
-        let wrongVersion = makeBundle(identifier: "com.lightspot.app", version: "1.3.0", withExecutable: true)
-        assertTrue(UpdateManager.validate(bundle: wrongVersion, expected: expected, fileManager: fm) != nil,
+        let wrongVersion = makeBundle(identifier: "com.lightspot.app", version: "1.3.0", executable: universalBinary)
+        assertTrue(UpdateManager.validate(bundle: wrongVersion, expected: expected, architecture: .arm64, fileManager: fm) != nil,
                    "A bundle whose version differs from the release is refused")
 
-        let noBinary = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", withExecutable: false)
-        assertTrue(UpdateManager.validate(bundle: noBinary, expected: expected, fileManager: fm) != nil,
+        let noBinary = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", executable: nil)
+        assertTrue(UpdateManager.validate(bundle: noBinary, expected: expected, architecture: .arm64, fileManager: fm) != nil,
                    "A bundle with no runnable executable is refused")
 
         assertTrue(UpdateManager.validate(bundle: sandbox.appendingPathComponent("Nope.app"),
-                                          expected: expected, fileManager: fm) != nil,
+                                          expected: expected, architecture: .arm64, fileManager: fm) != nil,
                    "A missing bundle is refused")
+
+        // --- The unpacked build must hold this Mac's architecture ---
+        let armCPU = MacArchitecture.arm64.cpuType, intelCPU = MacArchitecture.x86_64.cpuType
+        assertEqual(armCPU, 0x0100_000C, "CPU_TYPE_ARM64")
+        assertEqual(intelCPU, 0x0100_0007, "CPU_TYPE_X86_64")
+        assertEqual(UpdateManager.machOCPUTypes(header: machO([.arm64])), [armCPU], "A thin header names its architecture")
+        assertEqual(UpdateManager.machOCPUTypes(header: machO([.x86_64])), [intelCPU], "A thin Intel header")
+        assertEqual(UpdateManager.machOCPUTypes(header: universalBinary), [armCPU, intelCPU],
+                    "A universal header lists each slice")
+        assertEqual(UpdateManager.machOCPUTypes(header: machO([.x86_64, .arm64], wide: true)), [intelCPU, armCPU],
+                    "A 64-bit universal header too")
+        assertEqual(UpdateManager.machOCPUTypes(header: Data("#!/bin/sh\n".utf8)), nil, "A script is not Mach-O")
+        assertEqual(UpdateManager.machOCPUTypes(header: Data([0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 0x34])), nil,
+                    "A Java class file shares the universal magic; its 52 \"slices\" are refused")
+        assertEqual(UpdateManager.machOCPUTypes(header: Data(universalBinary.prefix(20))), nil,
+                    "A universal header cut short is refused")
+        assertEqual(UpdateManager.machOCPUTypes(header: Data([0xCF, 0xFA, 0xED, 0xFE])), nil,
+                    "A thin header cut short is refused")
+        // A real Mach-O: this runner, built for the architecture it runs as.
+        #if arch(arm64)
+        let runnerCPU = armCPU
+        #else
+        let runnerCPU = intelCPU
+        #endif
+        assertTrue(UpdateManager.machOCPUTypes(of: Bundle.main.executableURL!)?.contains(runnerCPU) == true,
+                   "The runner's own executable holds its architecture")
+
+        let armBuild = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", executable: machO([.arm64]))
+        let intelBuild = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", executable: machO([.x86_64]))
+        let scriptBuild = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", executable: Data("#!/bin/sh\n".utf8))
+        func refusal(_ bundle: URL, _ architecture: MacArchitecture) -> String? {
+            UpdateManager.validate(bundle: bundle, expected: expected, architecture: architecture, fileManager: fm)
+        }
+        assertEqual(refusal(armBuild, .arm64), nil, "Apple silicon's build is accepted on Apple silicon")
+        assertEqual(refusal(intelBuild, .x86_64), nil, "The Intel build is accepted on an Intel Mac")
+        assertEqual(refusal(good, .arm64), nil, "The universal build is accepted on Apple silicon")
+        assertEqual(refusal(good, .x86_64), nil, "The universal build is accepted on an Intel Mac")
+        assertEqual(refusal(intelBuild, .arm64), "The downloaded build is for Intel only; this Mac has Apple silicon.",
+                    "The Intel build is refused on Apple silicon")
+        assertEqual(refusal(armBuild, .x86_64), "The downloaded build is for Apple silicon only; this Mac has Intel.",
+                    "Apple silicon's build is refused on an Intel Mac")
+        assertEqual(refusal(scriptBuild, .arm64), "The downloaded executable is not a Mac program.",
+                    "An executable that isn't Mach-O is refused")
+        // arm64 and arm64e share CPU_TYPE_ARM64: two slices, one name.
+        let twoArmSlices = makeBundle(identifier: "com.lightspot.app", version: "1.4.0", executable: machO([.arm64, .arm64]))
+        assertEqual(refusal(twoArmSlices, .x86_64), "The downloaded build is for Apple silicon only; this Mac has Intel.",
+                    "The refusal names each kind of Mac once")
+
+        // stageDownload runs the check on what it unpacks.
+        func zipped(_ bundle: URL) -> URL {
+            let archive = sandbox.appendingPathComponent("\(UUID().uuidString).zip")
+            let ditto = Process()
+            ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            ditto.arguments = ["-c", "-k", "--keepParent", bundle.path, archive.path]
+            try? ditto.run()
+            ditto.waitUntilExit()
+            return archive
+        }
+        let fromGitHub = HTTPURLResponse(url: URL(string: "https://release-assets.githubusercontent.com/x")!,
+                                         statusCode: 200, httpVersion: nil, headerFields: nil)!
+        let stageDestination = sandbox.appendingPathComponent("Applications/Lightspot.app")
+        switch UpdateManager.stageDownload(location: zipped(intelBuild), response: fromGitHub, error: nil,
+                                           expected: expected, architecture: .arm64, destination: stageDestination) {
+        case .failure(let message):
+            assertTrue(message.contains("for Intel only"), "An Intel download is refused on Apple silicon: \(message)")
+        case .success(let staged):
+            try? fm.removeItem(at: staged.workDirectory)
+            print("❌ FAIL: an Intel download was staged for Apple silicon"); exit(1)
+        }
+        switch UpdateManager.stageDownload(location: zipped(armBuild), response: fromGitHub, error: nil,
+                                           expected: expected, architecture: .arm64, destination: stageDestination) {
+        case .success(let staged):
+            assertEqual(staged.bundle.lastPathComponent, "Lightspot.app", "Apple silicon's download is staged")
+            try? fm.removeItem(at: staged.workDirectory)
+        case .failure(let message):
+            print("❌ FAIL: Apple silicon's download was refused: \(message)"); exit(1)
+        }
 
         // findAppBundle copes with the archive layout `ditto` produces.
         let nested = sandbox.appendingPathComponent("nested", isDirectory: true)
