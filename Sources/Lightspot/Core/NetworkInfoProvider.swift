@@ -24,7 +24,7 @@ public final class NetworkInfoProvider: @unchecked Sendable {
     private var inFlight = false
     private var waiters: [@Sendable (String?) -> Void] = []
     private var lookups = 0
-    private var fetcher: PublicIPFetcher = { NetworkInfoProvider.fetchFromIpify($0) }
+    private var fetcher: PublicIPFetcher = { NetworkInfoProvider.fetchFromCloudflareTrace($0) }
     private let refreshInterval: TimeInterval = 900 // 15 minutes
     /// Keeps a burst of keystrokes from retrying every character while offline.
     private let failureBackoff: TimeInterval = 30
@@ -93,10 +93,12 @@ public final class NetworkInfoProvider: @unchecked Sendable {
     // MARK: - Public IPv4 Address
     //
     // The public address can only be learned from a server, so this asks one
-    // (GET https://api.ipify.org): the only request Lightspot sends to a third party, and
-    // its only network use besides the GitHub update check. It is sent only when the user asks for
-    // the public IP: a query that clearly names it (`QuickActionsProvider.queryAsksForPublicIP`)
-    // or ↵ on the IP Address row. Nothing here runs at launch or on a loose fuzzy match.
+    // (GET https://1.1.1.1/cdn-cgi/trace, Cloudflare's trace page): the only request Lightspot
+    // sends to a third party, and its only network use besides the GitHub update check. It is sent
+    // only when the user asks for the public IP: a query that clearly names it
+    // (`QuickActionsProvider.queryAsksForPublicIP`) or ↵ on the IP Address row. Nothing here runs
+    // at launch or on a loose fuzzy match. The host is an IPv4 literal, so there is no DNS lookup
+    // and the connection is IPv4: the `ip=` line it answers with is the public IPv4 address.
 
     /// The public IP from the last successful lookup, if any. Never touches the network.
     public func cachedPublicIPv4Address() -> String? {
@@ -193,8 +195,8 @@ public final class NetworkInfoProvider: @unchecked Sendable {
     /// Ephemeral, so neither the response nor any cookie reaches URLCache's on-disk store.
     private static let lookupSession = URLSession(configuration: .ephemeral)
 
-    private static func fetchFromIpify(_ completion: @escaping @Sendable (String?) -> Void) {
-        guard let url = URL(string: "https://api.ipify.org") else {
+    private static func fetchFromCloudflareTrace(_ completion: @escaping @Sendable (String?) -> Void) {
+        guard let url = URL(string: "https://1.1.1.1/cdn-cgi/trace") else {
             completion(nil)
             return
         }
@@ -204,13 +206,24 @@ public final class NetworkInfoProvider: @unchecked Sendable {
             guard error == nil,
                   (response as? HTTPURLResponse)?.statusCode == 200,
                   let data,
-                  let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  NetworkInfoProvider.isPlausibleIPAddress(ip) else {
+                  let body = String(data: data, encoding: .utf8),
+                  let ip = NetworkInfoProvider.ipFromTrace(body) else {
                 completion(nil)
                 return
             }
             completion(ip)
         }.resume()
+    }
+
+    /// The address in a trace page: the value of its `ip=` line, only when it reads as an
+    /// address. The page is `key=value` lines (`ip=203.0.113.7`, `loc=VN`, `colo=SIN`, the TLS
+    /// version…); nothing but the address is kept.
+    static func ipFromTrace(_ body: String) -> String? {
+        for line in body.split(whereSeparator: \.isNewline) where line.hasPrefix("ip=") {
+            let ip = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
+            return isPlausibleIPAddress(ip) ? ip : nil
+        }
+        return nil
     }
 
     private static let ipAddressCharacters = CharacterSet(charactersIn: "0123456789abcdefABCDEF.:")

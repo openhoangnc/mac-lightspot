@@ -88,7 +88,7 @@ struct TestRunner {
 
         print("🧪 Running Lightspot Core Tests...\n")
 
-        // No test may reach api.ipify.org: any lookup a search triggers gets a fixed answer.
+        // No test may reach 1.1.1.1: any lookup a search triggers gets a fixed answer.
         NetworkInfoProvider.shared.resetPublicIPState(fetcher: { completion in completion("203.0.113.7") })
 
         // Test 1: Calculator Arithmetic
@@ -632,6 +632,17 @@ struct TestRunner {
         assertTrue(NetworkInfoProvider.isPlausibleIPAddress("2001:db8::1"), "IPv6 is accepted")
         assertTrue(!NetworkInfoProvider.isPlausibleIPAddress("<html>login</html>"), "A captive portal page is rejected")
         assertTrue(!NetworkInfoProvider.isPlausibleIPAddress(""), "Empty body is rejected")
+
+        // Cloudflare's trace page: only the `ip=` line's value, and only when it is an address.
+        let trace = "fl=410f538\nh=1.1.1.1\nip=203.0.113.7\nts=1793897181.000\nvisit_scheme=https\nuag=Lightspot\ncolo=SIN\nloc=VN\ntls=TLSv1.3\n"
+        assertEqual(NetworkInfoProvider.ipFromTrace(trace), "203.0.113.7", "Trace page yields its ip= line")
+        assertEqual(NetworkInfoProvider.ipFromTrace("h=1.1.1.1\r\nip=198.51.100.4\r\nloc=VN\r\n"), "198.51.100.4", "CRLF trace page is read")
+        assertEqual(NetworkInfoProvider.ipFromTrace("ip=2001:db8::1\n"), "2001:db8::1", "IPv6 trace answer is accepted")
+        assertTrue(NetworkInfoProvider.ipFromTrace("fl=1\nh=1.1.1.1\nloc=VN\n") == nil, "Trace page without ip= is rejected")
+        assertTrue(NetworkInfoProvider.ipFromTrace("<html><body>Sign in to Wi-Fi</body></html>") == nil, "Captive portal page is rejected")
+        assertTrue(NetworkInfoProvider.ipFromTrace("ip=<script>x</script>\n") == nil, "A non-address ip= value is rejected")
+        assertTrue(NetworkInfoProvider.ipFromTrace("vip=203.0.113.7\n") == nil, "Only a line starting with ip= counts")
+        assertTrue(NetworkInfoProvider.ipFromTrace("") == nil, "Empty trace page is rejected")
 
         network.resetPublicIPState(fetcher: { completion in completion("203.0.113.7") })
         print("✅ Public IP lookup passed all tests!\n")

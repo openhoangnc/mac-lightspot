@@ -239,7 +239,7 @@ final class QuickActionsProvider: Sendable {
     static let publicIPLookupMinScore: Double = 85
 
     /// True only when the query names the IP itself ("ip", "my ip", "public ip", "ipv4").
-    /// The lookup is a request to api.ipify.org, and quick actions have no score floor, so
+    /// The lookup is a request to Cloudflare (1.1.1.1), and quick actions have no score floor, so
     /// matching the action is not enough: "lo" prefixes the "local ip" keyword, "ad" the
     /// word "address" and "i" the name, and none of them asked for an IP. "local ip" is a
     /// question about the local address only.
