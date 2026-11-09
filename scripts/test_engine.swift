@@ -343,6 +343,13 @@ struct TestRunner {
         assertTrue(script.contains("do script \"\(literal)\""), "The command is embedded as one escaped literal")
         assertTrue(script.hasSuffix("end tell"), "Script is well formed")
 
+        // Terminal not running: `activate` (or `do script` alone) starts it with its
+        // startup window, and `do script` opens a second one beside it.
+        let plain = TerminalLauncher.script(for: "git status")
+        let steps = plain.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        assertEqual(steps, ["tell application \"Terminal\"", "launch", "do script \"git status\"", "activate", "end tell"],
+                    "Terminal is launched without its startup window, then runs the command, then comes forward")
+
         // Flag-driven terminals exec their program directly, so a multi-word command
         // must reach them wrapped in a shell, as one argument.
         let program = TerminalLauncher.shellCommandArguments(for: "git status # mine", shell: "/bin/zsh")

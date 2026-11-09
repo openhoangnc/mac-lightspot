@@ -91,12 +91,19 @@ public enum TerminalLauncher {
     }
 
     /// The AppleScript that opens an Apple Terminal window and runs `command` in it.
+    ///
+    /// `launch` comes first and `activate` last. Started any other way (`activate`, or
+    /// the launch `do script` sets off itself), Terminal gets an open-application event
+    /// and answers it with its startup window, so `do script` left two windows: the
+    /// startup one, empty, in front of the one running the command. `launch` starts it
+    /// without that event, and does nothing to a Terminal already running.
     public static func script(for command: String) -> String {
         let literal = escapeForAppleScriptLiteral(command)
         return """
         tell application "Terminal"
-            activate
+            launch
             do script "\(literal)"
+            activate
         end tell
         """
     }
