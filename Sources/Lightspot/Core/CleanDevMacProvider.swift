@@ -5,10 +5,11 @@ import AppKit
 // cdm's scan-and-clean, inside Lightspot: the "Clean Dev Mac" search row, and the state
 // behind the cleaner overlay. A scan loads cdm's rules, expands their patterns and measures
 // every match like `du`, and with it cdm's two notes (what a restart would free, Claude
-// Code's history); then, if the user asks, the repo scan adds one row per code repo;
-// a clean deletes what the user ticked, each path through cdm's safety gate, and appends a
-// receipt to cdm's log. All of it runs on a background queue and publishes snapshots, so
-// `search()` and the overlay only ever read memory (invariant 0).
+// Code's history); then the repo scan, which follows every cache scan as it does in every
+// interactive cdm run, adds one row per code repo; a clean deletes what the user ticked, each
+// path through cdm's safety gate, and appends a receipt to cdm's log. All of it runs on a
+// background queue and publishes snapshots, so `search()` and the overlay only ever read
+// memory (invariant 0).
 
 final class CleanDevMacProvider: @unchecked Sendable {
     static let shared = CleanDevMacProvider()
@@ -132,12 +133,12 @@ final class CleanDevMacProvider: @unchecked Sendable {
         }
     }
 
-    /// cdm's project scan, from the cleaner's side.
+    /// cdm's project scan, from the cleaner's side. It runs after every cache scan, as every
+    /// interactive cdm run does.
     enum RepoScan: Sendable, Equatable {
-        /// No project rules, or no git to prove anything with.
+        /// No repo rows: no project rules, no git to prove anything with, or the repo scan
+        /// hasn't finished (`phase` says which).
         case unavailable
-        /// The caches are measured; scanning the repos is the user's call, as cdm asks.
-        case offered
         /// Done, with the number of repos found.
         case scanned(repos: Int)
     }
@@ -216,7 +217,7 @@ final class CleanDevMacProvider: @unchecked Sendable {
     private let lock = NSLock()
     private var state = Snapshot()
     private var remoteRules: (rules: CleanDevMacRuleSet, fetchedAt: Date)?
-    /// The rules of the last scan, which the repo scan reads.
+    /// The rules of the last scan, which `heldRules` hands to Mac Tweaks.
     private var scannedRules: CleanDevMacRuleSet?
     private var observer: (@Sendable () -> Void)?
     private var lastProgressReport = Date.distantPast
@@ -289,9 +290,7 @@ final class CleanDevMacProvider: @unchecked Sendable {
     // MARK: Scanning
 
     /// Starts a scan unless one is running, or (without `force`) a recent one stands.
-    /// `includeRepos` runs the repo scan right after, as cdm's rescan does once the user
-    /// accepted it.
-    func startScan(force: Bool = false, includeRepos: Bool = false) {
+    func startScan(force: Bool = false) {
         lock.lock()
         let fresh = state.phase == .ready && state.scannedAt.map { Date().timeIntervalSince($0) < Self.rescanAfter } == true
         guard !state.phase.isBusy, force || !fresh else {
@@ -322,12 +321,15 @@ final class CleanDevMacProvider: @unchecked Sendable {
                     }
                     measuringNotes.wait()
                     let disk = CleanDevMacEngine.diskStats(path: environment.home)
-                    let canScanRepos = !rules.projects.isEmpty && environment.git != nil
+                    let git = rules.projects.isEmpty ? nil : environment.git
                     lock.lock()
                     scannedRules = rules
                     lock.unlock()
+                    // The cache rows publish with the phase still busy, so the list appears
+                    // once, with the repo rows, and no ↵ can open a plan without them. This
+                    // publish resets the ticks (generation); the repo scan's keeps them.
                     update { state in
-                        state.phase = .ready
+                        state.phase = git == nil ? .ready : .scanningRepos(done: 0, total: 0)
                         state.entries = scan.entries
                         state.terminalOnly = scan.terminalOnly
                         state.source = rules.source
@@ -336,10 +338,10 @@ final class CleanDevMacProvider: @unchecked Sendable {
                         state.claudeHistory = notes.claudeHistory
                         state.scannedAt = Date()
                         state.receipt = nil
-                        state.repos = canScanRepos ? .offered : .unavailable
+                        state.repos = .unavailable
                         state.generation += 1
                     }
-                    if includeRepos { scanRepos() }
+                    if let git { scanRepos(rules, git: git) }
                 case .failure(let message):
                     update { $0.phase = .failed(message.text) }
                 }
@@ -527,33 +529,22 @@ final class CleanDevMacProvider: @unchecked Sendable {
 
     // MARK: Repo scan
 
-    /// cdm's "Also scan your code repos for build/dependency junk?": only after a cache
-    /// scan that offered it. Adds one row per repo (or group root) to the list, unticked,
-    /// and keeps whatever the user had ticked.
-    func scanRepos() {
-        lock.lock()
-        guard state.phase == .ready, state.repos == .offered, let rules = scannedRules, let git = environment.git else {
-            lock.unlock()
-            return
+    /// Blocking, on `queue`: cdm's repo scan, run after every cache scan. Adds one row per
+    /// repo (or group root) to the list, unticked, and keeps the ticks the cache scan set:
+    /// it never bumps `generation`.
+    private func scanRepos(_ rules: CleanDevMacRuleSet, git: String) {
+        let found = CleanDevMacProjects.scan(rules.projects, home: environment.home, git: git) { done, total in
+            self.reportProgress(.scanningRepos(done: done, total: total))
         }
-        state.phase = .scanningRepos(done: 0, total: 0)
-        lock.unlock()
-        notify()
-
-        queue.async { [self] in
-            let found = CleanDevMacProjects.scan(rules.projects, home: environment.home, git: git) { done, total in
-                self.reportProgress(.scanningRepos(done: done, total: total))
-            }
-            let rows = projectEntries(found.projects) { done, total in
-                self.reportProgress(.measuring(done: done, total: total))
-            }
-            let disk = CleanDevMacEngine.diskStats(path: environment.home)
-            update { state in
-                state.phase = .ready
-                state.entries = Self.biggestFirst(state.entries + rows)
-                state.repos = .scanned(repos: found.repoCount)
-                state.disk = disk ?? state.disk
-            }
+        let rows = projectEntries(found.projects) { done, total in
+            self.reportProgress(.measuring(done: done, total: total))
+        }
+        let disk = CleanDevMacEngine.diskStats(path: environment.home)
+        update { state in
+            state.phase = .ready
+            state.entries = Self.biggestFirst(state.entries + rows)
+            state.repos = .scanned(repos: found.repoCount)
+            state.disk = disk ?? state.disk
         }
     }
 
@@ -714,7 +705,8 @@ final class CleanDevMacProvider: @unchecked Sendable {
     }
 
     /// The `procs` of `entries` that are running now: apps that would rewrite the caches
-    /// they own while they are cleared. Each named once, in rule order.
+    /// they own while they are cleared. Each named once, in rule order. `running` holds only
+    /// this account's processes (see `CleanDevMacEngine.runningProcessNames`).
     static func runningApps(for entries: [Entry], running: Set<String> = CleanDevMacEngine.runningProcessNames()) -> [String] {
         var names: [String] = []
         for name in entries.flatMap(\.rule.procs) where running.contains(name) && !names.contains(name) {

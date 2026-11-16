@@ -33,8 +33,6 @@ final class CleanDevMacModel: ObservableObject {
 
     var home: String { provider.environment.home }
     var entries: [Entry] { snapshot.entries }
-    /// The cache scan is done and cdm's repo question is open.
-    var canScanRepos: Bool { snapshot.phase == .ready && snapshot.repos == .offered && !isConfirming }
     var checkedEntries: [Entry] { entries.filter { checked.contains($0.id) } }
     var checkedKB: Int { CleanDevMacProvider.uniqueKB(checkedEntries) }
     var totalKB: Int { CleanDevMacProvider.uniqueKB(entries) }
@@ -73,18 +71,22 @@ final class CleanDevMacModel: ObservableObject {
         provider.startScan()
     }
 
+    // The list keys act only on a list the window shows: during the repo scan the cache rows
+    // are already in `entries` behind the progress view, and a Space typed then would tick a
+    // row nobody can see.
+
     func moveUp() {
-        guard !isConfirming, !entries.isEmpty else { return }
+        guard snapshot.phase == .ready, !isConfirming, !entries.isEmpty else { return }
         cursor = cursor > 0 ? cursor - 1 : entries.count - 1
     }
 
     func moveDown() {
-        guard !isConfirming, !entries.isEmpty else { return }
+        guard snapshot.phase == .ready, !isConfirming, !entries.isEmpty else { return }
         cursor = cursor < entries.count - 1 ? cursor + 1 : 0
     }
 
     func toggle(_ id: Int) {
-        guard !isConfirming else { return }
+        guard snapshot.phase == .ready, !isConfirming else { return }
         if checked.contains(id) {
             checked.remove(id)
         } else {
@@ -102,24 +104,11 @@ final class CleanDevMacModel: ObservableObject {
     func tickAll() { checked = Set(entries.map(\.id)) }
     func tickNone() { checked = [] }
 
-    /// ⇥: cdm's "Also scan your code repos for build/dependency junk?".
-    func scanRepos() {
-        guard canScanRepos else { return }
-        provider.scanRepos()
-    }
-
     /// ↵: scan, review the plan, or confirm it, depending on where the cleaner stands.
     func primaryAction() {
         switch snapshot.phase {
-        case .idle, .failed:
+        case .idle, .failed, .finished:
             provider.startScan(force: true)
-        case .finished:
-            // A rescan after a clean covers the repos again if they were scanned, as cdm's does.
-            if case .scanned = snapshot.repos {
-                provider.startScan(force: true, includeRepos: true)
-            } else {
-                provider.startScan(force: true)
-            }
         case .ready:
             if isConfirming {
                 confirm()
@@ -156,7 +145,7 @@ final class CleanDevMacModel: ObservableObject {
 
     /// ⌥↵: the selected category's first path in Finder.
     func revealCursorInFinder() {
-        guard cursor >= 0, cursor < entries.count, let path = entries[cursor].paths.first else { return }
+        guard snapshot.phase == .ready, cursor >= 0, cursor < entries.count, let path = entries[cursor].paths.first else { return }
         NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
     }
 }

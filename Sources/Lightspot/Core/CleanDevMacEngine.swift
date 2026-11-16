@@ -1075,6 +1075,12 @@ enum CleanDevMacEngine {
 
     /// Every running process name as `proc_name` reports it (up to 31 bytes), the names a
     /// rule's `procs` lists. About a millisecond for a few hundred processes.
+    ///
+    /// Only this account's processes, as cdm's `pgrep -x -U "$UID"`: an app open in another
+    /// account under fast user switching is not one this user can quit, and its caches are not
+    /// the ones being cleaned. That holds because `proc_name` answers only for processes
+    /// running as this user; a rewrite that reads names another way (sysctl `KERN_PROC`,
+    /// `PROC_PIDT_SHORTBSDINFO`'s `pbsi_name`) must filter by uid itself.
     static func runningProcessNames() -> Set<String> {
         let capacity = proc_listallpids(nil, 0)
         guard capacity > 0 else { return [] }

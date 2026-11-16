@@ -39,8 +39,8 @@ final class CleanDevMacWindowController: ToolWindowController {
     }
 
     /// The overlay's keys, now the window's: ↑↓ select, Space ticks, ↵ reviews, cleans or
-    /// rescans, ⇥ scans the code repos when offered, ⌥↵ shows the category in Finder, ⌘↵ runs
-    /// cdm in the terminal, Esc backs out of the plan, else closes, as ⌘W does.
+    /// rescans, ⌥↵ shows the category in Finder, ⌘↵ runs cdm in the terminal, Esc backs out of
+    /// the plan, else closes, as ⌘W does.
     override func handleKey(_ event: NSEvent, flags: NSEvent.ModifierFlags) -> Bool {
         switch event.keyCode {
         case 53: // Esc
@@ -55,8 +55,6 @@ final class CleanDevMacWindowController: ToolWindowController {
             } else {
                 return false
             }
-        case 48 where flags.isEmpty: // Tab: cdm's "Also scan your code repos?"
-            model.scanRepos()
         case 125 where flags.isEmpty: // ↓
             model.moveDown()
         case 126 where flags.isEmpty: // ↑

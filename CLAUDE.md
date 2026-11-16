@@ -133,9 +133,11 @@ swiftc -parse-as-library -o /tmp/overlay_check scripts/overlay_check.swift $(fin
   `sendEvent`, as AppKit delivers them: ↓ to the last row, ⇥ and ⇧⇥, Space, ↵ on a link (handed to
   the app, the window stays), ⌫ marking a row for deletion and unmarking it, ↵ for the plan, Esc out
   of the plan (the window stays), Esc to close, a reopen that must build a new window, and ⌘W. Then
-  one child for Clean Dev Mac, on a scan of this Mac's caches with cdm's rules from the repository
-  (never fetched) and the Trash refusing: ↓, Space twice, ⌘↵ (handed to a closure that only counts
-  it), ↵ for the plan and Esc out of it (never a second ↵), Esc to close, a reopen, ⌘W. A child that
+  one child for Clean Dev Mac, on a scan of this Mac's caches and code repos with cdm's rules from
+  the repository (never fetched) and the Trash refusing: ↓ and Space while the repo scan runs, which
+  must leave the cursor and the ticks as they were, then ↓, Space twice, ⌘↵ (handed to a closure
+  that only counts it), ↵ for the plan and Esc out of it (never a second ↵), Esc to close, a
+  reopen, ⌘W. A child that
   traps is reported with its signal, so a run says which step. 1.4.0's `MacTweaksRowView` read
   `model.rows[index]` and trapped in all eight; nothing is applied, cleaned, written, moved, asked
   for or opened, and Lightspot isn't launched. Run it after changing a tool's view or window; it
@@ -396,7 +398,7 @@ CleanDevMac (`cdm`, https://github.com/cleandevmac/cdm) is a bash TUI that recla
 dev caches. Lightspot runs its cache categories and its per-repo project scan natively:
 the "Clean Dev Mac" row (`cdm`, `clean dev mac`, `derived data`, …) opens its window (see Tool
 windows) that
-measures, ticks cdm's safe defaults, offers to scan code repos, shows an itemized plan,
+measures, ticks cdm's safe defaults, scans code repos, shows an itemized plan,
 cleans and prints a receipt.
 
 - **The rules are cdm's.** `CleanDevMacRules` reads cdm's own `rules/` format (`index.json`
@@ -451,9 +453,11 @@ cleans and prints a receipt.
   for a 248 KB copy of Chrome), so it is each version's entries over `cloneEntriesPerKB`,
   plus the blocks of a version no installed app carries any more, spread over its copies
   so they add up to cdm's figure. Its clean writes one receipt line for the lot.
-- **The repo scan is cdm's `scan_projects`, ported** (`CleanDevMacProjects`), and like cdm
-  it is asked, not run: after the cache scan the window asks "Also scan your code repos
-  for build/dependency junk?" and ⇥ (or the button) starts it. One fts pass over the rules'
+- **The repo scan is cdm's `scan_projects`, ported** (`CleanDevMacProjects`), and runs
+  after every cache scan, as every interactive cdm run does; nothing asks, and ⇥ does
+  nothing in this window. The provider publishes the cache rows with phase
+  `.scanningRepos` and runs the repo scan right after on its queue, so the list shows once,
+  with both; `RepoScan` is `.unavailable` or `.scanned` (no `.offered`). One fts pass over the rules'
   `scan.roots` (home only) finds folders holding a `.git` directory and nominates
   directories named in the `project` categories; each repo's own
   `git ls-files --others --ignored --exclude-standard --directory` then proves a nominee
@@ -504,8 +508,16 @@ cleans and prints a receipt.
   `Snapshot`; `search()` and `CleanDevMacModel` (the window) only read it. A scan stands
   for five minutes; a clean ends in `.finished` and the next open rescans. Ticks reset to
   each rule's `default` on every scan, as cdm's menu does; the repo scan only adds rows
-  (unticked, IDs from `projectIDBase`) and keeps the ticks. A rescan after a clean scans the
-  repos again if they were scanned, as cdm's rescan does once the user said yes.
+  (unticked, IDs from `projectIDBase`) and keeps the ticks. Every rescan scans the repos
+  again. While the phase is not `.ready`, the model ignores ↑↓, Space and ⌥↵ as it ignores ↵:
+  during the repo scan the cache rows are present but hidden, and ticks made then would land
+  on rows the user cannot see.
+- **The running-app warning** (`runningApps`): the plan names the ticked rules' `procs` that
+  are running, from `CleanDevMacEngine.runningProcessNames`. Only this account's processes,
+  as cdm's `pgrep -x -U "$UID"`: an app open in another account (fast user switching) is not
+  named. That holds because `proc_name` answers only for processes running as the user
+  (verified on macOS 27.2); a rewrite that reads names another way (sysctl `KERN_PROC`,
+  `pbsi_name`) must filter by uid.
 - **Receipts** go to `~/.cleandevmac/clean.log`, cdm's own log, marked
   `CleanDevMac run (Lightspot)`, so one file records every clean either tool ran.
 
@@ -1050,7 +1062,7 @@ RemoveMacAI's `BackgroundItems.swift` (MIT): its folders, its verdicts and its l
   key is the window's own (`CleanDevMacWindowController.handleKey`):
   - `↑↓`: Select a category; `Space`: Tick / untick it
   - `↵`: Review the itemized plan; `↵` again cleans, `Escape` goes back; on a receipt, rescan
-  - `⇥`: Scan code repos too, when the window offers it
+  - While a scan or a clean runs, `↑↓`, `Space`, `↵` and `⌥↵` do nothing
   - `⌥↵`: Show the selected category's first path in Finder
   - `⌘↵` (also on the row itself, from the panel): Run cdm in the preferred terminal; the window
     stays
@@ -1154,7 +1166,7 @@ RemoveMacAI's `BackgroundItems.swift` (MIT): its folders, its verdicts and its l
      read (`CleanDevMacEngine.outOfScopeFolders`): inside another app's container macOS asks
      the user whether Lightspot may "access data from other apps", and with an ad-hoc
      signature it would ask again after every update.
-   - For Clean Dev Mac's repo scan, and only when the user asks for it (⇥): the folders
+   - For Clean Dev Mac's repo scan, after the caches on every scan: the folders
      under the home folder to the rules' depth (six), without entering `~/Library`, cdm's
      protected folders, `.git` or the names the rules prune, plus each repo's
      `git ls-files` listing. Nothing is kept but the offered paths and their sizes.

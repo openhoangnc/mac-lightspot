@@ -13,9 +13,11 @@ import SwiftUI
 // ⌫ to mark a row for deletion and unmark it, ↵ for the plan, Esc back out of it, Esc to close,
 // and ⌘W after a reopen.
 //
-// Clean Dev Mac, after them: its window on a scan of this Mac's caches (cdm's rules from the
-// repository, never fetched), its keys (↓, Space, ↵ for the plan and Esc out of it, never a
-// second ↵, Esc to close, ⌘W after a reopen).
+// Clean Dev Mac, after them: its window on a scan of this Mac's caches and then its code repos
+// (cdm's rules from the repository, never fetched; the repo scan walks the home folder and asks
+// `git ls-files` per repo, read-only), its keys (↓ and Space during the repo scan, which change
+// nothing; then ↓, Space, ↵ for the plan and Esc out of it, never a second ↵, Esc to close, ⌘W
+// after a reopen).
 //
 // Each run is a child process of its own, so a trap ends only that one and the report says
 // which. Nothing is applied, cleaned, written, moved, asked for or opened (a link's ↵ goes
@@ -365,10 +367,12 @@ enum Keys {
     }
 }
 
-/// `--cleaner`: Clean Dev Mac's window on a read-only scan of this Mac's caches, through its keys.
+/// `--cleaner`: Clean Dev Mac's window on a read-only scan of this Mac's caches and code repos,
+/// through its keys.
 /// Its plan is shown and backed out of, never confirmed.
 @MainActor
 final class CleanerRun {
+    /// Covers the cache scan and the repo scan after it.
     static let scanTimeout: TimeInterval = 180
 
     let provider: CleanDevMacProvider
@@ -446,8 +450,29 @@ final class CleanerRun {
             || window.title != CleanDevMacProvider.title || window.hidesOnDeactivate {
             fail("the window isn't the app's: \(window.styleMask), \(window.contentMinSize)")
         }
+        let started = Date()
+        // Keys typed while the scan runs change nothing: once the cache rows are in `entries`,
+        // behind the repo scan's progress view, ↓ and Space must leave the cursor and the ticks.
+        // Sent straight to the window, so they land while the model still says it is busy.
+        pump(Self.scanTimeout) {
+            switch model.snapshot.phase {
+            case .ready, .finished, .failed: return true
+            case .idle: return false
+            default: return !model.entries.isEmpty
+            }
+        }
+        if model.snapshot.phase.isBusy, !model.entries.isEmpty {
+            let ticks = model.checked, cursor = model.cursor
+            Keys.press(window, 125, "\u{F701}", [.numericPad, .function]) // ↓
+            Keys.press(window, 49, " ") // Space
+            if model.checked != ticks || model.cursor != cursor { fail("↓ and Space during the repo scan changed the list: \(state)") }
+            log("keys during the repo scan: ignored (\(model.snapshot.phase))")
+        } else {
+            log("keys during the repo scan: not tried, the scan ended first")
+        }
         waitSettled()
-        log("scanned: \(state)")
+        log("scanned in \(Int(Date().timeIntervalSince(started))) s (repos: \(model.snapshot.repos), "
+            + "\(model.entries.filter { $0.id >= CleanDevMacProvider.projectIDBase }.count) repo rows): \(state)")
         let count = model.entries.count
         if count > 1 {
             for _ in 0..<count where model.cursor != count - 1 { press(125, "\u{F701}", [.numericPad, .function]) }

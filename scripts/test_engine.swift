@@ -4261,7 +4261,11 @@ struct TestRunner {
 
         // 8. Running apps, by the names a rule's procs use.
         let me = String(URL(fileURLWithPath: CommandLine.arguments[0]).lastPathComponent.prefix(31))
-        assertTrue(CleanDevMacEngine.runningProcessNames().contains(me), "The process list includes this runner")
+        let runningNames = CleanDevMacEngine.runningProcessNames()
+        assertTrue(runningNames.contains(me), "The process list includes this runner")
+        if getuid() != 0 {
+            assertTrue(!runningNames.contains("launchd"), "...and only this account's processes: not launchd, pid 1, root's (cdm's pgrep -U \"$UID\")")
+        }
 
         // 9. What a restart would free: cdm's test_restart.sh cases.
         typealias Volume = CleanDevMacEngine.Volume
@@ -5273,7 +5277,7 @@ struct TestRunner {
         assertEqual(CleanDevMacProjects.reposToList(CleanDevMacProjects.walk(capped, home: home), rules: capped).count, 1,
                     "maxRepos caps how many repos git is asked about")
 
-        // 5. In the cleaner: offered after the cache scan, added unticked, cleaned per path.
+        // 5. In the cleaner: run after every cache scan, added unticked, cleaned per path.
         let trash = home + "/.Trash"
         try? fm.createDirectory(atPath: trash, withIntermediateDirectories: true)
         var ruleSet = CleanDevMacRuleSet(rules: [], terminalOnly: [], source: .remote)
@@ -5291,28 +5295,27 @@ struct TestRunner {
                     "Without git, the repo scan's categories are left to cdm")
         environment.git = git
         let cleaner = CleanDevMacProvider(environment: environment)
-        func wait(_ phase: CleanDevMacProvider.Phase) -> CleanDevMacProvider.Snapshot {
+        func wait(_ phase: CleanDevMacProvider.Phase, _ provider: CleanDevMacProvider) -> CleanDevMacProvider.Snapshot {
             let deadline = Date().addingTimeInterval(30)
             while Date() < deadline {
-                let snapshot = cleaner.snapshot
+                let snapshot = provider.snapshot
                 if snapshot.phase == phase { return snapshot }
                 usleep(10_000)
             }
-            print("❌ FAIL: the cleaner never reached \(phase); it is at \(cleaner.snapshot.phase)")
+            print("❌ FAIL: the cleaner never reached \(phase); it is at \(provider.snapshot.phase)")
             exit(1)
         }
+        noGit.startScan()
+        let withoutGit = wait(.ready, noGit)
+        assertEqual(withoutGit.repos, .unavailable, "Without git there is no repo scan: the scan ends ready with no repo rows")
         cleaner.startScan()
-        let caches = wait(.ready)
-        assertEqual(caches.repos, .offered, "With project rules and git, the repo scan is offered after the cache scan")
-        assertTrue(caches.entries.isEmpty, "...and nothing was scanned before it is accepted")
-        cleaner.scanRepos()
-        let scanned = wait(.ready)
+        let scanned = wait(.ready, cleaner)
         guard case .scanned(let repoCount) = scanned.repos else {
-            assertTrue(false, "The repo scan reports what it found")
+            assertTrue(false, "With project rules and git, the repo scan follows the cache scan and reports what it found")
             return
         }
         assertTrue(repoCount >= 9, "Every fixture repo was found (\(repoCount))")
-        assertEqual(scanned.generation, caches.generation, "Adding repo rows keeps the ticks the user made")
+        assertEqual(scanned.generation, 1, "One scan, one generation: the repo rows join without resetting the ticks")
         let envEntry = scanned.entries.first { $0.rule.name == "~/proj" }
         assertEqual(envEntry?.rule.kind, .project, "A repo's row is a project row")
         assertTrue(envEntry?.rule.isDefault == false, "...unticked, as cdm leaves it")
@@ -5325,6 +5328,16 @@ struct TestRunner {
         let log = (try? String(contentsOfFile: home + "/.cleandevmac/clean.log", encoding: .utf8)) ?? ""
         assertTrue(log.contains("▸ ~/proj\n") && log.contains("  trashed: ~/proj/debug.log\n") && log.contains("  deleted: ~/code/repoE/node_modules\n"),
                    "The log records each path's own method")
+
+        cleaner.startScan(force: true)
+        let rescanned = wait(.ready, cleaner)
+        guard case .scanned = rescanned.repos else {
+            assertTrue(false, "A forced rescan scans the repos again")
+            return
+        }
+        assertEqual(rescanned.generation, 2, "...as one more scan, one more generation")
+        assertTrue(!rescanned.entries.contains { $0.paths.contains { $0.hasSuffix("/code/repoE/node_modules") } },
+                   "...and no row still lists the deleted repoE/node_modules")
 
         print("✅ CleanDevMac repo scan passed all tests!\n")
     }

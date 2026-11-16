@@ -79,7 +79,7 @@ struct CleanDevMacView: View {
         case .ready:
             if model.isConfirming {
                 plan
-            } else if model.entries.isEmpty && !model.canScanRepos {
+            } else if model.entries.isEmpty {
                 message(symbol: "checkmark.seal", title: "Nothing to reclaim",
                         detail: "Everything cdm's rules cover is already clean.", showsNotes: true)
             } else {
@@ -184,9 +184,6 @@ struct CleanDevMacView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 3) {
-                        if model.canScanRepos {
-                            repoOffer
-                        }
                         claudeNote
                             .padding(.vertical, 4)
                         ForEach(Array(model.entries.enumerated()), id: \.element.id) { index, entry in
@@ -222,45 +219,6 @@ struct CleanDevMacView: View {
             line += " · \(repos) \(repos == 1 ? "repo" : "repos") scanned"
         }
         return line
-    }
-
-    /// cdm's question after the cache scan, with its own wording.
-    private var repoOffer: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "folder.badge.questionmark")
-                .font(.system(size: 15))
-                .foregroundColor(.white.opacity(0.75))
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Also scan your code repos for build/dependency junk?")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.92))
-                // Verbatim: as a string literal, Text reads `__pycache__` as Markdown bold.
-                Text(verbatim: "node_modules, dist, build, target, __pycache__, git-ignored — can take a moment.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.5))
-            }
-            Spacer(minLength: 8)
-            Button(action: model.scanRepos) {
-                Text("Scan repos ⇥")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.95))
-                    .lineLimit(1)
-                    .fixedSize()
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.white.opacity(0.16)))
-            }
-            .buttonStyle(.plain)
-            .help("Scan the git repos in your home folder (Tab)")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.white.opacity(0.07))
-        )
-        .padding(.bottom, 4)
     }
 
     private func tickButton(_ title: String, help: String, action: @escaping () -> Void) -> some View {
@@ -509,12 +467,7 @@ struct CleanDevMacView: View {
         case .ready where model.isConfirming:
             return [("⏎", "Clean now"), ("Esc", "Back")]
         case .ready where !model.entries.isEmpty:
-            if model.canScanRepos {
-                return [("↑↓", "Select"), ("Space", "Tick"), ("⏎", "Review & clean"), ("⇥", "Scan repos"), ("⌘⏎", "cdm"), ("Esc", "Close")]
-            }
             return [("↑↓", "Select"), ("Space", "Tick"), ("⏎", "Review & clean"), ("⌥⏎", "Finder"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
-        case .ready where model.canScanRepos:
-            return [("⇥", "Scan repos"), ("⏎", "Rescan"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
         case .ready, .finished:
             return [("⏎", "Rescan"), ("⌘⏎", "cdm in Terminal"), ("Esc", "Close")]
         case .failed:
